@@ -8,7 +8,7 @@ Quake: Ray Traced is based on the [vkQuake](https://github.com/Novum/vkQuake) �
 
 ## What is implemented
 
-* Q2RTX-style path traced lighting: NEE direct light (per-BSP-cluster light lists, light-selection CDF + adaptive shadow statistics) and NEE indirect light with a second diffuse bounce
+* Q2RTX-style path traced lighting: NEE direct light (per-BSP-cluster light lists, light-selection CDF + adaptive shadow statistics), NEE indirect light with a second diffuse bounce, and explicit sun/sky light sampling combined with the traced bounce by multiple importance sampling
 * Per-BSP-cluster light lists — the world model's BSP leaves are used as clusters and the PVS is used for cluster visibility, exactly like Q2RTX (no distance-based cutoffs, occluded lights excluded per cluster)
 * ASVGF denoiser (Q2RTX), checkerboard rendering, TAAU upscaler by default; FSR 2/FSR 3.1/DLSS upscalers are also available in the video menu
 * Reflection/refraction, god rays (volumetric sunlight), fog volumes, procedural sky
@@ -46,13 +46,13 @@ Steps:
    git clone https://github.com/sdas234f23f/vkquake-rt.git
    ```
 
-2. (Re)build the SPIR-V shaders — optional, but after changing any shader source you must regenerate them:
+2. (Re)build the SPIR-V shaders — optional: `build_win.ps1` already builds and deploys them (see step 3), so you only need this when iterating on `vkpt/Source/Shaders` on their own:
 
    ```
    .\build_shaders.ps1
    ```
 
-   This compiles `vkpt/Source/Shaders` with `glslc` and deploys the SPIR-V into `build\Debug\id1\shaders`. Pass `-Rebuild` to ignore the shader cache and recompile everything, and `-GenCommon` when the generated shader-common headers changed.
+   This compiles `vkpt/Source/Shaders` with `glslc` and deploys the SPIR-V into `build\Debug\id1\shaders` (`-DestDir <dir>` to deploy somewhere else). Pass `-Rebuild` to ignore the shader cache and recompile everything, and `-GenCommon` when the generated shader-common headers changed.
 
 3. Configure and build:
 
@@ -64,7 +64,7 @@ Steps:
 
    (or with plain CMake: `cmake -B build\Debug -G Ninja -DCMAKE_BUILD_TYPE=Debug` + `cmake --build build\Debug`; use `-DCMAKE_BUILD_TYPE=Release` and `build\Release` for a release build).
 
-   The build also deploys the override-material pack `id1/ovrd_mat.pkz` (checked in) into the build's game dir, so the ray-traced material overrides (emissive lava, ...) are always present.
+   The build then deploys the ray-traced game data into `build\<Config>\id1`: the material definitions (`vkpt/Source/materials.yaml` → `id1/materials/materials.yaml`), `vkpt/Source/textures`, `vkpt/Source/progs` and `vkpt/Source/mdl_skins`, the blue noise table and the water normal map, and the SPIR-V shaders into `id1/shaders`.
 
 4. Run the game:
 
@@ -72,9 +72,25 @@ Steps:
    build\Debug\vkquake.exe
    ```
 
-   `SDL2.dll` and all codec DLLs are copied next to `vkquake.exe` automatically during the build. The renderer is compiled into the executable — no external renderer DLL is needed. The `.spv` shaders and the blue noise texture are loaded from the game data (`ovrd/shaders/`, `ovrd/BlueNoise_LDR_RGBA_128.ktx2`).
+   `SDL2.dll` and all codec DLLs are copied next to `vkquake.exe` automatically during the build. The renderer is compiled into the executable — no external renderer DLL is needed. The `.spv` shaders and the blue noise texture are loaded from the game data (`id1/shaders/`, `id1/BlueNoise_LDR_RGBA_128.ktx2`).
+
+## Ray tracing settings
+
+Everything is exposed as console variables; run `cvarlist rt_` in the console for the full list. The ones that change the look most are:
+
+* `rt_classic_render 0` — `1` falls back to the classic (non-ray-traced) raster renderer
+* `rt_brightness 1.0` — overall brightness of the ray-traced image
+* `rt_sun 1` with `rt_sun_pitch 140` / `rt_sun_yaw 120` — the sun (on/off) and its direction
+* `rt_sky 1`, `rt_sky_brightness 1.0`, `rt_physical_sky 1` — sky intensity and sky model
+* `rt_sky_ambient_lod 4` — mip level the ambient sky light is read from; lower is more directional, `10` is a flat wash
+* `rt_sky_nee 1` — sample the sky as an explicit light; `0` restores the pre-NEE result
+* `rt_indir2bounces 0` — second diffuse bounce (its own NEE and sun sample are skipped when they cannot change the result)
+* `rt_emis_light_intensity 1.0` — how much light the emissive (luma-masked) surfaces emit
+* `rt_stats 0` — on-screen ray statistics (rays per second, per-category ray counts)
+* `rt_pass_stats 0` — on-screen GPU timing per render pass, next to the ray statistics
+* `rt_debugflags 0` — diagnostic views (raw direct/indirect/specular, gradients, ...)
 
 ## Game data
 
-Quake 1 game files (`id1/`) are required (registered or shareware). HD texture packs can be used through `.pkz` archives or `.mat` material definitions (see `Tools/` for converters). The renderer's override-material pack `id1/ovrd_mat.pkz` is checked in and deployed into the build's game dir by `build_win.ps1`.
+Quake 1 game files (`id1/`) are required (registered or shareware). HD texture packs can be used through `.pkz` archives or `.mat` material definitions (see `Tools/` for converters), and the ray-traced material overrides are deployed into the build's game dir by `build_win.ps1` (`id1/materials/materials.yaml` plus the `id1/textures`, `id1/progs` and `id1/mdl_skins` folders) — nothing has to be packed by hand.
 
