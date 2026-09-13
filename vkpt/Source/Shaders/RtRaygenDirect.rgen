@@ -100,8 +100,13 @@ void main()
 
             if (getLuminance(light.color) > 0.0)
             {
-                const float vis = traceVisibility(surf, light.position, lightIndex);
-                rayStatsAdd(RAY_STATS_CATEGORY_SHADOW, 1);
+                bool lightTraced;
+                const float vis = traceLightVisibility(surf, light, lightIndex, lightTraced);
+
+                if (lightTraced)
+                {
+                    rayStatsAdd(RAY_STATS_CATEGORY_SHADOW, 1);
+                }
 
                 if (lightSources[lightIndex].lightType == LIGHT_TYPE_TRIANGLE ||
                     lightSources[lightIndex].lightType == LIGHT_TYPE_TEXTURED_AREA)
@@ -125,8 +130,13 @@ void main()
         const vec2 sunRnd = rnd16_2(seed, Q2_RNG_SUN_DISK) * 0.99;
         const LightSample sunLight = sampleDirectionalLight(sun, surf.position, sunRnd);
 
-        const float sunVis = traceVisibility(surf, sunLight.position, LIGHT_ARRAY_DIRECTIONAL_LIGHT_OFFSET);
-        rayStatsAdd(RAY_STATS_CATEGORY_SHADOW, 1);
+        bool sunTraced;
+        const float sunVis = traceSunVisibility(surf, sunLight, sunTraced);
+
+        if (sunTraced)
+        {
+            rayStatsAdd(RAY_STATS_CATEGORY_SHADOW, 1);
+        }
 
         vec3 d, s;
         shade(surf, sunLight, 1.0, d, s);

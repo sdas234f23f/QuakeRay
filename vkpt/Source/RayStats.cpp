@@ -159,6 +159,22 @@ uint32_t RayStats::GetRays(uint32_t frameIndex) const
     return total;
 }
 
+void RayStats::GetRaysPerCategory(uint32_t frameIndex, uint32_t *pOutCounts) const
+{
+    assert(frameIndex < MAX_FRAMES_IN_FLIGHT);
+
+    if (pOutCounts == nullptr)
+    {
+        return;
+    }
+
+    const uint32_t *p = static_cast<const uint32_t *>(mapped[frameIndex]);
+    for (uint32_t i = 0; i < RAY_STATS_CATEGORY_COUNT; i++)
+    {
+        pOutCounts[i] = p[i];
+    }
+}
+
 VkDescriptorSetLayout RayStats::GetDescSetLayout() const
 {
     return descSetLayout;

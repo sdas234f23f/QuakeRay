@@ -114,6 +114,7 @@ extern cvar_t r_gpulightmapupdate;
 extern cvar_t r_showtris;
 extern cvar_t r_showbboxes;
 extern cvar_t rt_stats;
+extern cvar_t rt_pass_stats;
 
 qboolean scr_initialized; // ready to draw
 
@@ -569,32 +570,76 @@ void SCR_DrawFPS (cb_context_t *cbx)
 	}
 }
 
+static void SCR_DrawRTStatsString (cb_context_t *cbx, int x, int y, const char *str, float scale,
+                                   const RgFloat4D *color, const RgFloat4D *shadow)
+{
+	Draw_StringScaled (cbx, x + 4, y + 4, str, scale, shadow);
+	Draw_StringScaled (cbx, x, y, str, scale, color);
+}
+
 void SCR_DrawRTStats (cb_context_t *cbx)
 {
-	if (!rt_stats.value)
+	if (!rt_stats.value && !rt_pass_stats.value)
 		return;
 
-	uint32_t rays = 0;
-	uint32_t fps_x10 = 0;
-	rgGetFrameStats (vulkan_globals.instance, &rays, &fps_x10);
+	RgFrameStats stats;
+	memset (&stats, 0, sizeof (stats));
 
-	char st[64];
+	if (rgGetFrameStatsEx (vulkan_globals.instance, &stats) != RG_SUCCESS)
+		return;
+
 	static const RgFloat4D color_orange = { 1.0f, 0.30f, 0.05f, 1.0f };
+	static const RgFloat4D color_detail = { 0.60f, 0.85f, 1.00f, 1.0f };
 	static const RgFloat4D color_shadow = { 0.0f, 0.0f, 0.0f, 1.0f };
+
 	const float scale = 4.0f;
-	const int step = 8 * (int)scale;
+	const int   step = 8 * (int)scale;
+	const float pass_scale = 2.0f;
+	const int   pass_step = 8 * (int)pass_scale;
+	const int   x = 8;
+	int         y = 8;
+	int         i;
+	char        st[64];
 
 	GL_SetCanvas (cbx, CANVAS_DEFAULT);
 
-	sprintf (st, "RAYS: %u", rays);
-	Draw_StringScaled (cbx, 8 + 4, 8 + 4, st, scale, &color_shadow);
-	sprintf (st, "FPS: %u.%u", fps_x10 / 10, fps_x10 % 10);
-	Draw_StringScaled (cbx, 8 + 4, 8 + step + 4, st, scale, &color_shadow);
+	sprintf (st, "RAYS: %u", stats.raysTotal);
+	SCR_DrawRTStatsString (cbx, x, y, st, scale, &color_orange, &color_shadow);
+	y += step;
 
-	sprintf (st, "RAYS: %u", rays);
-	Draw_StringScaled (cbx, 8, 8, st, scale, &color_orange);
-	sprintf (st, "FPS: %u.%u", fps_x10 / 10, fps_x10 % 10);
-	Draw_StringScaled (cbx, 8, 8 + step, st, scale, &color_orange);
+	sprintf (st, "FPS: %u.%u", stats.fpsX10 / 10, stats.fpsX10 % 10);
+	SCR_DrawRTStatsString (cbx, x, y, st, scale, &color_orange, &color_shadow);
+	y += step;
+
+	sprintf (st, "PRIMARY: %u", stats.raysPerCategory[0]);
+	SCR_DrawRTStatsString (cbx, x, y, st, scale, &color_orange, &color_shadow);
+	y += step;
+
+	sprintf (st, "REFL/REFR: %u", stats.raysPerCategory[1]);
+	SCR_DrawRTStatsString (cbx, x, y, st, scale, &color_orange, &color_shadow);
+	y += step;
+
+	sprintf (st, "INDIRECT: %u", stats.raysPerCategory[2]);
+	SCR_DrawRTStatsString (cbx, x, y, st, scale, &color_orange, &color_shadow);
+	y += step;
+
+	sprintf (st, "SHADOW: %u", stats.raysPerCategory[3]);
+	SCR_DrawRTStatsString (cbx, x, y, st, scale, &color_orange, &color_shadow);
+	y += step;
+
+	if (!rt_pass_stats.value || !stats.gpuTimingValid)
+		return;
+
+	const unsigned gpu_ms10 = (unsigned)(stats.gpuFrameMs * 10.0f + 0.5f);
+	sprintf (st, "GPU: %u.%u ms", gpu_ms10 / 10, gpu_ms10 % 10);
+	SCR_DrawRTStatsString (cbx, x, y, st, scale, &color_orange, &color_shadow);
+
+	for (i = 0; i < RG_GPU_PASS_COUNT; i++)
+	{
+		const unsigned ms10 = (unsigned)(stats.gpuPassMs[i] * 10.0f + 0.5f);
+		sprintf (st, "%-9s %4u.%u ms", rgGetGpuPassName (i), ms10 / 10, ms10 % 10);
+		SCR_DrawRTStatsString (cbx, x, y + step + i * pass_step, st, pass_scale, &color_detail, &color_shadow);
+	}
 }
 
 /*

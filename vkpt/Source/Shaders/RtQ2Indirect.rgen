@@ -24,6 +24,7 @@ layout (constant_id = 0) const uint maxAlbedoLayerCount = 0;
 #define Q2_RNG_INDIR2_CELL_SELECT 230
 #define Q2_RNG_INDIR2_LIGHT_POINT 233
 #define Q2_RNG_INDIR2_SUN_DISK    235
+#define Q2_RNG_INDIR_SKY_NEE      240
 
 #define Q2_INDIR_MAX_SPHERE_SOLID_ANGLE 0.02
 
@@ -73,7 +74,7 @@ vec3 processSecondDiffuseBounce(const uint seed, const Surface surf, const vec3 
 
     if ( hitSurf.isSky )
     {
-        return getSkyFilteredMultiplied( bounceDir, SKY_DIFFUSE_BOUNCE_LOD ) * oneOverPdf;
+        return getSkyAmbientMultiplied( bounceDir, SKY_DIFFUSE_BOUNCE_LOD ) * oneOverPdf;
     }
 
     const bool isGradient = q2GetIsGradient( ivec2( gl_LaunchIDEXT.xy ) );
@@ -115,8 +116,13 @@ vec3 processSecondDiffuseBounce(const uint seed, const Surface surf, const vec3 
 
             if ( getLuminance( light.color ) > 0.0 )
             {
-                const float vis = traceVisibility( hitSurf, light.position, lightIndex );
-                rayStatsAdd( RAY_STATS_CATEGORY_SHADOW, 1 );
+                bool lightTraced;
+                const float vis = traceLightVisibility( hitSurf, light, lightIndex, lightTraced );
+
+                if ( lightTraced )
+                {
+                    rayStatsAdd( RAY_STATS_CATEGORY_SHADOW, 1 );
+                }
 
                 if ( lightSources[ lightIndex ].lightType == LIGHT_TYPE_TRIANGLE ||
                      lightSources[ lightIndex ].lightType == LIGHT_TYPE_TEXTURED_AREA )
@@ -140,9 +146,13 @@ vec3 processSecondDiffuseBounce(const uint seed, const Surface surf, const vec3 
 
         if ( getLuminance( sunLight.color ) > 0.0 )
         {
-            const float sunVis =
-                traceVisibility( hitSurf, sunLight.position, LIGHT_ARRAY_DIRECTIONAL_LIGHT_OFFSET );
-            rayStatsAdd( RAY_STATS_CATEGORY_SHADOW, 1 );
+            bool sunTraced;
+            const float sunVis = traceSunVisibility( hitSurf, sunLight, sunTraced );
+
+            if ( sunTraced )
+            {
+                rayStatsAdd( RAY_STATS_CATEGORY_SHADOW, 1 );
+            }
 
             vec3 d, s;
             shade( hitSurf, sunLight, 1.0, d, s );
@@ -178,6 +188,59 @@ void q2ShadeIndirect(const Surface surf, const vec3 hitPos, const vec3 hitRadian
     specular *= oneOverPdf;
 }
 
+float q2SkyNeeBsdfWeight( const Surface surf, const vec3 direction )
+{
+    if ( globalUniform.skyNee == 0.0 )
+    {
+        return 1.0;
+    }
+
+    const float pdfBsdf = evalSpecularBouncePdf(
+        surf.normal, surf.toViewerDir, surf.roughness, direction );
+    const float pdfSky = evalSkyNeePdf( surf.normal, direction );
+
+    return pdfBsdf / max( pdfBsdf + pdfSky, 1e-8 );
+}
+
+vec3 q2SkyNee( const Surface surf, const uint seed )
+{
+    if ( globalUniform.skyNee == 0.0 )
+    {
+        return vec3( 0.0 );
+    }
+
+    const vec2 u = rnd16_2( seed, Q2_RNG_INDIR_SKY_NEE );
+
+    float oneOverPdfSky;
+    const vec3 skyDirection = sampleLambertian( surf.normal, u[ 0 ], u[ 1 ], oneOverPdfSky );
+
+    const float nl = dot( surf.normal, skyDirection );
+    const float ngl = dot( surf.normalGeom, skyDirection );
+    const float pdfSky = evalSkyNeePdf( surf.normal, skyDirection );
+
+    if ( nl <= 0.0 || ngl <= 0.0 || pdfSky <= 0.0 )
+    {
+        return vec3( 0.0 );
+    }
+
+    const float pdfBsdf = evalSpecularBouncePdf(
+        surf.normal, surf.toViewerDir, surf.roughness, skyDirection );
+    const float misWeight = pdfSky / max( pdfSky + pdfBsdf, 1e-8 );
+
+    const vec3 radiance = boostChroma(
+        getSkyAmbientMultiplied( skyDirection, surf.roughness * ( SKY_MIP_COUNT - 1.0 ) ) );
+
+    if ( getLuminance( radiance ) * misWeight <= 0.0 )
+    {
+        return vec3( 0.0 );
+    }
+
+    const float vis = traceSkyVisibility( surf, skyDirection );
+    rayStatsAdd( RAY_STATS_CATEGORY_SHADOW, 1 );
+
+    return evalBRDFLambertian( 1.0 ) * nl * radiance * vis * oneOverPdfSky * misWeight;
+}
+
 void main()
 {
     const ivec2 pix = ivec2( gl_LaunchIDEXT.xy );
@@ -204,10 +267,12 @@ void main()
 
     vec3 hitPos;
     vec3 hitRadiance;
+    float skyBsdfWeight = 1.0;
     if ( hitSurf.isSky )
     {
+        skyBsdfWeight = q2SkyNeeBsdfWeight( surf, bounceDir );
         hitPos      = surf.position + bounceDir * MAX_RAY_LENGTH;
-        hitRadiance = getSkyFilteredMultiplied( bounceDir, surf.roughness * ( SKY_MIP_COUNT - 1.0 ) );
+        hitRadiance = getSkyAmbientMultiplied( bounceDir, surf.roughness * ( SKY_MIP_COUNT - 1.0 ) );
     }
     else
     {
@@ -250,8 +315,14 @@ void main()
 
                 if ( getLuminance( light.color ) > 0.0 )
                 {
-                    const float vis = traceVisibility( hitSurf, light.position, lightIndex );
-                    rayStatsAdd( RAY_STATS_CATEGORY_SHADOW, 1 );
+                    bool lightTraced;
+                    const float vis =
+                        traceLightVisibility( hitSurf, light, lightIndex, lightTraced );
+
+                    if ( lightTraced )
+                    {
+                        rayStatsAdd( RAY_STATS_CATEGORY_SHADOW, 1 );
+                    }
 
                     if ( lightSources[ lightIndex ].lightType == LIGHT_TYPE_TRIANGLE ||
                          lightSources[ lightIndex ].lightType == LIGHT_TYPE_TEXTURED_AREA )
@@ -275,9 +346,13 @@ void main()
 
             if ( getLuminance( sunLight.color ) > 0.0 )
             {
-                const float sunVis =
-                    traceVisibility( hitSurf, sunLight.position, LIGHT_ARRAY_DIRECTIONAL_LIGHT_OFFSET );
-                rayStatsAdd( RAY_STATS_CATEGORY_SHADOW, 1 );
+                bool sunTraced;
+                const float sunVis = traceSunVisibility( hitSurf, sunLight, sunTraced );
+
+                if ( sunTraced )
+                {
+                    rayStatsAdd( RAY_STATS_CATEGORY_SHADOW, 1 );
+                }
 
                 vec3 d, s;
                 shade( hitSurf, sunLight, 1.0, d, s );
@@ -316,7 +391,9 @@ void main()
     }
 
     {
-        imageStoreUnfilteredIndirectSH(
-            pix, irradianceToSH( diffuse, safeNormalize( hitPos - surf.position ) ) );
+        SH sh = irradianceToSH( diffuse * skyBsdfWeight, safeNormalize( hitPos - surf.position ) );
+        accumulateSH( sh, irradianceToSH( q2SkyNee( surf, seed ), surf.normal ), 1.0 );
+
+        imageStoreUnfilteredIndirectSH( pix, sh );
     }
 }

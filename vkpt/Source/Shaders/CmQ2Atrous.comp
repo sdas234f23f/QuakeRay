@@ -348,6 +348,9 @@ main()
             illuminated = albedo * throughput;
         }
 
+        const vec4 q2Transparent = texelFetch(framebufQ2Transparent_Sampler, ipos, 0);
+        illuminated = q2Transparent.rgb + illuminated * (1.0 - q2Transparent.a);
+
         // Blend the per-ray accumulated fog (Q2RTX approach: fog is traced in
         // the primary/refl passes and accumulated over each path segment), so
         // it is part of the denoised, temporally consistent signal.

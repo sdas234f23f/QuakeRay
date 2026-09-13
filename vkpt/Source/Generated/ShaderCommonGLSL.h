@@ -237,7 +237,7 @@ struct ShGlobalUniform
     float talSelfLitOffset;
     uint emissionBlendMode;
     float emissionBlendStrength;
-    uint maxBounceShadowsLights;
+    float skyAmbientLod;
     float rayLength;
     uint rayCullBackFaces;
     uint rayCullMaskWorld;
@@ -286,7 +286,7 @@ struct ShGlobalUniform
     float volumeSourceAsymmetry;
     uint coreQ2RTX;
     float _pad2;
-    float _pad3;
+    float skyNee;
     ivec4 instanceGeomInfoOffset[12];
     ivec4 instanceGeomInfoOffsetPrev[12];
     ivec4 instanceGeomCount[12];

@@ -910,6 +910,8 @@ typedef struct RgDrawFrameSkyParams
     // The result sky color is multiplied by this value.
     float       skyColorMultiplier;
     float       skyColorSaturation;
+    float       skyAmbientLod;
+    RgBool32    skyNee;
     // A point from which rays are traced while using RG_SKY_TYPE_RASTERIZED_GEOMETRY.
     RgFloat3D   skyViewerPosition;
     // If sky type is RG_SKY_TYPE_CUBEMAP, this cubemap is used.
@@ -962,6 +964,7 @@ typedef enum RgDebugDrawFlagBits
     RG_DEBUG_DRAW_GOD_RAYS_BIT = 2048,
     RG_DEBUG_DRAW_STATS_BIT = 4096,
     RG_DEBUG_DRAW_LUMA_BIT = 8192,
+    RG_DEBUG_DRAW_PASS_STATS_BIT = 16384,
 } RgDebugDrawFlagBits;
 typedef RgFlags RgDebugDrawFlags;
 
@@ -1293,10 +1296,31 @@ RGAPI RgBool32 RGCONV rgIsRenderUpscaleTechniqueAvailable(
     RgInstance                          rgInstance,
     RgRenderUpscaleTechnique            technique);
 
+#define RG_GPU_PASS_COUNT 15
+
+#define RG_RAY_STATS_CATEGORY_COUNT 4
+
+typedef struct RgFrameStats
+{
+    uint32_t    raysTotal;
+    uint32_t    raysPerCategory[RG_RAY_STATS_CATEGORY_COUNT];
+    uint32_t    fpsX10;
+    RgBool32    gpuTimingValid;
+    float       gpuFrameMs;
+    float       gpuPassMs[RG_GPU_PASS_COUNT];
+} RgFrameStats;
+
+RGAPI RgResult RGCONV rgGetFrameStatsEx(
+    RgInstance                          rgInstance,
+    RgFrameStats                       *pStats);
+
 RGAPI RgResult RGCONV rgGetFrameStats(
     RgInstance                          rgInstance,
     uint32_t                           *pRays,
     uint32_t                           *pFpsX10);
+
+RGAPI const char* RGCONV rgGetGpuPassName(
+    uint32_t                            passIndex);
 
 RGAPI const char* RGCONV rgGetResultDescription(RgResult result);
 

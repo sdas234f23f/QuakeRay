@@ -220,4 +220,30 @@ vec3 sampleSmithGGX(const vec3 n, const vec3 v, float alpha, float u1, float u2,
     return basis * l;
 }
 
+float evalSpecularBouncePdf(const vec3 n, const vec3 v, float alpha, const vec3 l)
+{
+    const float nv = dot(n, v);
+    const float nl = dot(n, l);
+
+    if (nv <= 0.0 || nl <= 0.0)
+    {
+        return 0.0;
+    }
+
+    alpha = max(alpha, MIN_GGX_ROUGHNESS);
+
+    const vec3 m = normalize(v + l);
+    const float nm = dot(n, m);
+
+    if (nm <= 0.0)
+    {
+        return 0.0;
+    }
+
+    const float D = D_GGX(nm, alpha);
+    const float G1 = G1_GGX(nv, alpha);
+
+    return G1 * D / (4.0 * nv);
+}
+
 #endif // BRDF_H_

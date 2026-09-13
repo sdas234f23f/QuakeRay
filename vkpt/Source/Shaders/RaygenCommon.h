@@ -323,6 +323,16 @@ vec3 getSkyFilteredMultiplied(vec3 direction, float lod)
 {
     return getSkyFiltered(direction, lod) * globalUniform.skyColorMultiplier;
 }
+
+vec3 getSkyAmbientMultiplied(vec3 direction, float lod)
+{
+    return getSkyFilteredMultiplied(direction, min(lod, max(globalUniform.skyAmbientLod, 0.0)));
+}
+
+float evalSkyNeePdf(const vec3 n, const vec3 direction)
+{
+    return clamp(dot(n, direction), 0.0, 1.0) * (1.0 / M_PI);
+}
 #endif
 
 
@@ -350,7 +360,7 @@ bool traceShadowRay(uint surfInstCustomIndex, vec3 start, vec3 end, bool ignoreF
 
     traceRayEXT(
         topLevelAS, 
-        gl_RayFlagsSkipClosestHitShaderEXT | getAdditionalRayFlags(), 
+        gl_RayFlagsSkipClosestHitShaderEXT | gl_RayFlagsTerminateOnFirstHitEXT | getAdditionalRayFlags(), 
         cullMask, 
         0, 0, 	// sbtRecordOffset, sbtRecordStride
         SBT_INDEX_MISS_SHADOW, 		// shadow missIndex
@@ -368,6 +378,41 @@ float traceVisibility(const Surface surf, const vec3 lightPosition, uint lightIn
     const bool ignoreFirstPersonViewer = (globalUniform.lightIndexIgnoreFPVShadows == lightIndex);
 
     const bool isShadowed = traceShadowRay(surf.instCustomIndex, start, end, ignoreFirstPersonViewer);
+    return float(!isShadowed);
+}
+
+float traceLightVisibility(const Surface surf, const LightSample light, uint lightIndex, out bool traced)
+{
+    const vec3 l = safeNormalize(light.position - surf.position);
+    traced = dot(surf.normal, l) > 0.0 && dot(surf.normalGeom, l) > 0.0;
+
+    if (!traced)
+    {
+        return 0.0;
+    }
+
+    return traceVisibility(surf, light.position, lightIndex);
+}
+
+float traceSunVisibility(const Surface surf, const LightSample sunLight, out bool traced)
+{
+    const vec3 l = safeNormalize(sunLight.position - surf.position);
+    traced = dot(surf.normal, l) > 0.0 && dot(surf.normalGeom, l) > 0.0;
+
+    if (!traced)
+    {
+        return 0.0;
+    }
+
+    return traceVisibility(surf, sunLight.position, LIGHT_ARRAY_DIRECTIONAL_LIGHT_OFFSET);
+}
+
+float traceSkyVisibility(const Surface surf, const vec3 skyDirection)
+{
+    const vec3 start = surf.position + surf.normalGeom * 0.01;
+    const vec3 end   = start + skyDirection * globalUniform.rayLength;
+
+    const bool isShadowed = traceShadowRay(surf.instCustomIndex, start, end, false);
     return float(!isShadowed);
 }
 #endif // LIGHT_SAMPLE_METHOD != LIGHT_SAMPLE_METHOD_NONE

@@ -221,6 +221,8 @@ void VulkanDevice::FillUniform(ShGlobalUniform *gu, const RgDrawFrameInfo &drawI
             memcpy( gu->skyColorDefault, sp.skyColorDefault.data, sizeof( float ) * 3 );
             gu->skyColorMultiplier = sp.skyColorMultiplier;
             gu->skyColorSaturation = std::max( sp.skyColorSaturation, 0.0f );
+            gu->skyAmbientLod      = std::clamp( sp.skyAmbientLod, 0.0f, 10.0f );
+            gu->skyNee             = sp.skyNee != 0 ? 1.0f : 0.0f;
 
             gu->skyType = sp.skyType == RG_SKY_TYPE_CUBEMAP ? SKY_TYPE_CUBEMAP :
                           sp.skyType == RG_SKY_TYPE_RASTERIZED_GEOMETRY ? SKY_TYPE_RASTERIZED_GEOMETRY :
@@ -239,6 +241,8 @@ void VulkanDevice::FillUniform(ShGlobalUniform *gu, const RgDrawFrameInfo &drawI
             gu->skyColorDefault[ 0 ] = gu->skyColorDefault[ 1 ] = gu->skyColorDefault[ 2 ] = gu->skyColorDefault[ 3 ] = 1.0f;
             gu->skyColorMultiplier                                                                                    = 1.0f;
             gu->skyColorSaturation                                                                                    = 1.0f;
+            gu->skyAmbientLod                                                                                         = 10.0f;
+            gu->skyNee                                                                                                = 0.0f;
             gu->skyType                                                                                               = SKY_TYPE_COLOR;
             gu->skyCubemapIndex                                                                                       = RG_EMPTY_CUBEMAP;
         }
@@ -339,7 +343,6 @@ void VulkanDevice::FillUniform(ShGlobalUniform *gu, const RgDrawFrameInfo &drawI
 
     if( drawInfo.pIlluminationParams != nullptr )
     {
-        gu->maxBounceShadowsLights     = drawInfo.pIlluminationParams->maxBounceShadows;
         gu->polyLightSpotlightFactor   = std::max( 0.0f, drawInfo.pIlluminationParams->polygonalLightSpotlightFactor );
         gu->indirSecondBounce          = !!drawInfo.pIlluminationParams->enableSecondBounceForIndirect;
         gu->lightIndexIgnoreFPVShadows = scene->GetLightManager()->GetLightIndexIgnoreFPVShadows( currentFrameState.GetFrameIndex(), drawInfo.pIlluminationParams->lightUniqueIdIgnoreFirstPersonViewerShadows );
@@ -350,7 +353,6 @@ void VulkanDevice::FillUniform(ShGlobalUniform *gu, const RgDrawFrameInfo &drawI
     }
     else
     {
-        gu->maxBounceShadowsLights     = 2;
         gu->polyLightSpotlightFactor   = 2.0f;
         gu->indirSecondBounce          = true;
         gu->lightIndexIgnoreFPVShadows = LIGHT_INDEX_NONE;
@@ -671,6 +673,14 @@ void VulkanDevice::Render(VkCommandBuffer cmd, const RgDrawFrameInfo &drawInfo)
     const uint32_t frameIndex = currentFrameState.GetFrameIndex();
 
 
+    const bool passStatsEnabled =
+        drawInfo.pDebugParams != nullptr &&
+        (drawInfo.pDebugParams->drawFlags & RG_DEBUG_DRAW_PASS_STATS_BIT) != 0;
+
+    passTimings->BeginFrame(cmd, frameIndex, passStatsEnabled);
+    passTimings->Mark(cmd, frameIndex, GPU_PASS_SETUP);
+
+
     bool mipLodBiasUpdated = worldSamplerManager->TryChangeMipLodBias(frameIndex, renderResolution.GetMipLodBias());
     const RgFloat2D jitter = { uniform->GetData()->jitterX, uniform->GetData()->jitterY };
 
@@ -686,6 +696,8 @@ void VulkanDevice::Render(VkCommandBuffer cmd, const RgDrawFrameInfo &drawInfo)
 
 
     framebuffers->PrepareForSize(renderResolution.GetResolutionState());
+
+    passTimings->Mark(cmd, frameIndex, GPU_PASS_LIGHTS);
 
 
     if (!drawInfo.disableRasterization)
@@ -804,10 +816,14 @@ void VulkanDevice::Render(VkCommandBuffer cmd, const RgDrawFrameInfo &drawInfo)
                                               volumetric.get(),
                                               rayStats.get() );
 
+        passTimings->Mark(cmd, frameIndex, GPU_PASS_PRIMARY_DECALS);
+
         pathTracer->TracePrimaryRays(params);
 
         // draw decals on top of primary surface
         decalManager->Draw(cmd, frameIndex, uniform, framebuffers, textureManager);
+
+        passTimings->Mark(cmd, frameIndex, GPU_PASS_SHADOW_GODRAYS);
 
         // volumetric sunlight: render the shadow map and ray march god rays
         bool godRaysActive = false;
@@ -875,10 +891,14 @@ void VulkanDevice::Render(VkCommandBuffer cmd, const RgDrawFrameInfo &drawInfo)
             }
         }
 
+        passTimings->Mark(cmd, frameIndex, GPU_PASS_REFL_REFR);
+
         if (uniform->GetData()->reflectRefractMaxDepth > 0)
         {
             pathTracer->TraceQ2ReflectionRefractionRays(params);
         }
+
+        passTimings->Mark(cmd, frameIndex, GPU_PASS_REFL_GODRAYS);
 
         // Q2RTX-style god rays over the reflected/refracted segments. The refl
         // pass stores each reflected segment length in Q2GodRaysThroughputDist.w
@@ -892,14 +912,27 @@ void VulkanDevice::Render(VkCommandBuffer cmd, const RgDrawFrameInfo &drawInfo)
             godRays->Filter(cmd, frameIndex);
         }
 
+        passTimings->Mark(cmd, frameIndex, GPU_PASS_GRADIENT);
+
         q2Denoiser->GradientReproject(cmd, frameIndex, uniform);
 
+        passTimings->Mark(cmd, frameIndex, GPU_PASS_DIRECT);
+
         pathTracer->TraceDirectllumination(params);
+
+        passTimings->Mark(cmd, frameIndex, GPU_PASS_INDIRECT);
+
         pathTracer->TraceQ2Indirectllumination(params);
+
+        passTimings->Mark(cmd, frameIndex, GPU_PASS_DENOISE);
 
         q2Denoiser->Denoise(cmd, frameIndex, uniform);
 
+        passTimings->Mark(cmd, frameIndex, GPU_PASS_EXPOSURE);
+
         tonemapping->CalculateExposure(cmd, frameIndex, uniform);
+
+        passTimings->Mark(cmd, frameIndex, GPU_PASS_COMPOSITE_RASTER);
     }
 
     imageComposition->PrepareForRaster( cmd, frameIndex, uniform.get() );
@@ -923,6 +956,8 @@ void VulkanDevice::Render(VkCommandBuffer cmd, const RgDrawFrameInfo &drawInfo)
 
     imageComposition->Finalize(
         cmd, frameIndex, uniform.get(), tonemapping.get(), volumetric.get() );
+
+    passTimings->Mark(cmd, frameIndex, GPU_PASS_UPSCALE);
 
 
     const bool enableBloom = drawInfo.pBloomParams == nullptr ||
@@ -968,6 +1003,8 @@ void VulkanDevice::Render(VkCommandBuffer cmd, const RgDrawFrameInfo &drawInfo)
             cmd, frameIndex, accum, renderResolution.GetBlitFilter(), pixelized );
     }
 
+    passTimings->Mark(cmd, frameIndex, GPU_PASS_POST);
+
 
     const CommonnlyUsedEffectArguments args = { cmd, frameIndex, framebuffers, uniform, renderResolution.UpscaledWidth(), renderResolution.UpscaledHeight(), (float)currentFrameTime };
     {
@@ -1011,6 +1048,8 @@ void VulkanDevice::Render(VkCommandBuffer cmd, const RgDrawFrameInfo &drawInfo)
         }
     }
 
+    passTimings->Mark(cmd, frameIndex, GPU_PASS_PRESENT);
+
     // draw geometry such as HUD into an upscaled framebuf
     if (!drawInfo.disableRasterization)
     {
@@ -1041,6 +1080,8 @@ void VulkanDevice::Render(VkCommandBuffer cmd, const RgDrawFrameInfo &drawInfo)
 
     // blit result image to present on a surface
     framebuffers->PresentToSwapchain( cmd, frameIndex, swapchain, accum, VK_FILTER_NEAREST );
+
+    passTimings->Mark(cmd, frameIndex, GPU_PASS_COUNT);
 }
 
 void VulkanDevice::EndFrame(VkCommandBuffer cmd)
@@ -1103,6 +1144,7 @@ void VulkanDevice::DrawFrame(const RgDrawFrameInfo *drawInfo)
     if (rayStats)
     {
         statsRays = rayStats->GetRays(frameIndex);
+        rayStats->GetRaysPerCategory(frameIndex, statsRaysPerCategory);
         rayStats->Reset(frameIndex);
     }
 
@@ -1178,6 +1220,37 @@ void VulkanDevice::GetFrameStats(uint32_t *pRays, uint32_t *pFpsX10) const
     if (pFpsX10 != nullptr)
     {
         *pFpsX10 = statsFpsX10;
+    }
+}
+
+void VulkanDevice::GetFrameStatsEx(RgFrameStats *pStats) const
+{
+    static_assert(RAY_STATS_CATEGORY_COUNT == RG_RAY_STATS_CATEGORY_COUNT, "Ray stats category count mismatch");
+    static_assert(GPU_PASS_COUNT == RG_GPU_PASS_COUNT, "GPU pass count mismatch");
+
+    if (pStats == nullptr)
+    {
+        throw RgException(RG_WRONG_ARGUMENT, "Argument is null");
+    }
+
+    memset(pStats, 0, sizeof(RgFrameStats));
+
+    pStats->raysTotal = statsRays;
+    for (uint32_t i = 0; i < RAY_STATS_CATEGORY_COUNT; i++)
+    {
+        pStats->raysPerCategory[i] = statsRaysPerCategory[i];
+    }
+    pStats->fpsX10 = statsFpsX10;
+
+    if (passTimings != nullptr && passTimings->IsSupported())
+    {
+        pStats->gpuTimingValid = 1;
+        pStats->gpuFrameMs = passTimings->GetTotalMs();
+
+        for (uint32_t i = 0; i < GPU_PASS_COUNT; i++)
+        {
+            pStats->gpuPassMs[i] = passTimings->GetPassMs(i);
+        }
     }
 }
 
