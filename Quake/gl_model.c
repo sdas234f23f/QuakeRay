@@ -328,6 +328,7 @@ static void Mod_FreeModelMemory (qmodel_t *mod)
 		SAFE_FREE (mod->textures);
 		mod->numtextures = 0;
 		SAFE_FREE (mod->visdata);
+		mod->nowatervis = false;
 		SAFE_FREE (mod->lightdata);
 		SAFE_FREE (mod->entities);
 		SAFE_FREE (mod->extradata);
@@ -1754,6 +1755,67 @@ static void Mod_LoadLeafs (qmodel_t *mod, byte *mod_base, lump_t *l, int bsp2)
 		Mod_ProcessLeafs_S (mod, in, l->filelen);
 }
 
+static qboolean Mod_IsLiquidContents (int contents)
+{
+	return contents == CONTENTS_WATER || contents == CONTENTS_SLIME || contents == CONTENTS_LAVA;
+}
+
+static void Mod_CheckWaterVisSealed (qmodel_t *mod)
+{
+	mleaf_t *leaf;
+	byte    *vis;
+	int      i, j, k, l, numclusters;
+	qboolean found = false;
+
+	mod->nowatervis = false;
+
+	if (!mod->visdata || !mod->submodels || mod->numleafs < 2)
+		return;
+
+	for (i = 1; i < mod->numleafs; i++)
+	{
+		if (Mod_IsLiquidContents (mod->leafs[i].contents))
+		{
+			found = true;
+			break;
+		}
+	}
+
+	if (!found)
+		return;
+
+	numclusters = mod->submodels[0].visleafs;
+
+	for (i = 1; i <= numclusters && i < mod->numleafs; i++)
+	{
+		leaf = mod->leafs + i;
+
+		if (leaf->contents == CONTENTS_SOLID || leaf->compressed_vis == NULL || Mod_IsLiquidContents (leaf->contents))
+			continue;
+
+		vis = Mod_DecompressVis (leaf->compressed_vis, mod);
+
+		for (j = 0; j < (numclusters + 7) / 8; j++)
+		{
+			if (!vis[j])
+				continue;
+
+			for (k = 0; k < 8; k++)
+			{
+				l = (j << 3) + k + 1;
+
+				if (!(vis[j] & (1u << k)) || l > numclusters)
+					continue;
+
+				if (Mod_IsLiquidContents (mod->leafs[l].contents))
+					return;
+			}
+		}
+	}
+
+	mod->nowatervis = true;
+}
+
 /*
 =================
 Mod_CheckWaterVis
@@ -1769,6 +1831,8 @@ static void Mod_CheckWaterVis (qmodel_t *mod)
 	int         contenttransparent = 0;
 	int         contenttype;
 	unsigned    hascontents = 0;
+
+	Mod_CheckWaterVisSealed (mod);
 
 	if (!CVAR_TO_BOOL (rt_enable_pvs))
 	{ // all can be

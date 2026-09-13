@@ -294,6 +294,16 @@ RgResult rgGetFrameStats(RgInstance rgInstance, uint32_t *pRays, uint32_t *pFpsX
     return Call(rgInstance, &VulkanDevice::GetFrameStats, pRays, pFpsX10);
 }
 
+RgResult rgGetFrameStatsEx(RgInstance rgInstance, RgFrameStats *pStats)
+{
+    return Call(rgInstance, &VulkanDevice::GetFrameStatsEx, pStats);
+}
+
+const char *rgGetGpuPassName(uint32_t passIndex)
+{
+    return vkpt::GetGpuPassName(passIndex);
+}
+
 
 const char *rgGetResultDescription(RgResult result)
 {

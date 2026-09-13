@@ -103,7 +103,7 @@ task_handle_t prev_end_rendering_task = INVALID_TASK_HANDLE;
 	CVAR_DEF_T (rt_classic_render, "0") \
 	CVAR_DEF_T (rt_enable_pvs, "0") \
 	CVAR_DEF_T (rt_shadowrays, "2") \
-	CVAR_DEF_T (rt_indir2bounces, "1") \
+	CVAR_DEF_T (rt_indir2bounces, "0") \
 	CVAR_DEF_T (rt_antifirefly, "1") \
 	CVAR_DEF_T (rt_roughmin, "0.02") \
     \
@@ -141,8 +141,8 @@ task_handle_t prev_end_rendering_task = INVALID_TASK_HANDLE;
 	CVAR_DEF_T (rt_poi_key, "1") \
 	\
 	CVAR_DEF_T (rt_sun, "1") \
-	CVAR_DEF_T (rt_sun_pitch, "60") \
-	CVAR_DEF_T (rt_sun_yaw, "-40") \
+	CVAR_DEF_T (rt_sun_pitch, "140") \
+	CVAR_DEF_T (rt_sun_yaw, "120") \
 	CVAR_DEF_T (rt_sun_preset, "0") \
 	CVAR_DEF_T (rt_flashlight, "0") \
 	\
@@ -150,8 +150,10 @@ task_handle_t prev_end_rendering_task = INVALID_TASK_HANDLE;
 	CVAR_DEF_T (rt_muzzleoffs_y, "-30") \
 	CVAR_DEF_T (rt_muzzleoffs_z, "100") \
 	\
-	CVAR_DEF_T (rt_sky, "9") \
+	CVAR_DEF_T (rt_sky, "1") \
 	CVAR_DEF_T (rt_sky_tint, "1.0") \
+	CVAR_DEF_T (rt_sky_ambient_lod, "4") \
+	CVAR_DEF_T (rt_sky_nee, "1") \
 	CVAR_DEF_T (rt_physical_sky, "1") \
 	CVAR_DEF_T (rt_sky_light_r, "32") \
 	CVAR_DEF_T (rt_sky_light_g, "0") \
@@ -165,11 +167,11 @@ task_handle_t prev_end_rendering_task = INVALID_TASK_HANDLE;
 	CVAR_DEF_T (rt_light_color_g, "255") \
 	CVAR_DEF_T (rt_light_color_b, "255") \
 	CVAR_DEF_T (rt_sky_clouds, "1") \
-	CVAR_DEF_T (rt_sky_cloud_color_r, "255") \
-	CVAR_DEF_T (rt_sky_cloud_color_g, "255") \
-	CVAR_DEF_T (rt_sky_cloud_color_b, "255") \
-	CVAR_DEF_T (rt_sky_cloud_coverage, "0.3") \
-	CVAR_DEF_T (rt_sky_cloud_density, "0.6") \
+	CVAR_DEF_T (rt_sky_cloud_color_r, "0") \
+	CVAR_DEF_T (rt_sky_cloud_color_g, "0") \
+	CVAR_DEF_T (rt_sky_cloud_color_b, "0") \
+	CVAR_DEF_T (rt_sky_cloud_coverage, "0.2") \
+	CVAR_DEF_T (rt_sky_cloud_density, "0.8") \
 	CVAR_DEF_T (rt_sky_cloud_speed, "0.3") \
 	\
 	CVAR_DEF_T (rt_brush_metal, "0.0") \
@@ -240,6 +242,7 @@ task_handle_t prev_end_rendering_task = INVALID_TASK_HANDLE;
 	CVAR_DEF_T (rt_debugflags, "0") \
 	CVAR_DEF_T (rt_debugemissive, "0") \
 	CVAR_DEF_T (rt_stats, "0") \
+	CVAR_DEF_T (rt_pass_stats, "0") \
 	\
 	CVAR_DEF_T (_rt_firsttime, "1")
 
@@ -1184,6 +1187,8 @@ static void GL_EndRenderingTask (end_rendering_parms_t *parms)
 		.skyColorDefault = RT_VEC3 (sky_base_color),
 		.skyColorMultiplier = materials_only ? 0.0f : (usePhysicalSky ? skyBrightness : skyMult * skyBrightness),
 		.skyColorSaturation = CVAR_TO_FLOAT (rt_sky_tint),
+		.skyAmbientLod = CVAR_TO_FLOAT (rt_sky_ambient_lod),
+		.skyNee = CVAR_TO_FLOAT (rt_sky_nee) > 0.0f,
 		.skyViewerPosition = RT_VEC3 (r_origin),
 	};
 
@@ -1349,6 +1354,10 @@ static void GL_EndRenderingTask (end_rendering_parms_t *parms)
 	if (CVAR_TO_BOOL (rt_stats))
 	{
 		debug_params.drawFlags |= RG_DEBUG_DRAW_STATS_BIT;
+	}
+	if (CVAR_TO_BOOL (rt_pass_stats))
+	{
+		debug_params.drawFlags |= RG_DEBUG_DRAW_PASS_STATS_BIT;
 	}
 
 	float cameranear = GL_GetCameraNear (DEG2RAD (r_fovx), DEG2RAD (r_fovy));

@@ -62,4 +62,8 @@ foreach ($f in @("BlueNoise_LDR_RGBA_128.ktx2", "WaterNormal_n.ktx2")) {
         Copy-Item $src (Join-Path $gameDir $f) -Force
     }
 }
+
+& (Join-Path $PSScriptRoot "build_shaders.ps1") -DestDir (Join-Path $gameDir "shaders")
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
 exit 0

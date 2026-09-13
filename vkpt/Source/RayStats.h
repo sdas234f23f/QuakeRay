@@ -44,6 +44,7 @@ public:
 
     void Reset(uint32_t frameIndex);
     uint32_t GetRays(uint32_t frameIndex) const;
+    void GetRaysPerCategory(uint32_t frameIndex, uint32_t *pOutCounts) const;
 
     VkDescriptorSetLayout GetDescSetLayout() const;
     VkDescriptorSet GetDescSet(uint32_t frameIndex) const;

@@ -733,6 +733,8 @@ void main()
     vec3 rayDir = cameraRayDir;
     uint currentRayMedia = globalUniform.cameraMediaType;
     bool hitInfoWasOverwritten = false;
+    bool pathReachedRefraction = false;
+    vec3 refrHitPosition = h.hitPosition;
 
     propagateRayCone(rayCone, firstHitDepthLinear);
 
@@ -939,6 +941,14 @@ void main()
             q2FindFogVolumes(rayOrigin, rayDir, 0.0, 1e6, q2SegFog1, q2SegFog2);
             q2FogAccum = q2AlphaBlendPremultiplied(q2SegmentFog(q2SegFog1, q2SegFog2, 1e6), q2FogAccum);
 
+            if (correctMotionVector == 2)
+            {
+                const ivec2 refrPix = getRegularPixFromCheckerboardPix(pix);
+                const ivec2 pairPix = ivec2(refrPix.x + (refrPix.x % 2 == 0 ? 1 : -1), refrPix.y);
+                imageStore(framebufDepthNdc, refrPix, vec4(1.0));
+                imageStore(framebufDepthNdc, pairPix, vec4(1.0));
+            }
+
             storeSky(pix, rayDir, true, throughput, wasSplit, q2FogAccum);
             // override the Q2RTX-style G-buffer: empty surface, negative depth,
             // environment blended into transparent (Q2RTX reflect_refract sky).
@@ -965,6 +975,11 @@ void main()
         q2FogAccum = q2AlphaBlendPremultiplied(q2SegmentFog(q2SegFog1, q2SegFog2, rayLen), q2FogAccum);
 
         hitInfoWasOverwritten = true;
+        if (correctMotionVector == 2)
+        {
+            pathReachedRefraction = true;
+            refrHitPosition = h.hitPosition;
+        }
         throughput *= getMediaTransmittance(currentRayMedia, rayLen);
         propagateRayCone(rayCone, rayLen);
         fullPathLength += rayLen;
@@ -988,6 +1003,15 @@ void main()
     imageStoreNormalGeometry(               pix, h.normalGeom);
     imageStore(framebufMetallicRoughness,   pix, vec4(h.metallic, h.roughness, 0, 0));
     imageStore(framebufDepthWorld,          pix, vec4(fullPathLength));
+    if (pathReachedRefraction)
+    {
+        const vec4 refrClipPos = globalUniform.projection * globalUniform.view * vec4(refrHitPosition, 1.0);
+        const float refrDepthNdc = clamp(refrClipPos.z / refrClipPos.w + 1e-5, 0.0, 1.0);
+        const ivec2 refrPix = getRegularPixFromCheckerboardPix(pix);
+        const ivec2 pairPix = ivec2(refrPix.x + (refrPix.x % 2 == 0 ? 1 : -1), refrPix.y);
+        imageStore(framebufDepthNdc, refrPix, vec4(refrDepthNdc));
+        imageStore(framebufDepthNdc, pairPix, vec4(refrDepthNdc));
+    }
     imageStore(framebufMotion,              pix, vec4(motionCurToPrev, motionDepthLinearCurToPrev, 0.0));
     imageStore(framebufSurfacePosition,     pix, vec4(h.hitPosition, uintBitsToFloat(h.instCustomIndex)));
     imageStore(framebufVisibilityBuffer,    pix, packVisibilityBuffer(currentPayload));

@@ -1,14 +1,16 @@
 
 param(
     [switch]$Rebuild,
-    [switch]$GenCommon
+    [switch]$GenCommon,
+    [string]$DestDir = ""
 )
 
 $ErrorActionPreference = "Stop"
 
 $shaderSrc = Join-Path $PSScriptRoot "vkpt\Source\Shaders"
 $shaderOut = Join-Path $PSScriptRoot "vkpt\Build"
-$destDir   = Join-Path $PSScriptRoot "build\Debug\id1\shaders"
+if (-not $DestDir) { $DestDir = Join-Path $PSScriptRoot "build\Debug\id1\shaders" }
+$destDir   = $DestDir
 
 if ($env:VULKAN_SDK) {
     $sdkBin = Join-Path $env:VULKAN_SDK "Bin"

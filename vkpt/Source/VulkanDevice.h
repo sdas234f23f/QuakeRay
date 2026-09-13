@@ -60,6 +60,7 @@
 #include "ShadowMap.h"
 #include "GodRays.h"
 #include "RayStats.h"
+#include "PassTimings.h"
 
 namespace vkpt
 {
@@ -119,6 +120,8 @@ public:
     bool IsRenderUpscaleTechniqueAvailable(RgRenderUpscaleTechnique technique) const;
 
     void GetFrameStats(uint32_t *pRays, uint32_t *pFpsX10) const;
+
+    void GetFrameStatsEx(RgFrameStats *pStats) const;
 
 
     void Print(const char *pMessage) const;
@@ -185,6 +188,7 @@ private:
     std::shared_ptr<ShadowMap>              shadowMap;
     std::shared_ptr<GodRays>                godRays;
     std::shared_ptr<RayStats>               rayStats;
+    std::shared_ptr<PassTimings>            passTimings;
     std::shared_ptr<FSR>                    amdFsr;
     std::shared_ptr<DLSS>                   nvDlss;
     std::shared_ptr<Sharpening>             sharpening;
@@ -228,6 +232,7 @@ private:
     double                                  currentFrameTime;
 
     uint32_t                                statsRays = 0;
+    uint32_t                                statsRaysPerCategory[RAY_STATS_CATEGORY_COUNT] = {};
     uint32_t                                statsFpsX10 = 0;
     float                                   statsSmoothedFps = 0.0f;
 };

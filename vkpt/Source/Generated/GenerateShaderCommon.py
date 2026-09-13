@@ -568,7 +568,7 @@ GLOBAL_UNIFORM_STRUCT = [
     (TYPE_UINT32,       1,      "emissionBlendMode",            1),
     (TYPE_FLOAT32,      1,      "emissionBlendStrength",        1),
 
-    (TYPE_UINT32,       1,      "maxBounceShadowsLights",           1),
+    (TYPE_FLOAT32,      1,      "skyAmbientLod",                1),
     (TYPE_FLOAT32,      1,      "rayLength",                        1),
     (TYPE_UINT32,       1,      "rayCullBackFaces",                 1),
     (TYPE_UINT32,       1,      "rayCullMaskWorld",                 1),
@@ -631,7 +631,7 @@ GLOBAL_UNIFORM_STRUCT = [
     # 1 if the new Q2RTX-style core path is enabled (host sets RG_DEBUG_DRAW_Q2RTX_CORE_BIT)
     (TYPE_UINT32,       1,      "coreQ2RTX",                        1),
     (TYPE_FLOAT32,      1,      "_pad2",                            1),
-    (TYPE_FLOAT32,      1,      "_pad3",                            1),
+    (TYPE_FLOAT32,      1,      "skyNee",                           1),
 
     #(TYPE_FLOAT32,      1,      "_pad0",                            1),
     #(TYPE_FLOAT32,      1,      "_pad1",                            1),

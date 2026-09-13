@@ -188,6 +188,7 @@ VulkanDevice::VulkanDevice( const RgInstanceCreateInfo* info )
         shadowMap);
 
     rayStats            = std::make_shared<RayStats>(device, memAllocator);
+    passTimings         = std::make_shared<PassTimings>(device, physDevice->Get(), queues->GetIndexGraphics());
 
     rtPipeline = std::make_shared< RayTracingPipeline >( 
         device,

@@ -832,6 +832,31 @@ void SV_BuildEntityState (edict_t *ent, entity_state_t *state)
 }
 
 byte       *SV_FatPVS (vec3_t org, qmodel_t *worldmodel);
+
+cvar_t sv_water_vis = {"sv_water_vis", "1", CVAR_NONE};
+
+static qboolean SV_WaterSeesEntity (vec3_t org, edict_t *ent)
+{
+	trace_t trace;
+	vec3_t  target;
+	int     i;
+
+	if (!qcvm->worldmodel->nowatervis || !CVAR_TO_BOOL (sv_water_vis))
+		return false;
+
+	for (i = 0; i < 3; i++)
+		target[i] = CLAMP (ent->v.absmin[i], org[i], ent->v.absmax[i]);
+
+	memset (&trace, 0, sizeof (trace));
+	trace.fraction = 1;
+	trace.allsolid = true;
+	VectorCopy (target, trace.endpos);
+
+	SV_RecursiveHullCheck (qcvm->worldmodel->hulls, org, target, &trace, CONTENTMASK_ANYSOLID | CONTENTMASK_FROMQ1 (CONTENTS_SKY));
+
+	return trace.fraction == 1;
+}
+
 static void SVFTE_BuildSnapshotForClient (client_t *client)
 {
 	unsigned int  e, i;
@@ -885,7 +910,10 @@ static void SVFTE_BuildSnapshotForClient (client_t *client)
 					// this commonly happens with rotators, because they often have huge bboxes
 					// spanning the entire map, or really tall lifts, etc.
 					if (i == parent->num_leafs && parent->num_leafs < MAX_ENT_LEAFS)
-						goto invisible; // not visible
+					{
+						if (!SV_WaterSeesEntity (org, parent))
+							goto invisible;
+					}
 				}
 			}
 		}
@@ -1095,6 +1123,7 @@ void SV_Init (void)
 	extern cvar_t sv_idealpitchscale;
 	extern cvar_t sv_aim;
 	extern cvar_t sv_altnoclip; // johnfitz
+	extern cvar_t sv_water_vis;
 
 	Cvar_RegisterVariable (&sv_maxvelocity);
 	Cvar_RegisterVariable (&sv_gravity);
@@ -1112,6 +1141,7 @@ void SV_Init (void)
 	Cvar_RegisterVariable (&sv_freezenonclients);
 	Cvar_RegisterVariable (&pr_checkextension);
 	Cvar_RegisterVariable (&sv_altnoclip); // johnfitz
+	Cvar_RegisterVariable (&sv_water_vis);
 
 	Cmd_AddCommand ("pext", SV_Pext_f);
 	Cmd_AddCommand ("sv_protocol", &SV_Protocol_f); // johnfitz
@@ -1881,7 +1911,10 @@ void SV_WriteEntitiesToClient (client_t *client, sizebuf_t *msg)
 			// this commonly happens with rotators, because they often have huge bboxes
 			// spanning the entire map, or really tall lifts, etc.
 			if (i == ent->num_leafs && ent->num_leafs < MAX_ENT_LEAFS)
-				continue; // not visible
+			{
+				if (!SV_WaterSeesEntity (org, ent))
+					continue;
+			}
 		}
 
 		// johnfitz -- max size for protocol 15 is 18 bytes, not 16 as originally
