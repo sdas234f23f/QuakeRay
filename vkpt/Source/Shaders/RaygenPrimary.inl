@@ -54,6 +54,7 @@
 #define LIGHT_SAMPLE_METHOD (LIGHT_SAMPLE_METHOD_NONE)
 #include "RaygenCommon.h"
 #include "Q2Fog.h"
+#include "Q2Asvgf.h"
 
 vec2 getMotionVectorForUpscaler(const vec2 motionCurToPrev)
 {
@@ -341,7 +342,7 @@ void main()
 
     vec2 motionCurToPrev;
     float motionDepthLinearCurToPrev;
-    vec2 gradDepth;
+    vec3 gradDepth;
     float firstHitDepthNDC;
     float firstHitDepthLinear;
     float screenEmission;
@@ -361,7 +362,15 @@ void main()
     imageStore(framebufMetallicRoughness,   pix, vec4(h.metallic, h.roughness, 0, 0));
     imageStore(framebufDepthWorld,          pix, vec4(firstHitDepthLinear));
     // depth gradients is not 2d, to remove vertical/horizontal artifacts
-    imageStore(framebufDepthGrad,           pix, vec4(length(gradDepth)));
+    float depthGrad = length(gradDepth.xy);
+    if (globalUniform.q2DepthGradMode != 0u)
+    {
+        // Q2RTX stores the reciprocal of the per-pixel depth change in IMG_PT_MOTION.w
+        // (fwidth_depth), so that dist_z = |depth difference| * fwidth_depth is a
+        // distance in pixels and does not grow with the view distance.
+        depthGrad = 1.0 / max(Q2_DEPTH_GRAD_MIN_STEP, gradDepth.z);
+    }
+    imageStore(framebufDepthGrad,           pix, vec4(depthGrad));
     imageStore(framebufMotion,              pix, vec4(motionCurToPrev, motionDepthLinearCurToPrev, 0.0));
     imageStore(framebufSurfacePosition,     pix, vec4(h.hitPosition, uintBitsToFloat(h.instCustomIndex)));
     imageStore(framebufVisibilityBuffer,    pix, packVisibilityBuffer(primaryPayload));

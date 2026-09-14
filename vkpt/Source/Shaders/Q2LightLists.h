@@ -29,6 +29,15 @@
 
 #define Q2_MAX_BRUTEFORCE_SAMPLING 8
 
+// Light statistics modes, mirroring the rt_q2_lightstats cvar: they only affect how
+// often the statistics are accumulated and whether they are applied, so the modes can
+// be compared in-game to measure what the accumulation and the read actually cost.
+#define Q2_LIGHT_STATS_DISABLED     0u
+#define Q2_LIGHT_STATS_DEFAULT      1u
+#define Q2_LIGHT_STATS_FIRST_SAMPLE 2u
+#define Q2_LIGHT_STATS_NO_READ      3u
+#define Q2_LIGHT_STATS_NON_ATOMIC   4u
+
 uint q2GetClusterLightCount(const uint cluster)
 {
     return q2LightListOffsets[cluster + 1] - q2LightListOffsets[cluster];
@@ -76,15 +85,36 @@ uint q2GetLightStatsAddr(const uint cluster, const uint slot, const uint side)
     return addr;
 }
 
-void q2AccumulateLightStats(const uint cluster, const uint slot, const vec3 n, const float vis)
+// sampleIdx is the index of the NEE light sample within the pixel. The statistics are
+// per-(cell, slot, side) counters averaged over the whole frame, so a single
+// accumulation per pixel is enough for them to converge; the remaining samples of the
+// same pixel only reduce the sample count of the frame's statistics.
+void q2AccumulateLightStats(const uint cluster, const uint slot, const vec3 n, const float vis,
+                            const uint sampleIdx)
 {
+    const uint mode = globalUniform.q2LightStatsMode;
+    if (mode == Q2_LIGHT_STATS_DISABLED ||
+        (mode == Q2_LIGHT_STATS_FIRST_SAMPLE && sampleIdx != 0u))
+    {
+        return;
+    }
+
     const uint frameSlot = globalUniform.frameId % uint(Q2_LIGHT_LIST_STATS_BUFFERS);
     const uint statsFrameBase = frameSlot
         * uint(Q2_MAX_CLUSTERS) * uint(Q2_LIGHT_LIST_MAX_PER_CELL)
         * uint(Q2_LIGHT_LIST_STATS_SIDES) * 2u;
     const uint side = q2GetPrimaryDirectionSide(n);
-    const uint addr = statsFrameBase + q2GetLightStatsAddr(cluster, slot, side);
-    atomicAdd(q2LightStats[addr + (vis > 0.5 ? 0u : 1u)], 1u);
+    const uint addr = statsFrameBase + q2GetLightStatsAddr(cluster, slot, side)
+        + (vis > 0.5 ? 0u : 1u);
+
+    if (mode == Q2_LIGHT_STATS_NON_ATOMIC)
+    {
+        q2LightStats[addr] += 1u;
+    }
+    else
+    {
+        atomicAdd(q2LightStats[addr], 1u);
+    }
 }
 
 float q2Phong(vec3 n, vec3 L, vec3 V, float phongExp)
@@ -185,6 +215,7 @@ void q2SampleClusterLights(
         * uint(Q2_MAX_CLUSTERS) * uint(Q2_LIGHT_LIST_MAX_PER_CELL)
         * uint(Q2_LIGHT_LIST_STATS_SIDES) * 2u;
     const uint side = q2GetPrimaryDirectionSide(n);
+    const uint statsMode = globalUniform.q2LightStatsMode;
 
     float masses[Q2_MAX_BRUTEFORCE_SAMPLING];
     float massSum = 0.0;
@@ -212,7 +243,7 @@ void q2SampleClusterLights(
         float m = q2LightSelectionMass(l, p, n, V, phongExp, phongScale, phongWeight);
         m *= abs(getLuminance(l.color));
 
-        if (m > 0.0)
+        if (m > 0.0 && statsMode != Q2_LIGHT_STATS_DISABLED && statsMode != Q2_LIGHT_STATS_NO_READ)
         {
             const uint statsAddr = statsFrameBase + q2GetLightStatsAddr(cluster, uint(slot), side);
             const uint numHits = q2LightStats[statsAddr];

@@ -163,7 +163,7 @@ ShHitInfo getHitInfoPrimaryRay(
     const ShPayload pl, 
     const vec3 rayOrigin, const vec3 rayDirAX, const vec3 rayDirAY, 
     out vec2 motion, out float motionDepthLinear, 
-    out vec2 gradDepth, out float depthNDC, out float depthLinear,
+    out vec3 gradDepth, out float depthNDC, out float depthLinear,
     out float screenEmission)
 
 #elif defined(HITINFO_INL_RFL)
@@ -289,8 +289,16 @@ ShHitInfo getHitInfoBounce(
 
 
 #if defined(HITINFO_INL_PRIM) 
-    // gradient of clip-space depth with respect to clip-space coordinates
-    gradDepth = vec2(clipSpaceDepthAX - clipSpaceDepth, clipSpaceDepthAY - clipSpaceDepth);
+    // xy: gradient of clip-space depth with respect to clip-space coordinates
+    // z: change of depthLinear per pixel step in x and y, i.e. the depth change of
+    // the pixel footprint in world units. Q2RTX computes the same value from the
+    // ray cone (path_tracer_rgen.h); the clip-space gradient cannot be used for it,
+    // because it is affine in the view depth, so the product with a depth
+    // difference would grow with the view distance.
+    gradDepth = vec3(
+        clipSpaceDepthAX - clipSpaceDepth,
+        clipSpaceDepthAY - clipSpaceDepth,
+        abs(length(viewSpacePosAX.xyz) - depthLinear) + abs(length(viewSpacePosAY.xyz) - depthLinear));
 #elif defined(HITINFO_INL_RFL)
     // don't touch gradDepth for reflections / refractions
 #endif

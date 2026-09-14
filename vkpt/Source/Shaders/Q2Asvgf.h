@@ -65,6 +65,11 @@
 #define Q2_FLT_ATROUS_LUM_HF 16.0
 #define Q2_FLT_ATROUS_DEFLICKER_LF 0.75
 
+// Lower clamp for fwidth_depth: the reciprocal of the per-pixel depth change of
+// the pixel footprint (Q2RTX path_tracer_rgen.h). Same value as upstream, in
+// world units (1 Quake unit ~= 2.4 cm).
+#define Q2_DEPTH_GRAD_MIN_STEP 0.1
+
 const float Q2_GAUSSIAN_KERNEL[2][2] = {
     { 1.0 / 4.0, 1.0 / 8.0  },
     { 1.0 / 8.0, 1.0 / 16.0 }

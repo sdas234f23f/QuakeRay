@@ -637,13 +637,24 @@ GLOBAL_UNIFORM_STRUCT = [
     (TYPE_FLOAT32,      1,      "volumeSourceAsymmetry",            1),
     # 1 if the new Q2RTX-style core path is enabled (host sets RG_DEBUG_DRAW_Q2RTX_CORE_BIT)
     (TYPE_UINT32,       1,      "coreQ2RTX",                        1),
-    (TYPE_FLOAT32,      1,      "_pad2",                            1),
+    # 0: legacy Q2 ASVGF depth weighting (a-trous depth gradient as a magnitude)
+    # 1: Q2RTX depth weighting (reciprocal of the per-pixel depth change)
+    (TYPE_UINT32,       1,      "q2DepthGradMode",                  1),
     (TYPE_FLOAT32,      1,      "skyNee",                           1),
 
-    #(TYPE_FLOAT32,      1,      "_pad0",                            1),
-    #(TYPE_FLOAT32,      1,      "_pad1",                            1),
-    #(TYPE_FLOAT32,      1,      "_pad2",                            1),
-    #(TYPE_FLOAT32,      1,      "_pad3",                            1),
+    # Q2 polygonal light statistics (host cvar rt_q2_lightstats).
+    # 0: disabled (no accumulation and no read of the statistics)
+    # 1: accumulate on every NEE light sample and apply the result (default)
+    # 2: accumulate only on the first NEE light sample of a pixel
+    # 3: accumulate on every sample, but do not apply the result
+    # 4: accumulate without atomics on every sample (diagnostic, racy)
+    (TYPE_UINT32,       1,      "q2LightStatsMode",                 1),
+    # Layout alignment: ShGlobalUniform is std140 and the dense C mirror has no
+    # implicit padding, so the scalar block before the first vec4/ivec4 array must
+    # stay a multiple of 16 bytes. 4 bytes of payload + 12 bytes of pads = 16.
+    (TYPE_FLOAT32,      1,      "_pad3",                            1),
+    (TYPE_FLOAT32,      1,      "_pad4",                            1),
+    (TYPE_FLOAT32,      1,      "_pad5",                            1),
 
     # for std140
     (TYPE_INT32,        4,      "instanceGeomInfoOffset",       align4(CONST["MAX_TOP_LEVEL_INSTANCE_COUNT"]) // 4),

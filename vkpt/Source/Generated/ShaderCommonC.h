@@ -298,8 +298,12 @@ struct ShGlobalUniform
     float volumeDirToSource[4];
     float volumeSourceAsymmetry;
     uint32_t coreQ2RTX;
-    float _pad2;
+    uint32_t q2DepthGradMode;
     float skyNee;
+    uint32_t q2LightStatsMode;
+    float _pad3;
+    float _pad4;
+    float _pad5;
     int32_t instanceGeomInfoOffset[48];
     int32_t instanceGeomInfoOffsetPrev[48];
     int32_t instanceGeomCount[48];

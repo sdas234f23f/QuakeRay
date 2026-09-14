@@ -127,7 +127,7 @@ vec3 processSecondDiffuseBounce(const uint seed, const Surface surf, const vec3 
                 if ( lightSources[ lightIndex ].lightType == LIGHT_TYPE_TRIANGLE ||
                      lightSources[ lightIndex ].lightType == LIGHT_TYPE_TEXTURED_AREA )
                 {
-                    q2AccumulateLightStats( cluster, lightSlot, hitSurf.normal, vis );
+                    q2AccumulateLightStats( cluster, lightSlot, hitSurf.normal, vis, 0u );
                 }
 
                 vec3 d, s;
@@ -327,7 +327,7 @@ void main()
                     if ( lightSources[ lightIndex ].lightType == LIGHT_TYPE_TRIANGLE ||
                          lightSources[ lightIndex ].lightType == LIGHT_TYPE_TEXTURED_AREA )
                     {
-                        q2AccumulateLightStats( cluster, lightSlot, hitSurf.normal, vis );
+                        q2AccumulateLightStats( cluster, lightSlot, hitSurf.normal, vis, 0u );
                     }
 
                     vec3 d, s;
