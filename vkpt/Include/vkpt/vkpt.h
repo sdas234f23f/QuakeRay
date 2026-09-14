@@ -1004,6 +1004,20 @@ typedef struct RgDrawFrameIlluminationParams
     // The higher the value, the more polygonal lights act like a spotlight. 
     // Default: 2.0
     float       polygonalLightSpotlightFactor;
+    // How the Q2 ASVGF depth gradient is computed.
+    // 0: magnitude of the clip-space depth gradient (legacy)
+    // 1: reciprocal of the per-pixel depth change, i.e. fwidth_depth as in Q2RTX
+    // Default: 1
+    uint32_t    q2DepthGradMode;
+    // How the Q2RTX-style polygonal light statistics (shadowing ratios per light list
+    // slot) are accumulated and used.
+    // 0: disabled - no accumulation and no read of the statistics
+    // 1: accumulate on every NEE light sample and apply the result
+    // 2: accumulate only on the first NEE light sample of a pixel
+    // 3: accumulate on every sample, but do not apply the result
+    // 4: accumulate without atomics on every sample (diagnostic: increments are racy)
+    // Default: 1
+    uint32_t    q2LightStatsMode;
     // For which light first-person viewer shadows should be ignored.
     // E.g. first-person flashlight.
     // Null, if none.

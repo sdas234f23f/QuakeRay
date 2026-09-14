@@ -111,7 +111,7 @@ void main()
                 if (lightSources[lightIndex].lightType == LIGHT_TYPE_TRIANGLE ||
                     lightSources[lightIndex].lightType == LIGHT_TYPE_TEXTURED_AREA)
                 {
-                    q2AccumulateLightStats(cluster, lightSlot, surf.normal, vis);
+                    q2AccumulateLightStats(cluster, lightSlot, surf.normal, vis, uint(s));
                 }
 
                 vec3 d, s;

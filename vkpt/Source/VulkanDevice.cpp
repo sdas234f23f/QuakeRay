@@ -358,6 +358,8 @@ void VulkanDevice::FillUniform(ShGlobalUniform *gu, const RgDrawFrameInfo &drawI
         gu->gradientMultDiffuse        = std::clamp( drawInfo.pIlluminationParams->directDiffuseSensitivityToChange, 0.0f, 1.0f );
         gu->gradientMultIndirect       = std::clamp( drawInfo.pIlluminationParams->indirectDiffuseSensitivityToChange, 0.0f, 1.0f );
         gu->gradientMultSpecular       = std::clamp( drawInfo.pIlluminationParams->specularSensitivityToChange, 0.0f, 1.0f );
+        gu->q2DepthGradMode            = drawInfo.pIlluminationParams->q2DepthGradMode;
+        gu->q2LightStatsMode           = drawInfo.pIlluminationParams->q2LightStatsMode;
     }
     else
     {
@@ -368,6 +370,8 @@ void VulkanDevice::FillUniform(ShGlobalUniform *gu, const RgDrawFrameInfo &drawI
         gu->gradientMultDiffuse        = 0.5f;
         gu->gradientMultIndirect       = 0.2f;
         gu->gradientMultSpecular       = 0.5f;
+        gu->q2DepthGradMode            = 1u;
+        gu->q2LightStatsMode           = 1u;
     }
 
     if( drawInfo.pBloomParams != nullptr )

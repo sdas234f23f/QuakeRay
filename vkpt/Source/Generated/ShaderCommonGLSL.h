@@ -293,8 +293,12 @@ struct ShGlobalUniform
     vec4 volumeDirToSource;
     float volumeSourceAsymmetry;
     uint coreQ2RTX;
-    float _pad2;
+    uint q2DepthGradMode;
     float skyNee;
+    uint q2LightStatsMode;
+    float _pad3;
+    float _pad4;
+    float _pad5;
     ivec4 instanceGeomInfoOffset[12];
     ivec4 instanceGeomInfoOffsetPrev[12];
     ivec4 instanceGeomCount[12];

@@ -242,6 +242,8 @@ task_handle_t prev_end_rendering_task = INVALID_TASK_HANDLE;
 	\
 	CVAR_DEF_T (rt_debugflags, "0") \
 	CVAR_DEF_T (rt_debugemissive, "0") \
+	CVAR_DEF_T (rt_q2_depthgrad, "1") \
+	CVAR_DEF_T (rt_q2_lightstats, "1") \
 	CVAR_DEF_T (rt_stats, "0") \
 	CVAR_DEF_T (rt_pass_stats, "0") \
 	\
@@ -1114,6 +1116,9 @@ static void GL_EndRenderingTask (end_rendering_parms_t *parms)
 	ResolutionToRtgl (&resolution_params, winsize, &pixstorage);
 	UpscaleCvarsToRtgl (&resolution_params);
 
+	const float q2_lightstats_value = CVAR_TO_FLOAT (rt_q2_lightstats);
+	const uint32_t q2_lightstats_mode = (q2_lightstats_value < 0.0f || q2_lightstats_value > 4.0f) ? 1u : (uint32_t)q2_lightstats_value;
+
 	RgDrawFrameIlluminationParams illum_params = {
 	    .maxBounceShadows = CVAR_TO_UINT32 (rt_shadowrays),
 		.enableSecondBounceForIndirect = CVAR_TO_BOOL (rt_indir2bounces),
@@ -1122,6 +1127,8 @@ static void GL_EndRenderingTask (end_rendering_parms_t *parms)
 		.indirectDiffuseSensitivityToChange = CVAR_TO_FLOAT (rt_sensit_indir),
 		.specularSensitivityToChange = CVAR_TO_FLOAT (rt_sensit_spec),
 		.polygonalLightSpotlightFactor = 2.0f,
+		.q2DepthGradMode = CVAR_TO_UINT32 (rt_q2_depthgrad) != 0,
+		.q2LightStatsMode = q2_lightstats_mode,
 		.lightUniqueIdIgnoreFirstPersonViewerShadows = NULL,
 	};
 
