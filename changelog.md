@@ -143,7 +143,7 @@ The RayTracedGL1 renderer is now part of this repository: it is built from sourc
 ## v3.0.0 (vkpt renderer)
 
 ### Added
-- **Q2RTX-style core rendering path** — a full new pipeline alongside the legacy one, switched at runtime by the host flag `RG_DEBUG_DRAW_Q2RTX_CORE_BIT` (`rt_core_q2rtx` cvar in vkquake-rt):
+- **Q2RTX-style core rendering path** — a full new pipeline alongside the legacy one, switched at runtime by the host flag `RG_DEBUG_DRAW_Q2RTX_CORE_BIT` (`rt_core_q2rtx` cvar in vkquake-ray):
   - **ASVGF denoiser** ported from Q2RTX (`asvgf_*.comp`): temporal accumulation, low-frequency (YCoCg luma-SH) and high-frequency/specular atrous filtering, checkerboard interleave
   - **Checkerboard interleave + TAAU** (Q2RTX `taa`) replaces FSR/DLSS upscaling on the new path; FSR 2/3 and DLSS remain available on the legacy path
   - ReSTIR (direct/indirect) remains the lighting solution — `CmQ2Adapter` converts its output into the ASVGF color format (LF_SH / LF_COCG / HF / SPEC)
