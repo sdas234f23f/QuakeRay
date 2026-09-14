@@ -34,7 +34,7 @@ struct ShLightEncoded;
 class LightManager
 {
 public:
-    LightManager(VkDevice device, std::shared_ptr<MemoryAllocator> &allocator);
+    LightManager(VkDevice device, std::shared_ptr<MemoryAllocator> &allocator, VkBuffer talCdfBuffer);
     ~LightManager();
 
     LightManager(const LightManager &other) = delete;
@@ -84,6 +84,7 @@ private:
 
 private:
     VkDevice device;
+    VkBuffer talCdf;
 
     std::shared_ptr<AutoBuffer> lightsBuffer;
     Buffer lightsBuffer_Prev;

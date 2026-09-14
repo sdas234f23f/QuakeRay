@@ -199,6 +199,11 @@ layout(set = DESC_SET_LIGHT_SOURCES, binding = BINDING_LIGHT_SOURCES_Q2_LIGHT_ST
 {
     uint q2LightStats[];
 };
+
+layout(set = DESC_SET_LIGHT_SOURCES, binding = BINDING_LIGHT_SOURCES_TAL_CDF) readonly buffer TalCdf_BT
+{
+    uint talCdf[];
+};
 #endif
 
 

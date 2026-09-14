@@ -589,8 +589,23 @@ materials:
   - name: textures/+0planet
     texture_emissive: textures/+0planet_luma.png
     light_color: b2b2ff
-    light_brightness: 0.1
-    is_light: false
+    light_brightness: 0.2
+    is_light: true
+  - name: textures/+1planet
+    texture_emissive: textures/+0planet_luma.png
+    light_color: b2b2ff
+    light_brightness: 0.2
+    is_light: true
+  - name: textures/+2planet
+    texture_emissive: textures/+0planet_luma.png
+    light_color: b2b2ff
+    light_brightness: 0.2
+    is_light: true
+  - name: textures/+3planet
+    texture_emissive: textures/+0planet_luma.png
+    light_color: b2b2ff
+    light_brightness: 0.2
+    is_light: true
   - name: textures/comp1_6
     texture_emissive: textures/comp1_6_luma.png
     light_color: ff0000

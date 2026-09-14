@@ -43,9 +43,11 @@ constexpr uint32_t LIGHT_ARRAY_MAX_SIZE = 4096;
 
 vkpt::LightManager::LightManager(
     VkDevice _device,
-    std::shared_ptr<MemoryAllocator> &_allocator)
+    std::shared_ptr<MemoryAllocator> &_allocator,
+    VkBuffer _talCdfBuffer)
 :
     device(_device),
+    talCdf(_talCdfBuffer),
     regLightCount(0),
     regLightCount_Prev(0),
     dirLightCount(0),
@@ -603,6 +605,7 @@ constexpr uint32_t BINDINGS[] =
     BINDING_LIGHT_SOURCES_Q2_LIGHT_LIST_OFFSETS,
     BINDING_LIGHT_SOURCES_Q2_LIGHT_LIST_LIGHTS,
     BINDING_LIGHT_SOURCES_Q2_LIGHT_STATS,
+    BINDING_LIGHT_SOURCES_TAL_CDF,
 };
 
 void vkpt::LightManager::CreateDescriptors()
@@ -679,6 +682,7 @@ void vkpt::LightManager::UpdateDescriptors(uint32_t frameIndex)
         lightListOffsets->GetDeviceLocal(),
         lightListLights->GetDeviceLocal(),
         lightStats.GetBuffer(),
+        talCdf,
     };
     static_assert(std::size(BINDINGS) == std::size(buffers));
 

@@ -41,7 +41,7 @@ namespace vkpt
         TextureObserver& operator=(const TextureObserver& other) = delete;
         TextureObserver& operator=(TextureObserver&& other) noexcept = delete;
 
-        void CheckPathsAndReupload(VkCommandBuffer cmd, TextureManager &manager, ImageLoaderDev *loader);
+        void CheckPathsAndReupload(VkCommandBuffer cmd, uint32_t frameIndex, TextureManager &manager, ImageLoaderDev *loader);
 
         void RegisterPath(RgMaterial index, std::optional<std::filesystem::path> path, const std::optional<ImageLoader::ResultInfo> &imageInfo, uint32_t textureType);
         void Remove(RgMaterial index);
