@@ -86,6 +86,7 @@ Everything is exposed as console variables; run `cvarlist rt_` in the console fo
 * `rt_sky_nee 1` — sample the sky as an explicit light; `0` restores the pre-NEE result
 * `rt_indir2bounces 0` — second diffuse bounce (its own NEE and sun sample are skipped when they cannot change the result)
 * `rt_emis_light_intensity 1.0` — how much light the emissive (luma-masked) surfaces emit
+* `rt_light_styles 1` with `rt_light_styles_reach 48` — animated light entities make their own fixture flicker; the reach (Quake units, measured from the surface centre to the light) keeps the flicker on the fixture instead of every surface that light happens to illuminate, `-1` removes the limit
 * `rt_stats 0` — on-screen ray statistics (rays per second, per-category ray counts)
 * `rt_pass_stats 0` — on-screen GPU timing per render pass, next to the ray statistics
 * `rt_debugflags 0` — diagnostic views (raw direct/indirect/specular, gradients, ...)

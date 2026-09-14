@@ -201,6 +201,10 @@ struct ShVertex
     float texCoordLayer2[2];
     uint32_t packedColor;
     uint32_t cluster;
+    uint32_t lightStyles;
+    uint32_t __pad0;
+    uint32_t __pad1;
+    uint32_t __pad2;
 };
 
 struct ShGlobalUniform
@@ -306,6 +310,7 @@ struct ShGlobalUniform
     float fogMaxs[32];
     float fogColor[32];
     float fogDensity[32];
+    float lightStyleScales[64];
 };
 
 struct ShGeometryInstance

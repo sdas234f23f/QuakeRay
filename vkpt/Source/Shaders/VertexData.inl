@@ -250,6 +250,7 @@ ShTriangle makeTriangle(const ShVertex a, const ShVertex b, const ShVertex c)
     }
 
     tr.cluster = a.cluster;
+    tr.lightStyleIndices = a.lightStyles;
 
     // get very coarse normal for triangle to determine bitangent's handedness
     tr.tangent = getTangent(tr.positions, safeNormalize(tr.normals[0] + tr.normals[1] + tr.normals[2]), tr.layerTexCoord[0]);

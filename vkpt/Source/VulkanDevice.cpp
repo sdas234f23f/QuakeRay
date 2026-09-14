@@ -327,6 +327,10 @@ void VulkanDevice::FillUniform(ShGlobalUniform *gu, const RgDrawFrameInfo &drawI
         gu->minRoughness           = std::clamp( drawInfo.pTexturesParams->minRoughness, 0.0f, 1.0f );
         gu->emissionBlendMode      = drawInfo.pTexturesParams->emissionBlendMode;
         gu->emissionBlendStrength  = std::clamp( drawInfo.pTexturesParams->emissionBlendStrength, 0.0f, 1.0f );
+        for( uint32_t i = 0; i < RG_LIGHT_STYLE_COUNT; i++ )
+        {
+            gu->lightStyleScales[ i ] = drawInfo.pTexturesParams->lightStyleScales[ i ];
+        }
     }
     else
     {
@@ -339,6 +343,10 @@ void VulkanDevice::FillUniform(ShGlobalUniform *gu, const RgDrawFrameInfo &drawI
         gu->minRoughness           = 0.0f;
         gu->emissionBlendMode      = 0u;
         gu->emissionBlendStrength  = 1.0f;
+        for( uint32_t i = 0; i < RG_LIGHT_STYLE_COUNT; i++ )
+        {
+            gu->lightStyleScales[ i ] = 1.0f;
+        }
     }
 
     if( drawInfo.pIlluminationParams != nullptr )

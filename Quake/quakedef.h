@@ -42,10 +42,10 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #ifndef QUAKESPASM_VER_SUFFIX
 #define QUAKESPASM_VER_SUFFIX // optional version suffix string literal like "-beta1"
 #endif
-#define VKQUAKE_VERSION   1.20
-#define VKQUAKE_VER_PATCH 3 // helper to print a string like 0.92.1
-#ifndef VKQUAKE_VER_SUFFIX
-#define VKQUAKE_VER_SUFFIX "" // optional version suffix like -beta1
+#define ENGINE_VERSION   0.30
+#define ENGINE_VER_PATCH 0 // helper to print a string like 0.92.1
+#ifndef ENGINE_VER_SUFFIX
+#define ENGINE_VER_SUFFIX "alpha" // optional version suffix like -beta1
 #endif
 
 #define QS_STRINGIFY_(x) #x
@@ -53,15 +53,15 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 // combined version string like "0.92.1-beta1"
 #define QUAKESPASM_VER_STRING QS_STRINGIFY (QUAKESPASM_VERSION) "." QS_STRINGIFY (QUAKESPASM_VER_PATCH) QUAKESPASM_VER_SUFFIX
-#define VKQUAKE_VER_STRING    QS_STRINGIFY (VKQUAKE_VERSION) "." QS_STRINGIFY (VKQUAKE_VER_PATCH) VKQUAKE_VER_SUFFIX
+#define ENGINE_VER_STRING    QS_STRINGIFY (ENGINE_VERSION) "." QS_STRINGIFY (ENGINE_VER_PATCH) ENGINE_VER_SUFFIX
 
 #ifdef QSS_DATE
 // combined version string like "2020-10-20-beta1"
-#define ENGINE_NAME_AND_VER "QuakeRT " QS_STRINGIFY (QSS_DATE) VKQUAKE_VER_SUFFIX
+#define ENGINE_NAME_AND_VER "VkQuakeRay " QS_STRINGIFY (QSS_DATE) ENGINE_VER_SUFFIX
 #else
 #define ENGINE_NAME_AND_VER \
-	"QuakeRT"               \
-	" " VKQUAKE_VER_STRING
+	"VkQuakeRay"               \
+	" " ENGINE_VER_STRING
 #endif
 
 // define	PARANOID			// speed sapping error checking

@@ -128,6 +128,7 @@ task_handle_t prev_end_rendering_task = INVALID_TASK_HANDLE;
 	CVAR_DEF_T (rt_truelight, "1") \
 	CVAR_DEF_T (rt_materials_only, "0") \
 	CVAR_DEF_T (rt_light_styles, "1") \
+	CVAR_DEF_T (rt_light_styles_reach, "48") \
 	\
 	CVAR_DEF_T (rt_poi_distthresh, "2") \
 	CVAR_DEF_T (rt_poi_distthresh_super, "3") \
@@ -462,7 +463,7 @@ static qboolean VID_SetMode (int width, int height, int refreshrate, qboolean fu
 	CDAudio_Pause ();
 	BGM_Pause ();
 
-	q_snprintf (caption, sizeof (caption), "vkQuake " VKQUAKE_VER_STRING);
+	q_snprintf (caption, sizeof (caption), "vkQuake " ENGINE_VER_STRING);
 
 	/* Create the window if needed, hidden */
 	if (!draw_context)
@@ -690,7 +691,7 @@ static void GL_InitInstance (void)
 	const char pWaterTexturePath[] = RT_OVERRIDEN_FOLDER "WaterNormal_n.ktx2";
 
 	RgInstanceCreateInfo info = {
-		.pAppName = "QuakeRT",
+		.pAppName = "VkQuakeRay",
 		.pAppGUID = "8d1f551a-b0e4-4365-985c-5e1182f3c54a",
 
 #ifdef RG_USE_SURFACE_WIN32
@@ -1255,6 +1256,9 @@ static void GL_EndRenderingTask (end_rendering_parms_t *parms)
 		.emissionBlendStrength = CVAR_TO_FLOAT (rt_emis_blendstr),
 	};
 
+	for (int i = 0; i < MAX_LIGHTSTYLES; i++)
+		texture_params.lightStyleScales[i] = (float)d_lightstylevalue[i] * (1.0f / 256.0f);
+
 	RgDrawFrameLensFlareParams lens_flare_params = {
 		.lensFlareBlendFuncSrc = RG_BLEND_FACTOR_SRC_ALPHA,
 		.lensFlareBlendFuncDst = RG_BLEND_FACTOR_ONE,
@@ -1582,6 +1586,14 @@ static void RT_SunPreset_f (cvar_t *var)
 	Cvar_SetValueQuick (&rt_sky_light_b, presets[preset][2]);
 }
 
+extern atomic_uint32_t rt_require_static_submit;
+
+static void RT_LightStylesChanged_f (cvar_t *var)
+{
+	(void)var;
+	Atomic_StoreUInt32 (&rt_require_static_submit, true);
+}
+
 static RgFogVolume rt_fog_volumes[RG_MAX_FOG_VOLUMES];
 
 static void RT_Fog_ParsePoint (const char *s, float *out)
@@ -1756,6 +1768,8 @@ void VID_Init (void)
 	}
 
 	Cvar_SetCallback (&rt_sun_preset, RT_SunPreset_f);
+	Cvar_SetCallback (&rt_light_styles, RT_LightStylesChanged_f);
+	Cvar_SetCallback (&rt_light_styles_reach, RT_LightStylesChanged_f);
 
 	Cmd_AddCommand ("vid_unlock", VID_Unlock);     // johnfitz
 	Cmd_AddCommand ("vid_restart", VID_Restart_f); // johnfitz

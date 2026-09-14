@@ -364,6 +364,7 @@ void GLMesh_DeleteVertexBuffers (void);
 int R_LightPoint (vec3_t p, lightcache_t *cache, vec3_t *lightcolor);
 void RT_ParseElights (void);
 void RT_UploadAllElights (void);
+float RT_NearestStyledLightDistance (int style, const vec3_t point);
 qboolean RT_AllowFakeLights (void);
 
 void RT_ClusterLightListsReset (void);
