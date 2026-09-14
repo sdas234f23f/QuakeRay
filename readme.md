@@ -43,7 +43,7 @@ Steps:
 1. Clone the repository:
 
    ```
-   git clone https://github.com/sdas234f23f/vkquake-rt.git
+   git clone https://github.com/sdas234f23f/vkquake-ray.git
    ```
 
 2. (Re)build the SPIR-V shaders — optional: `build_win.ps1` already builds and deploys them (see step 3), so you only need this when iterating on `vkpt/Source/Shaders` on their own:
