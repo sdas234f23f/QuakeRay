@@ -510,6 +510,8 @@ VERTEX_STRUCT = [
     # BSP cluster (world geometry) - Q2RTX per-cluster light lists. 0 for
     # non-world / dynamic geometry. Replaces the old __pad0 trailing field.
     (TYPE_UINT32,       1,     "cluster",               1),
+    # Up to 4 lightstyle indices affecting emission, 8 bits per slot, style + 1.
+    (TYPE_UINT32,       1,     "lightStyles",           1),
 ]
 
 # Must be careful with std140 offsets! They are set manually.
@@ -658,6 +660,9 @@ GLOBAL_UNIFORM_STRUCT = [
     (TYPE_FLOAT32,      4,      "fogMaxs",                  MAX_FOG_VOLUMES),
     (TYPE_FLOAT32,      4,      "fogColor",                 MAX_FOG_VOLUMES),
     (TYPE_FLOAT32,      4,      "fogDensity",               MAX_FOG_VOLUMES),
+
+    # Per-lightstyle emission multipliers (64 styles as 16 vec4s).
+    (TYPE_FLOAT32,      4,      "lightStyleScales",         16),
 ]
 
 GEOM_INSTANCE_STRUCT = [

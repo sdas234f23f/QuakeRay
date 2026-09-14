@@ -356,6 +356,8 @@ typedef struct RgVertex
     // RGBA packed into 32-bit uint. R component is at the little end, i.e. (a<<24 | b<<16 | g<<8 | r)
     uint32_t    packedColor;
     uint32_t    cluster;
+    uint32_t    lightStyles;
+    uint32_t    _padding2[3];
 } RgVertex;
 
 typedef enum RgGeometryUploadFlagBits
@@ -922,6 +924,8 @@ typedef struct RgDrawFrameSkyParams
     RgMatrix3D  skyCubemapRotationTransform;
 } RgDrawFrameSkyParams;
 
+#define RG_LIGHT_STYLE_COUNT 64
+
 typedef struct RgDrawFrameTexturesParams
 {
     // What sampler filter to use for materials with RG_MATERIAL_CREATE_DYNAMIC_SAMPLER_FILTER_BIT.
@@ -943,6 +947,7 @@ typedef struct RgDrawFrameTexturesParams
     uint32_t        emissionBlendMode;
     // Default: 1.0
     float           emissionBlendStrength;
+    float           lightStyleScales[RG_LIGHT_STYLE_COUNT];
 } RgDrawFrameTexturesParams;
 
 typedef enum RgDebugDrawFlagBits

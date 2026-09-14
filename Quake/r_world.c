@@ -42,6 +42,7 @@ extern cvar_t rt_reflrefr_depth;
 extern cvar_t rt_wlight_intensity, rt_wlight_radius;
 extern cvar_t rt_emis_light_intensity;
 extern cvar_t rt_light_styles;
+extern cvar_t rt_light_styles_reach;
 extern cvar_t rt_debugemissive;
 extern cvar_t rt_light_report_filter;
 
@@ -866,6 +867,7 @@ RgTransform RT_GetBrushModelMatrix (entity_t *e)
 
 static qboolean  RT_FindNearestTeleport (const RgGeometryUploadInfo *info, uint8_t *result, qboolean *potentially_mirror);
 static RgFloat3D ApplyTransform (const RgTransform *transform, const vec3_t v);
+static gltexture_t *RT_AnimatedLightTex (texture_t *base);
 
 typedef struct rt_uploadsurf_state_t
 {
@@ -922,6 +924,45 @@ static void RT_EmitEmissiveWireTriangle (const RgFloat3D *p0, const RgFloat3D *p
 
 	RgResult r = rgUploadRasterizedGeometry (vulkan_globals.instance, &info, NULL, NULL);
 	RG_CHECK (r);
+}
+
+static uint32_t RT_PackSurfaceLightStyles (const rt_uploadsurf_state_t *s, const RgVertex *verts, int num_verts, const RgTransform *transform)
+{
+	uint32_t packed = 0;
+	int      slot   = 0;
+
+	gltexture_t *light_tex = RT_AnimatedLightTex (s->surf->texinfo->texture);
+
+	if (!light_tex || !light_tex->rtlightstyles || !CVAR_TO_BOOL (rt_light_styles))
+		return 0;
+
+	const float reach = CVAR_TO_FLOAT (rt_light_styles_reach);
+
+	vec3_t accum = {0.0f, 0.0f, 0.0f};
+	for (int i = 0; i < num_verts; i++)
+		VectorAdd (accum, verts[i].position, accum);
+	vec3_t center;
+	VectorScale (accum, 1.0f / num_verts, center);
+	const RgFloat3D world_center = ApplyTransform (transform, center);
+
+	for (int i = 0; i < MAXLIGHTMAPS && s->surf->styles[i] != 255; i++)
+	{
+		const int style = s->surf->styles[i];
+
+		if (reach >= 0.0f)
+		{
+			const float dist = RT_NearestStyledLightDistance (style, world_center.data);
+
+			if (dist < 0.0f || dist > reach)
+				continue;
+		}
+
+		packed |= (uint32_t)(style + 1) << (slot * 8);
+		if (++slot == 4)
+			break;
+	}
+
+	return packed;
 }
 
 static void RT_FlushBatch (cb_context_t *cbx, const rt_uploadsurf_state_t *s, uint32_t *brushpasses)
@@ -1172,16 +1213,28 @@ static void RT_UploadEmissiveLight (const RgTexturedAreaLightUploadInfo *light_i
 	}
 }
 
-static float RT_SurfaceLightStyleScale (const msurface_t *surf)
+static float RT_SurfaceLightStyleScale (const msurface_t *surf, const vec3_t center)
 {
-	float    scale = 1.0f;
-	qboolean dims  = false;
+	const float reach = CVAR_TO_FLOAT (rt_light_styles_reach);
+	float       scale = 1.0f;
+	qboolean    dims  = false;
 
 	for (int i = 0; i < MAXLIGHTMAPS && surf->styles[i] != 255; i++)
 	{
-		const float value = (float)d_lightstylevalue[surf->styles[i]];
+		const int   style = surf->styles[i];
+		const float value = (float)d_lightstylevalue[style];
+
 		if (value >= 255.5f)
 			continue;
+
+		if (reach >= 0.0f)
+		{
+			const float dist = RT_NearestStyledLightDistance (style, center);
+
+			if (dist < 0.0f || dist > reach)
+				continue;
+		}
+
 		if (!dims || value < scale)
 			scale = value * (1.0f / 256.0f);
 		dims = true;
@@ -1288,36 +1341,6 @@ static void RT_AddEmissiveLight (const rt_uploadsurf_state_t *s)
 
 	const qboolean is_static_geom = RT_IsStaticWorldSurface (s);
 
-	if (light_tex->rtlightstyles && CVAR_TO_BOOL (rt_light_styles))
-	{
-		const float style_scale = RT_SurfaceLightStyleScale (s->surf);
-
-		if (watch)
-		{
-			if (style_scale < watch->min_style_scale)
-				watch->min_style_scale = style_scale;
-			if (watch->style_count == 0)
-			{
-				for (int i = 0; i < MAXLIGHTMAPS && s->surf->styles[i] != 255; i++)
-					watch->styles[watch->style_count++] = s->surf->styles[i];
-			}
-		}
-
-		if (!is_static_geom)
-		{
-			VectorScale (color, style_scale, color);
-
-			if (style_scale <= 0.0f)
-			{
-				rt_emis_stats.style_off++;
-				if (watch)
-					watch->style_off++;
-				RT_EmisNoteSkip (light_tex->name, "lightstyle off");
-				return;
-			}
-		}
-	}
-
 	const RgTransform transf = RT_GetBrushModelMatrix (s->ent);
 	const int        vertcount = s->surf->numedges;
 	const RgVertex  *verts = rtallbrushvertices + s->surf->vbo_firstvert;
@@ -1387,6 +1410,39 @@ static void RT_AddEmissiveLight (const rt_uploadsurf_state_t *s)
 		if (watch)
 			watch->degenerate++;
 		return;
+	}
+
+	if (light_tex->rtlightstyles && CVAR_TO_BOOL (rt_light_styles))
+	{
+		vec3_t center;
+		VectorScale (accum_center, 1.0f / total_area, center);
+
+		const float style_scale = RT_SurfaceLightStyleScale (s->surf, center);
+
+		if (watch)
+		{
+			if (style_scale < watch->min_style_scale)
+				watch->min_style_scale = style_scale;
+			if (watch->style_count == 0)
+			{
+				for (int i = 0; i < MAXLIGHTMAPS && s->surf->styles[i] != 255; i++)
+					watch->styles[watch->style_count++] = s->surf->styles[i];
+			}
+		}
+
+		if (!is_static_geom)
+		{
+			VectorScale (color, style_scale, color);
+
+			if (style_scale <= 0.0f)
+			{
+				rt_emis_stats.style_off++;
+				if (watch)
+					watch->style_off++;
+				RT_EmisNoteSkip (light_tex->name, "lightstyle off");
+				return;
+			}
+		}
 	}
 
 	vec3_t normal;
@@ -1670,6 +1726,15 @@ static void RT_BatchSurface (cb_context_t *cbx, const rt_uploadsurf_state_t *s, 
 
 		for (int i = 0; i < num_surf_verts; i++)
 			batch_verts[i].cluster = cluster;
+	}
+
+	{
+		const RgTransform transform = RT_GetBrushModelMatrix (s->ent);
+		const uint32_t    packed_styles = RT_PackSurfaceLightStyles (s, batch_verts, num_surf_verts, &transform);
+
+		if (packed_styles != 0)
+			for (int i = 0; i < num_surf_verts; i++)
+				batch_verts[i].lightStyles = packed_styles;
 	}
 
 	cbx->batch_indices_count += num_surf_indices;
@@ -2023,6 +2088,9 @@ void RT_UploadAllWorldModelLights (void)
 	{
 		RgTexturedAreaLightUploadInfo li = rt_wldlights_emissive[i];
 
+		vec3_t center;
+		RT_TexturedAreaLightCenter (&li, center);
+
 		gltexture_t *light_tex = RT_AnimatedLightTex (rt_wldlights_emissive_surf[i]->texinfo->texture);
 		if (light_tex != rt_wldlights_emissive_tex[i])
 		{
@@ -2040,7 +2108,7 @@ void RT_UploadAllWorldModelLights (void)
 
 		if (light_tex && light_tex->rtlightstyles && CVAR_TO_BOOL (rt_light_styles))
 		{
-			const float style_scale = RT_SurfaceLightStyleScale (rt_wldlights_emissive_surf[i]);
+			const float style_scale = RT_SurfaceLightStyleScale (rt_wldlights_emissive_surf[i], center);
 
 			if (style_scale <= 0.0f)
 				continue;
@@ -2053,9 +2121,6 @@ void RT_UploadAllWorldModelLights (void)
 
 		RgResult r = rgUploadTexturedAreaLight (vulkan_globals.instance, lt);
 		RG_CHECK (r);
-
-		vec3_t center;
-		RT_TexturedAreaLightCenter (lt, center);
 
 		const float nudge = 2.0f;
 		center[0] += nudge * lt->normal.data[0];

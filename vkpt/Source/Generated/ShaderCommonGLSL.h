@@ -196,6 +196,10 @@ struct ShVertex
     vec2 texCoordLayer2;
     uint packedColor;
     uint cluster;
+    uint lightStyles;
+    uint __pad0;
+    uint __pad1;
+    uint __pad2;
 };
 
 struct ShGlobalUniform
@@ -301,6 +305,7 @@ struct ShGlobalUniform
     vec4 fogMaxs[8];
     vec4 fogColor[8];
     vec4 fogDensity[8];
+    vec4 lightStyleScales[16];
 };
 
 struct ShGeometryInstance

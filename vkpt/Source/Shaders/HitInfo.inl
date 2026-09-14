@@ -387,6 +387,19 @@ ShHitInfo getHitInfoBounce(
     h.roughness = globalUniform.squareInputRoughness == 0 ? h.roughness : square( h.roughness );
     h.roughness = max( h.roughness, MIN_GGX_ROUGHNESS );
 
+    float lightStyleEmissionScale = 1.0;
+    for( int i = 0; i < 4; i++ )
+    {
+        const uint styleByte = ( tr.lightStyleIndices >> ( i * 8 ) ) & 0xFFu;
+        if( styleByte == 0u )
+            break;
+        const uint  style      = styleByte - 1u;
+        const float styleValue = globalUniform.lightStyleScales[ style / 4u ][ style % 4u ];
+        if( styleValue < ( 255.5 / 256.0 ) )
+            lightStyleEmissionScale = min( lightStyleEmissionScale, styleValue );
+    }
+    h.emission *= lightStyleEmissionScale;
+
 #if defined( HITINFO_INL_PRIM ) || defined( HITINFO_INL_RFL )
     screenEmission = rmeEmissionToScreenEmission( h.emission );
 #endif

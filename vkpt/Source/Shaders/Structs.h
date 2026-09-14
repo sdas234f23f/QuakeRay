@@ -37,6 +37,7 @@ struct ShTriangle
     float   geomMetallicity;
     uint    portalIndex;
     uint    cluster;
+    uint    lightStyleIndices;
 };
 
 struct ShPayload

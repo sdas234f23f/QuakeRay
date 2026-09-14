@@ -650,6 +650,14 @@ rt_elight_t *rt_elights = NULL;
 int          rt_elights_count = 0;
 int          rt_elights_allocated = 0;
 
+#define STRUCT_STATE_STRUCT_STARTED       1
+#define STRUCT_STATE_FOUND_LIGHTCLASSNAME 2
+#define STRUCT_STATE_FOUND_ORIGIN         4
+#define STRUCT_STATE_FOUND_INTENSITY      8
+#define STRUCT_STATE_FOUND_WITH_MODEL     16
+#define STRUCT_STATE_FOUND_LIGHTSTYLE     32
+#define STRUCT_STATE_FOUND_APPLY_OFFSET   64
+
 // Parse worldmodel->entities, to find static lights
 void RT_ParseElights ()
 {
@@ -673,14 +681,6 @@ void RT_ParseElights ()
 	
 	rt_elight_t struct_values = {0};
 
-    #define STRUCT_STATE_STRUCT_STARTED       1
-    #define STRUCT_STATE_FOUND_LIGHTCLASSNAME 2
-    #define STRUCT_STATE_FOUND_ORIGIN         4
-    #define STRUCT_STATE_FOUND_INTENSITY      8
-    #define STRUCT_STATE_FOUND_WITH_MODEL     16
-    #define STRUCT_STATE_FOUND_LIGHTSTYLE     32
-    #define STRUCT_STATE_FOUND_APPLY_OFFSET   64
-	
 	while (1)
 	{
 		data = COM_Parse (data);
@@ -783,6 +783,29 @@ void RT_ParseElights ()
 qboolean RT_AllowFakeLights (void)
 {
 	return !CVAR_TO_BOOL (rt_materials_only) && CVAR_TO_FLOAT (rt_truelight) < 2;
+}
+
+float RT_NearestStyledLightDistance (int style, const vec3_t point)
+{
+	float nearest = -1.0f;
+
+	for (int i = 0; i < rt_elights_count; i++)
+	{
+		const rt_elight_t *src = &rt_elights[i];
+
+		if (!(src->state & STRUCT_STATE_FOUND_LIGHTSTYLE) || src->lightstyle != style)
+			continue;
+
+		vec3_t delta;
+		VectorSubtract (src->origin, point, delta);
+
+		const float dist = VectorLength (delta);
+
+		if (nearest < 0.0f || dist < nearest)
+			nearest = dist;
+	}
+
+	return nearest;
 }
 
 void RT_UploadAllElights ()
