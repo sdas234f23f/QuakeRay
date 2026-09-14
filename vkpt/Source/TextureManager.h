@@ -26,6 +26,7 @@
 #include "Common.h"
 #include "CommandBufferManager.h"
 #include "Material.h"
+#include "AutoBuffer.h"
 #include "ImageLoader.h"
 #include "ImageLoaderDev.h"
 #include "IMaterialDependency.h"
@@ -65,12 +66,14 @@ public:
     uint32_t CreateMaterial(VkCommandBuffer cmd, uint32_t frameIndex, const RgMaterialCreateInfo &createInfo);
     uint32_t CreateAnimatedMaterial(VkCommandBuffer cmd, uint32_t frameIndex, const RgAnimatedMaterialCreateInfo &createInfo);
     bool ChangeAnimatedMaterialFrame(uint32_t animMaterial, uint32_t materialFrame);
-    bool UpdateMaterial(VkCommandBuffer cmd, const RgMaterialUpdateInfo &updateInfo);
+    bool UpdateMaterial(VkCommandBuffer cmd, uint32_t frameIndex, const RgMaterialUpdateInfo &updateInfo);
     void DestroyMaterial(uint32_t currentFrameIndex, uint32_t materialIndex);
 
-    void CheckForHotReload(VkCommandBuffer cmd);
+    void CheckForHotReload(VkCommandBuffer cmd, uint32_t frameIndex);
 
     MaterialTextures GetMaterialTextures(uint32_t materialIndex) const;
+
+    VkBuffer GetTalCdfBuffer() const;
 
     static constexpr uint32_t GetEmptyTextureIndex();
     uint32_t GetWaterNormalTextureIndex() const;
@@ -100,6 +103,8 @@ private:
     void DestroyTexture(const Texture &texture);
     void AddToBeDestroyed(uint32_t frameIndex, const Texture &texture);
 
+    void RebuildTalCdf(VkCommandBuffer cmd, uint32_t frameIndex, uint32_t textureIndex, const uint8_t *pData);
+
     uint32_t GenerateMaterialIndex(const MaterialTextures &materialTextures);
     uint32_t GenerateMaterialIndex(const std::vector<uint32_t> &materialIndices);
 
@@ -110,6 +115,13 @@ private:
     void DestroyMaterialTextures(uint32_t frameIndex, const Material &material);
 
 private:
+    struct TalCdfSource
+    {
+        RgExtent2D  baseSize = {};
+        VkFormat    format = VK_FORMAT_UNDEFINED;
+        uint32_t    level0Size = 0;
+    };
+
     VkDevice device;
     RgTextureSwizzling pbrSwizzling;
 
@@ -121,6 +133,9 @@ private:
     std::shared_ptr<SamplerManager> samplerMgr;
     std::shared_ptr<TextureDescriptors> textureDesc;
     std::shared_ptr<TextureUploader> textureUploader;
+
+    std::shared_ptr<AutoBuffer> talCdfBuffer;
+    std::vector<TalCdfSource> talCdfSources;
 
     std::vector<Texture> textures;
     // Textures are not destroyed immediately, but when

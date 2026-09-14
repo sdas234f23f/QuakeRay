@@ -21,6 +21,7 @@
 #include "TextureManager.h"
 
 #include <numeric>
+#include <algorithm>
 
 #include "Const.h"
 #include "Utils.h"
@@ -49,6 +50,117 @@ namespace
     TextureOverrides::Loader GetLoader(const std::shared_ptr<ImageLoader> &defaultLoader, const std::shared_ptr<ImageLoaderDev> devLoader)
     {
         return devLoader ? TextureOverrides::Loader(devLoader.get()) : TextureOverrides::Loader(defaultLoader.get());
+    }
+
+    constexpr uint32_t TalCdfGridMaxSize = TAL_CDF_GRID_MAX_SIZE;
+
+    bool GetTalCdfPixelLayout(VkFormat format, uint32_t *pBytesPerPixel, uint32_t *pEmissiveOffset)
+    {
+        switch (format)
+        {
+        case VK_FORMAT_R8G8B8A8_UNORM:
+        case VK_FORMAT_R8G8B8A8_SRGB:
+        case VK_FORMAT_A8B8G8R8_UNORM_PACK32:
+        case VK_FORMAT_A8B8G8R8_SRGB_PACK32:
+            *pBytesPerPixel = 4;
+            *pEmissiveOffset = 2;
+            return true;
+
+        case VK_FORMAT_B8G8R8A8_UNORM:
+        case VK_FORMAT_B8G8R8A8_SRGB:
+            *pBytesPerPixel = 4;
+            *pEmissiveOffset = 0;
+            return true;
+
+        case VK_FORMAT_R8G8B8_UNORM:
+        case VK_FORMAT_R8G8B8_SRGB:
+            *pBytesPerPixel = 3;
+            *pEmissiveOffset = 2;
+            return true;
+
+        case VK_FORMAT_B8G8R8_UNORM:
+        case VK_FORMAT_B8G8R8_SRGB:
+            *pBytesPerPixel = 3;
+            *pEmissiveOffset = 0;
+            return true;
+
+        default:
+            return false;
+        }
+    }
+
+    uint32_t BuildTalCdfEntries(const uint8_t *pPixels, uint32_t width, uint32_t height, uint32_t bytesPerPixel, uint32_t emissiveOffset,
+                                uint32_t *pEntries, uint32_t maxEntries)
+    {
+        if (pPixels == nullptr || width == 0 || height == 0 || maxEntries == 0)
+        {
+            return 0;
+        }
+
+        const uint32_t gridWidth = std::min(width, TalCdfGridMaxSize);
+        const uint32_t gridHeight = std::min(height, TalCdfGridMaxSize);
+
+        std::vector<uint32_t> grid(gridWidth * gridHeight, 0);
+
+        for (uint32_t gy = 0; gy < gridHeight; gy++)
+        {
+            const uint32_t y0 = gy * height / gridHeight;
+            const uint32_t y1 = std::max((gy + 1) * height / gridHeight, y0 + 1);
+
+            for (uint32_t gx = 0; gx < gridWidth; gx++)
+            {
+                const uint32_t x0 = gx * width / gridWidth;
+                const uint32_t x1 = std::max((gx + 1) * width / gridWidth, x0 + 1);
+
+                uint32_t sum = 0;
+
+                for (uint32_t y = y0; y < y1; y++)
+                {
+                    const uint8_t *pRow = pPixels + uint64_t(y) * width * bytesPerPixel;
+
+                    for (uint32_t x = x0; x < x1; x++)
+                    {
+                        sum += pRow[x * bytesPerPixel + emissiveOffset];
+                    }
+                }
+
+                grid[gy * gridWidth + gx] = sum;
+            }
+        }
+
+        uint64_t total = 0;
+
+        for (uint32_t value : grid)
+        {
+            total += value;
+        }
+
+        if (total == 0)
+        {
+            return 0;
+        }
+
+        uint32_t cellIndex = 0;
+        uint64_t cumulative = 0;
+
+        for (uint32_t i = 0; i < maxEntries; i++)
+        {
+            const uint64_t target = total * (2 * uint64_t(i) + 1) / (2 * uint64_t(maxEntries));
+
+            while (cumulative < target && cellIndex < grid.size())
+            {
+                cumulative += grid[cellIndex];
+                cellIndex++;
+            }
+
+            const uint32_t cell = cellIndex > 0 ? cellIndex - 1 : 0;
+            const uint32_t s = uint32_t((float(cell % gridWidth) + 0.5f) / float(gridWidth) * 65535.0f);
+            const uint32_t t = uint32_t((float(cell / gridWidth) + 0.5f) / float(gridHeight) * 65535.0f);
+
+            pEntries[i] = s | (t << 16);
+        }
+
+        return maxEntries;
     }
 }
 
@@ -91,6 +203,13 @@ TextureManager::TextureManager( VkDevice                                       _
     const uint32_t maxTextureCount =
         std::clamp( _info.maxTextureCount, TEXTURE_COUNT_MIN, TEXTURE_COUNT_MAX );
 
+    talCdfSources.resize( maxTextureCount );
+
+    talCdfBuffer = std::make_shared< AutoBuffer >( device, _memAllocator );
+    talCdfBuffer->Create( VkDeviceSize( maxTextureCount ) * TAL_CDF_LUT_ENTRIES * sizeof( uint32_t ),
+                          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                          "TAL cdf" );
+
     imageLoader = std::make_shared< ImageLoader >( std::move( _userFileLoad ) );
 
     if( _config.developerMode )
@@ -113,6 +232,13 @@ TextureManager::TextureManager( VkDevice                                       _
 
     // submit cmd to create empty texture
     VkCommandBuffer cmd = _cmdManager->StartGraphicsCmd();
+
+    uint32_t *pTalCdfDefault = static_cast< uint32_t * >( talCdfBuffer->GetMapped( 0 ) );
+
+    std::fill_n( pTalCdfDefault, size_t( maxTextureCount ) * TAL_CDF_LUT_ENTRIES, TAL_CDF_EMPTY_ENTRY );
+
+    talCdfBuffer->CopyFromStaging( cmd, 0, talCdfBuffer->GetSize(), 0 );
+
     CreateEmptyTexture( cmd, 0 );
     CreateWaterNormalTexture( cmd, 0, _info.pWaterNormalTexturePath );
     _cmdManager->Submit( cmd );
@@ -333,6 +459,18 @@ uint32_t TextureManager::CreateMaterial( VkCommandBuffer             cmd,
 
     uint32_t materialIndex = InsertMaterial( mtextures, isUpdateable );
 
+    const uint32_t rmeIndex = mtextures.indices[ MATERIAL_ROUGHNESS_METALLIC_EMISSION_INDEX ];
+
+    if( rmeIndex != EMPTY_TEXTURE_INDEX )
+    {
+        const auto& rmeInfo = ovrd.GetResult( MATERIAL_ROUGHNESS_METALLIC_EMISSION_INDEX );
+
+        if( rmeInfo.has_value() )
+        {
+            RebuildTalCdf( cmd, frameIndex, rmeIndex, rmeInfo->pData + rmeInfo->levelOffsets[ 0 ] );
+        }
+    }
+
 
     if( observer )
     {
@@ -347,7 +485,7 @@ uint32_t TextureManager::CreateMaterial( VkCommandBuffer             cmd,
     return materialIndex;
 }
 
-bool TextureManager::UpdateMaterial(VkCommandBuffer cmd, const RgMaterialUpdateInfo &updateInfo)
+bool TextureManager::UpdateMaterial(VkCommandBuffer cmd, uint32_t frameIndex, const RgMaterialUpdateInfo &updateInfo)
 {
     const auto it = materials.find(updateInfo.target);
 
@@ -394,6 +532,12 @@ bool TextureManager::UpdateMaterial(VkCommandBuffer cmd, const RgMaterialUpdateI
         }
 
         textureUploader->UpdateImage(cmd, img, updateData[i]);
+
+        if (i == MATERIAL_ROUGHNESS_METALLIC_EMISSION_INDEX)
+        {
+            RebuildTalCdf(cmd, frameIndex, textureIndex, static_cast<const uint8_t *>(updateData[i]));
+        }
+
         wasUpdated = true;
     }
 
@@ -455,7 +599,53 @@ uint32_t TextureManager::PrepareTexture(
         return EMPTY_TEXTURE_INDEX;
     }
 
-    return InsertTexture( frameIndex, image, view, samplerHandle );
+    const uint32_t textureIndex = InsertTexture( frameIndex, image, view, samplerHandle );
+
+    talCdfSources[ textureIndex ] = TalCdfSource{ .baseSize = imageInfo.baseSize,
+                                                  .format = imageInfo.format,
+                                                  .level0Size = imageInfo.levelSizes[ 0 ] };
+
+    return textureIndex;
+}
+
+void TextureManager::RebuildTalCdf(VkCommandBuffer cmd, uint32_t frameIndex, uint32_t textureIndex, const uint8_t *pData)
+{
+    if (textureIndex >= talCdfSources.size() || pData == nullptr)
+    {
+        return;
+    }
+
+    const TalCdfSource &source = talCdfSources[textureIndex];
+
+    const bool isEmissiveInBlue = pbrSwizzling == RG_TEXTURE_SWIZZLING_ROUGHNESS_METALLIC_EMISSIVE ||
+                                  pbrSwizzling == RG_TEXTURE_SWIZZLING_METALLIC_ROUGHNESS_EMISSIVE;
+
+    uint32_t bytesPerPixel = 0;
+    uint32_t emissiveOffset = 0;
+
+    std::vector<uint32_t> entries(TAL_CDF_LUT_ENTRIES, TAL_CDF_EMPTY_ENTRY);
+
+    if (isEmissiveInBlue && GetTalCdfPixelLayout(source.format, &bytesPerPixel, &emissiveOffset) &&
+        uint64_t(source.baseSize.width) * source.baseSize.height * bytesPerPixel == source.level0Size)
+    {
+        BuildTalCdfEntries(pData,
+                           source.baseSize.width,
+                           source.baseSize.height,
+                           bytesPerPixel,
+                           emissiveOffset,
+                           entries.data(),
+                           uint32_t(TAL_CDF_LUT_ENTRIES));
+    }
+
+    const VkDeviceSize lutSize = VkDeviceSize(TAL_CDF_LUT_ENTRIES) * sizeof(uint32_t);
+    const VkDeviceSize offset = VkDeviceSize(textureIndex) * lutSize;
+
+    uint32_t *pStaging = static_cast<uint32_t *>(talCdfBuffer->GetMapped(frameIndex)) +
+                         VkDeviceSize(textureIndex) * TAL_CDF_LUT_ENTRIES;
+
+    std::memcpy(pStaging, entries.data(), size_t(lutSize));
+
+    talCdfBuffer->CopyFromStaging(cmd, frameIndex, lutSize, offset);
 }
 
 uint32_t TextureManager::CreateAnimatedMaterial(VkCommandBuffer cmd, uint32_t frameIndex, const RgAnimatedMaterialCreateInfo &createInfo)
@@ -682,11 +872,11 @@ void TextureManager::DestroyMaterial(uint32_t currentFrameIndex, uint32_t materi
     }
 }
 
-void TextureManager::CheckForHotReload(VkCommandBuffer cmd)
+void TextureManager::CheckForHotReload(VkCommandBuffer cmd, uint32_t frameIndex)
 {
     if (observer && imageLoaderDev)
     {
-        observer->CheckPathsAndReupload(cmd, *this, imageLoaderDev.get());
+        observer->CheckPathsAndReupload(cmd, frameIndex, *this, imageLoaderDev.get());
     }
 }
 
@@ -757,6 +947,16 @@ MaterialTextures TextureManager::GetMaterialTextures(uint32_t materialIndex) con
     }
 
     return it->second.textures;
+}
+
+VkBuffer TextureManager::GetTalCdfBuffer() const
+{
+    if (!talCdfBuffer)
+    {
+        return VK_NULL_HANDLE;
+    }
+
+    return talCdfBuffer->GetDeviceLocal();
 }
 
 VkDescriptorSet TextureManager::GetDescSet(uint32_t frameIndex) const

@@ -41,7 +41,7 @@ bool vkpt::TextureObserver::HaveChanged(std::vector<DependentFile> &files)
     return changed;
 }
 
-void vkpt::TextureObserver::CheckPathsAndReupload(VkCommandBuffer cmd, TextureManager &manager, ImageLoaderDev *loader)
+void vkpt::TextureObserver::CheckPathsAndReupload(VkCommandBuffer cmd, uint32_t frameIndex, TextureManager &manager, ImageLoaderDev *loader)
 {
     if (loader == nullptr)
     {
@@ -92,7 +92,7 @@ void vkpt::TextureObserver::CheckPathsAndReupload(VkCommandBuffer cmd, TextureMa
                     },
                 };
 
-                manager.UpdateMaterial(cmd, info);
+                manager.UpdateMaterial(cmd, frameIndex, info);
 
                 loader->FreeLoaded();
             }

@@ -48,8 +48,6 @@ struct TriangleLight
 
 #define TAL_SELF_ILLUMINATION_PLANE_EPS 0.05
 
-#define TAL_MASK_REJECTION_TRIES 96
-
 struct TexturedAreaLight
 {
     vec3 A;
@@ -386,6 +384,77 @@ LightSample sampleTriangleLight(const TriangleLight l, const vec3 surfPosition, 
     return r;
 }
 
+bool getTalCdfUv(const uint textureIndex, const float rnd, const vec2 jitter, out vec2 uv)
+{
+    const uint entryCount = uint(TAL_CDF_LUT_ENTRIES);
+    const uint index = min(uint(rnd * float(entryCount)), entryCount - 1u);
+    const uint packed = talCdf[textureIndex * entryCount + index];
+
+    if (packed == TAL_CDF_EMPTY_ENTRY)
+    {
+        return false;
+    }
+
+    const vec2 texSize = vec2(textureSize(globalTextures[nonuniformEXT(textureIndex)], 0));
+    const vec2 cellSize = 1.0 / min(texSize, vec2(TAL_CDF_GRID_MAX_SIZE));
+
+    uv = vec2(float(packed & 0xFFFFu), float(packed >> 16u)) * (1.0 / 65535.0) + (jitter - 0.5) * cellSize;
+    return true;
+}
+
+bool isUvInsideConvexPolygon(const vec2 verts[MAX_TEXTURED_AREA_LIGHT_VERTS], const int numVerts, const vec2 uv)
+{
+    if (numVerts < 3)
+    {
+        return true;
+    }
+
+    float sign = 0.0;
+    for (int i = 0; i < numVerts; i++)
+    {
+        const vec2 a = verts[i];
+        const vec2 b = verts[(i + 1) % numVerts];
+
+        const float cross = (b.x - a.x) * (uv.y - a.y) - (b.y - a.y) * (uv.x - a.x);
+
+        if (cross != 0.0)
+        {
+            if (sign == 0.0)
+            {
+                sign = cross > 0.0 ? 1.0 : -1.0;
+            }
+            else if (cross * sign < 0.0)
+            {
+                return false;
+            }
+        }
+    }
+
+    return true;
+}
+
+void getTalUvTiles(const TexturedAreaLight l, out vec2 tileMin, out vec2 tileMax)
+{
+    vec2 uvMin = l.uvVerts[0];
+    vec2 uvMax = l.uvVerts[0];
+
+    const int vertCount = min(int(l.numVerts), MAX_TEXTURED_AREA_LIGHT_VERTS);
+
+    for (int i = 1; i < MAX_TEXTURED_AREA_LIGHT_VERTS; i++)
+    {
+        if (i >= vertCount)
+        {
+            break;
+        }
+
+        uvMin = min(uvMin, l.uvVerts[i]);
+        uvMax = max(uvMax, l.uvVerts[i]);
+    }
+
+    tileMin = floor(uvMin);
+    tileMax = max(ceil(uvMax) - 1.0, tileMin);
+}
+
 LightSample sampleTexturedAreaLight(const TexturedAreaLight l, const vec3 surfPosition, const vec2 pointRnd)
 {
     LightSample r;
@@ -401,27 +470,36 @@ LightSample sampleTexturedAreaLight(const TexturedAreaLight l, const vec3 surfPo
     }
 
     vec2 uv = sampleConvexPolygon(l.uvVerts, l.numVerts, pointRnd.x, pointRnd.y);
+
     float mask = 1.0;
-    bool accepted = true;
+    float emiss = l.meanEmiss;
 
     if (textureIndex != 0u)
     {
-        const uint maskSeed = wellonsLowBias32(
+        mask = getTextureSampleLod(textureIndex, uv, 0.0).b;
+        emiss = 1.0;
+
+        const uint cdfSeed = wellonsLowBias32(
             floatBitsToUint(pointRnd.x) ^ floatBitsToUint(pointRnd.y));
 
-        accepted = false;
-        for (int tryIdx = 0; tryIdx < TAL_MASK_REJECTION_TRIES; tryIdx++)
+        vec2 cdfUv;
+        if (getTalCdfUv(textureIndex,
+                        rnd16(cdfSeed, 0u),
+                        vec2(rnd16(cdfSeed, 1u), rnd16(cdfSeed, 2u)),
+                        cdfUv))
         {
-            const uint salt = uint(tryIdx) * 3u;
-            const vec2 tryRnd = vec2(
-                rnd16(maskSeed, salt),
-                rnd16(maskSeed, salt + 1u));
-            uv = sampleConvexPolygon(l.uvVerts, l.numVerts, tryRnd.x, tryRnd.y);
-            mask = getTextureSampleLod(textureIndex, uv, 0.0).b;
-            if (rnd16(maskSeed, salt + 2u) < mask)
+            vec2 tileMin, tileMax;
+            getTalUvTiles(l, tileMin, tileMax);
+
+            const vec2 tileSpan = tileMax - tileMin + 1.0;
+            const vec2 tileRnd = vec2(rnd16(cdfSeed, 3u), rnd16(cdfSeed, 4u));
+            const vec2 tiledUv = cdfUv + tileMin + min(floor(tileRnd * tileSpan), tileSpan - 1.0);
+
+            if (isUvInsideConvexPolygon(l.uvVerts, l.numVerts, tiledUv))
             {
-                accepted = true;
-                break;
+                uv = tiledUv;
+                mask = 1.0;
+                emiss = l.meanEmiss;
             }
         }
     }
@@ -430,16 +508,8 @@ LightSample sampleTexturedAreaLight(const TexturedAreaLight l, const vec3 surfPo
 
     const DirectionAndLength lightToSurf = calcDirectionAndLength(r.position, surfPosition);
 
-    if (accepted)
-    {
-        r.color = l.color;
-        r.dw = safeSolidAngle(l.meanEmiss * l.area * getGeometryFactorClamped(l.normal, lightToSurf.dir, lightToSurf.len));
-    }
-    else
-    {
-        r.color = l.color * mask;
-        r.dw = safeSolidAngle(l.area * getGeometryFactorClamped(l.normal, lightToSurf.dir, lightToSurf.len));
-    }
+    r.color = l.color * mask;
+    r.dw = safeSolidAngle(emiss * l.area * getGeometryFactorClamped(l.normal, lightToSurf.dir, lightToSurf.len));
 
     return r;
 }

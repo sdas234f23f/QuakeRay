@@ -1167,7 +1167,7 @@ void VulkanDevice::DrawFrame(const RgDrawFrameInfo *drawInfo)
         amdFsr->SetUpscaleVersion(*lastUpscaleTechnique);
     }
 
-    textureManager->CheckForHotReload(cmd);
+    textureManager->CheckForHotReload(cmd, frameIndex);
 
     if (renderResolution.Width() > 0 && renderResolution.Height() > 0)
     {
@@ -1589,7 +1589,7 @@ void VulkanDevice::UpdateMaterial(const RgMaterialUpdateInfo *updateInfo)
         throw RgException(RG_WRONG_ARGUMENT, "Argument is null");
     }
 
-    bool wasUpdated = textureManager->UpdateMaterial(currentFrameState.GetCmdBuffer(), *updateInfo);
+    bool wasUpdated = textureManager->UpdateMaterial(currentFrameState.GetCmdBuffer(), currentFrameState.GetFrameIndex(), *updateInfo);
 }
 
 void VulkanDevice::DestroyMaterial(RgMaterial material)

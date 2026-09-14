@@ -52,7 +52,7 @@ Scene::Scene(
 
     VertexCollectorFilterTypeFlags_Init();
 
-    lightManager = std::make_shared<LightManager>(_device, _allocator);
+    lightManager = std::make_shared<LightManager>(_device, _allocator, _textureManager->GetTalCdfBuffer());
     geomInfoMgr = std::make_shared<GeomInfoManager>(_device, _allocator);
 
     asManager = std::make_shared<ASManager>(_device, _physDevice, _allocator, _cmdManager, _textureManager, geomInfoMgr);

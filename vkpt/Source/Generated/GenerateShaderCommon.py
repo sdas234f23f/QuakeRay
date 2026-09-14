@@ -266,6 +266,7 @@ CONST = {
     "BINDING_LIGHT_SOURCES_Q2_LIGHT_LIST_OFFSETS" : 4,
     "BINDING_LIGHT_SOURCES_Q2_LIGHT_LIST_LIGHTS"  : 5,
     "BINDING_LIGHT_SOURCES_Q2_LIGHT_STATS"        : 6,
+    "BINDING_LIGHT_SOURCES_TAL_CDF"               : 7,
     "BINDING_LENS_FLARES_CULLING_INPUT"         : 0,
     "BINDING_LENS_FLARES_DRAW_CMDS"             : 1,
     "BINDING_DRAW_LENS_FLARES_INSTANCES"        : 0,
@@ -425,6 +426,10 @@ CONST = {
     "LIGHT_ARRAY_REGULAR_LIGHTS_OFFSET"     : 1,
 
     "LIGHT_INDEX_NONE"                      : ((1 << 15) - 1),
+
+    "TAL_CDF_LUT_ENTRIES"                   : 256,
+    "TAL_CDF_EMPTY_ENTRY"                   : "0xFFFFFFFFu",
+    "TAL_CDF_GRID_MAX_SIZE"                 : 256,
 
     # Q2RTX-style per-BSP-cluster light lists. The world model's BSP leaves are
     # used as clusters (vkQuake's PVS is leaf-indexed). The lists are built on
