@@ -1023,6 +1023,12 @@ typedef struct RgDrawFrameIlluminationParams
     // a bandwidth optimization: such pixels write nothing either way.
     // Default: 1
     uint32_t    reflRefrEarlyOut;
+    // Number of NEE light samples per pixel in the direct pass. The estimator
+    // divides by this count, so any value stays unbiased: lowering it only
+    // trades noise for shadow rays. Clamped to 1..2 (see the RNG salt notes in
+    // RtRaygenDirect.rgen).
+    // Default: 2
+    uint32_t    neeLightSamples;
     // For which light first-person viewer shadows should be ignored.
     // E.g. first-person flashlight.
     // Null, if none.

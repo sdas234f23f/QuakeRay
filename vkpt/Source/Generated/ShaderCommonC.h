@@ -302,7 +302,7 @@ struct ShGlobalUniform
     float skyNee;
     uint32_t q2LightStatsMode;
     uint32_t reflRefrEarlyOut;
-    float _pad4;
+    uint32_t neeLightSamples;
     float _pad5;
     int32_t instanceGeomInfoOffset[48];
     int32_t instanceGeomInfoOffsetPrev[48];

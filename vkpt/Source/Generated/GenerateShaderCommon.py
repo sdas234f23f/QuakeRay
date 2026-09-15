@@ -653,10 +653,16 @@ GLOBAL_UNIFORM_STRUCT = [
     # the G-buffer when the primary surface neither reflects nor refracts
     # (host cvar rt_reflrefr_earlyout)
     (TYPE_UINT32,       1,      "reflRefrEarlyOut",                 1),
+    # Number of NEE light samples per pixel in the direct pass (host cvar
+    # rt_nee_samples, clamped to 1..2). The estimator divides by this count, so
+    # both values stay unbiased; the ceiling of 2 comes from the RNG salt
+    # collision documented in RtRaygenDirect.rgen.
+    (TYPE_UINT32,       1,      "neeLightSamples",                  1),
     # Layout alignment: ShGlobalUniform is std140 and the dense C mirror has no
-    # implicit padding, so the scalar block before the first vec4/ivec4 array must
-    # stay a multiple of 16 bytes. 8 bytes of payload + 8 bytes of pads = 16.
-    (TYPE_FLOAT32,      1,      "_pad4",                            1),
+    # implicit padding, so the run of scalar members before the first vec4/ivec4
+    # array must end on a 16-byte boundary (2208 B here). `_pad5` is what
+    # completes it: dropping it shifts every following array and desyncs the two
+    # layouts, and any further 4-byte scalar has to take its place instead.
     (TYPE_FLOAT32,      1,      "_pad5",                            1),
 
     # for std140

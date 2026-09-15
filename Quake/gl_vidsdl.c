@@ -245,6 +245,7 @@ task_handle_t prev_end_rendering_task = INVALID_TASK_HANDLE;
 	CVAR_DEF_T (rt_q2_depthgrad, "1") \
 	CVAR_DEF_T (rt_q2_lightstats, "1") \
 	CVAR_DEF_T (rt_reflrefr_earlyout, "1") \
+	CVAR_DEF_T (rt_nee_samples, "2") \
 	CVAR_DEF_T (rt_stats, "0") \
 	CVAR_DEF_T (rt_pass_stats, "0") \
 	\
@@ -1120,6 +1121,11 @@ static void GL_EndRenderingTask (end_rendering_parms_t *parms)
 	const float q2_lightstats_value = CVAR_TO_FLOAT (rt_q2_lightstats);
 	const uint32_t q2_lightstats_mode = (q2_lightstats_value < 0.0f || q2_lightstats_value > 4.0f) ? 1u : (uint32_t)q2_lightstats_value;
 
+	// Single- vs double-sample NEE in the direct pass. The estimator divides by
+	// the count, so both values are unbiased; the range cannot go above 2 because
+	// a third sample's RNG salt would collide with the sun disk stream.
+	const uint32_t nee_samples = (CVAR_TO_FLOAT (rt_nee_samples) < 1.5f) ? 1u : 2u;
+
 	RgDrawFrameIlluminationParams illum_params = {
 	    .maxBounceShadows = CVAR_TO_UINT32 (rt_shadowrays),
 		.enableSecondBounceForIndirect = CVAR_TO_BOOL (rt_indir2bounces),
@@ -1131,6 +1137,7 @@ static void GL_EndRenderingTask (end_rendering_parms_t *parms)
 		.q2DepthGradMode = CVAR_TO_UINT32 (rt_q2_depthgrad) != 0,
 		.q2LightStatsMode = q2_lightstats_mode,
 		.reflRefrEarlyOut = CVAR_TO_BOOL (rt_reflrefr_earlyout),
+		.neeLightSamples = nee_samples,
 		.lightUniqueIdIgnoreFirstPersonViewerShadows = NULL,
 	};
 
