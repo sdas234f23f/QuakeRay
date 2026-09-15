@@ -86,7 +86,7 @@ namespace vkpt
 #define MATERIAL_BLENDING_MASK_FIRST_LAYER (15)
 #define MATERIAL_BLENDING_MASK_SECOND_LAYER (240)
 #define MATERIAL_BLENDING_MASK_THIRD_LAYER (3840)
-#define GEOM_INST_FLAG_RESERVED_0 (1 << 13)
+#define GEOM_INST_FLAG_TURB_WARP (1 << 13)
 #define GEOM_INST_FLAG_RESERVED_1 (1 << 14)
 #define GEOM_INST_FLAG_RESERVED_2 (1 << 15)
 #define GEOM_INST_FLAG_RESERVED_3 (1 << 16)
@@ -303,7 +303,7 @@ struct ShGlobalUniform
     uint32_t q2LightStatsMode;
     uint32_t reflRefrEarlyOut;
     uint32_t neeLightSamples;
-    float _pad5;
+    float turbWarpStrength;
     int32_t instanceGeomInfoOffset[48];
     int32_t instanceGeomInfoOffsetPrev[48];
     int32_t instanceGeomCount[48];

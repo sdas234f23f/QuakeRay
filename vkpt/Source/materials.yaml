@@ -34,8 +34,9 @@ materials:
   - name: textures/#teleport
     texture_gloss: textures/#teleport_gloss.png
     texture_emissive: textures/#teleport_luma.png
-    metalness_factor: 0.5
-    is_light: false
+    metalness_factor: 0.9
+    light_brightness: 0.3
+    is_light: true
   - name: textures/+0_med25
     texture_gloss: textures/+0_med25_gloss.png
     texture_emissive: textures/+0_med25_luma.png
@@ -550,8 +551,10 @@ materials:
     is_light: false
   - name: textures/window02_1
     texture_base: textures/window02_1.png
+    light_color: EFCF81
+    light_brightness: 0.05
     mirror: true
-    is_light: false
+    is_light: true
   - name: textures/window1_2
     texture_base: textures/window1_2.png
     mirror: true

@@ -104,7 +104,7 @@ vec3 getHitInfoAlbedoOnly(ShPayload pl)
 
     const vec2 texCoords[] = 
     {
-        tr.layerTexCoord[0] * baryCoords,
+        getSurfaceTexCoord(tr.geometryInstanceFlags, tr.layerTexCoord[0] * baryCoords),
         tr.layerTexCoord[1] * baryCoords,
         tr.layerTexCoord[2] * baryCoords
     };
@@ -198,7 +198,7 @@ ShHitInfo getHitInfoBounce(
     
     const vec2 texCoords[] = 
     {
-        tr.layerTexCoord[0] * baryCoords,
+        getSurfaceTexCoord(tr.geometryInstanceFlags, tr.layerTexCoord[0] * baryCoords),
         tr.layerTexCoord[1] * baryCoords,
         tr.layerTexCoord[2] * baryCoords
     };
@@ -308,14 +308,14 @@ ShHitInfo getHitInfoBounce(
     // pixel's footprint in texture space
     const vec2 dTdx[] = 
     {
-        (tr.layerTexCoord[0] * baryCoordsAX - texCoords[0]),
+        (getSurfaceTexCoord(tr.geometryInstanceFlags, tr.layerTexCoord[0] * baryCoordsAX) - texCoords[0]),
         (tr.layerTexCoord[1] * baryCoordsAX - texCoords[1]),
         (tr.layerTexCoord[2] * baryCoordsAX - texCoords[2])
     };
 
     const vec2 dTdy[] = 
     {
-        (tr.layerTexCoord[0] * baryCoordsAY - texCoords[0]),
+        (getSurfaceTexCoord(tr.geometryInstanceFlags, tr.layerTexCoord[0] * baryCoordsAY) - texCoords[0]),
         (tr.layerTexCoord[1] * baryCoordsAY - texCoords[1]),
         (tr.layerTexCoord[2] * baryCoordsAY - texCoords[2])
     };

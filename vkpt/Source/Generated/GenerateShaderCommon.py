@@ -321,7 +321,8 @@ CONST = {
     "MATERIAL_BLENDING_MASK_SECOND_LAYER"   : CONST_TO_EVALUATE,
     "MATERIAL_BLENDING_MASK_THIRD_LAYER"    : CONST_TO_EVALUATE,
     # 12 first bits are for the blending flags per each layer, others can be used
-    "GEOM_INST_FLAG_RESERVED_0"             : "1 << 13",
+    # texture coordinates are animated by the classic "warp" of the turbulent surfaces
+    "GEOM_INST_FLAG_TURB_WARP"              : "1 << 13",
     "GEOM_INST_FLAG_RESERVED_1"             : "1 << 14",
     "GEOM_INST_FLAG_RESERVED_2"             : "1 << 15",
     "GEOM_INST_FLAG_RESERVED_3"             : "1 << 16",
@@ -659,11 +660,16 @@ GLOBAL_UNIFORM_STRUCT = [
     # collision documented in RtRaygenDirect.rgen.
     (TYPE_UINT32,       1,      "neeLightSamples",                  1),
     # Layout alignment: ShGlobalUniform is std140 and the dense C mirror has no
-    # implicit padding, so the run of scalar members before the first vec4/ivec4
-    # array must end on a 16-byte boundary (2208 B here). `_pad5` is what
-    # completes it: dropping it shifts every following array and desyncs the two
-    # layouts, and any further 4-byte scalar has to take its place instead.
-    (TYPE_FLOAT32,      1,      "_pad5",                            1),
+    # implicit padding, so every vec4/ivec4 member has to sit on a 16-byte
+    # boundary already in the packed layout. turbWarpStrength - the amplitude of
+    # the classic turbulent surface warp (see Shaders/TurbWarp.h; host cvar
+    # rt_turb_warp) - takes the last 4 bytes of the scalar run that ends here,
+    # right before the instanceGeomInfoOffset arrays at 1088. It cannot be moved
+    # to another spot in the run: waterColorAndDensity (880), acidColorAndDensity
+    # (896) and worldUpVector (928) lie inside it on 16-byte boundaries, so any
+    # extra scalar in front of one of them shifts the whole tail and desyncs the
+    # two layouts.
+    (TYPE_FLOAT32,      1,      "turbWarpStrength",                 1),
 
     # for std140
     (TYPE_INT32,        4,      "instanceGeomInfoOffset",       align4(CONST["MAX_TOP_LEVEL_INSTANCE_COUNT"]) // 4),
@@ -1445,6 +1451,12 @@ def main():
             else:
                 print("--path expects folder path in the next argument.")
                 return
+
+    # The output names are appended to the argument verbatim, so a bare "." or
+    # "C:\dir" (no trailing separator) would land next to the folder, not inside
+    # it - i.e. in ".ShaderCommonC.h" / "C:\dirShaderCommonC.h".
+    if basePath and not basePath.endswith(("/", "\\")):
+        basePath += os.sep
 
     evalConst()
     # with open('ShaderConfig.csv', newline='') as csvfile:

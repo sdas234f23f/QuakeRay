@@ -54,6 +54,7 @@
 #include "Light.h"
 #include "Media.h"
 #include "RayCone.h"
+#include "TurbWarp.h"
 
 #define HITINFO_INL_PRIM
     #include "HitInfo.inl"

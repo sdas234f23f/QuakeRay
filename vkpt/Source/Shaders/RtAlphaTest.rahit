@@ -29,6 +29,9 @@
 #define DESC_SET_TEXTURES 4
 #include "ShaderCommonGLSLFunc.h"
 
+// the alpha test must sample the same texel as the closest hit shader
+#include "TurbWarp.h"
+
 hitAttributeEXT vec2 inBaryCoords;
 
 
@@ -40,7 +43,7 @@ void main()
 	const ShTriangle tr = getTriangle(gl_InstanceID, gl_InstanceCustomIndexEXT, gl_GeometryIndexEXT, gl_PrimitiveID);
 
 	const vec3 baryCoords = vec3(1.0f - inBaryCoords.x - inBaryCoords.y, inBaryCoords.x, inBaryCoords.y);
-    const vec2 texCoord = tr.layerTexCoord[0] * baryCoords;
+    const vec2 texCoord = getSurfaceTexCoord(tr.geometryInstanceFlags, tr.layerTexCoord[0] * baryCoords);
  
 	// check only first material's albedo
  	const vec4 color = getTextureSample(tr.materials[0][MATERIAL_ALBEDO_ALPHA_INDEX], texCoord) * tr.materialColors[0];

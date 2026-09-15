@@ -39,6 +39,7 @@ extern cvar_t rt_brush_rough;
 extern cvar_t rt_classic_render;
 extern cvar_t rt_enable_pvs;
 extern cvar_t rt_reflrefr_depth;
+extern cvar_t rt_teleport_portals;
 extern cvar_t rt_wlight_intensity, rt_wlight_radius;
 extern cvar_t rt_emis_light_intensity;
 extern cvar_t rt_light_styles;
@@ -194,7 +195,6 @@ static void RT_EmisWatchFrameEnd (void)
 	}
 }
 
-#define RT_CUSTOMPORTALS_PATH RT_OVERRIDEN_FOLDER "world_custom_portals.txt"
 
 // RT: remove SIMD here, as the culling is not requires
 #undef USE_SIMD
@@ -1005,7 +1005,10 @@ static void RT_FlushBatch (cb_context_t *cbx, const rt_uploadsurf_state_t *s, ui
 		lightmap_tex = NULL;
 	}
 
-	if (s->is_teleport && !CVAR_TO_BOOL (rt_classic_render) && CVAR_TO_INT32 (rt_reflrefr_depth) > 0)
+	const qboolean is_teleport_portal =
+		s->is_teleport && !CVAR_TO_BOOL (rt_classic_render) && CVAR_TO_BOOL (rt_teleport_portals);
+
+	if (is_teleport_portal && CVAR_TO_INT32 (rt_reflrefr_depth) > 0)
 	{
 		diffuse_tex = NULL;
 	}
@@ -1061,7 +1064,9 @@ static void RT_FlushBatch (cb_context_t *cbx, const rt_uploadsurf_state_t *s, ui
 			.uniqueID = RT_GetBrushSurfUniqueId (s->entuniqueid, s->model, s->surf, 0),
 			.flags = 
 			    (is_mirror ? RG_GEOMETRY_UPLOAD_REFL_REFR_ALBEDO_MULTIPLY_BIT : 0) |
-			    (s->is_teleport && !CVAR_TO_BOOL (rt_classic_render) ? RG_GEOMETRY_UPLOAD_REFL_REFR_ALBEDO_ADD_BIT : 0) |
+			    (is_teleport_portal ? RG_GEOMETRY_UPLOAD_REFL_REFR_ALBEDO_ADD_BIT : 0) |
+			    // water and slime already churn through the RT wave normals
+			    (s->is_warp && !s->is_water && !s->is_acid ? RG_GEOMETRY_UPLOAD_TURB_WARP_BIT : 0) |
                 RG_GEOMETRY_UPLOAD_GENERATE_NORMALS_BIT,
 			.geomType = is_static_geom ? RG_GEOMETRY_TYPE_STATIC : RG_GEOMETRY_TYPE_DYNAMIC,
 			.passThroughType = 
@@ -1069,7 +1074,7 @@ static void RT_FlushBatch (cb_context_t *cbx, const rt_uploadsurf_state_t *s, ui
 			    is_mirror ? RG_GEOMETRY_PASS_THROUGH_TYPE_MIRROR :
 			    s->is_water ? RG_GEOMETRY_PASS_THROUGH_TYPE_WATER_REFLECT_REFRACT :
 			    s->is_acid ? RG_GEOMETRY_PASS_THROUGH_TYPE_ACID_REFLECT_REFRACT :
-			    s->is_teleport ? RG_GEOMETRY_PASS_THROUGH_TYPE_PORTAL :
+			    is_teleport_portal ? RG_GEOMETRY_PASS_THROUGH_TYPE_PORTAL :
 		        RG_GEOMETRY_PASS_THROUGH_TYPE_OPAQUE,
 			.visibilityType = RG_GEOMETRY_VISIBILITY_TYPE_WORLD_0,
 			.vertexCount = num_surf_verts,
@@ -1097,7 +1102,7 @@ static void RT_FlushBatch (cb_context_t *cbx, const rt_uploadsurf_state_t *s, ui
 			.transform = RT_GetBrushModelMatrix (s->ent),
 		};
 
-		if (s->is_teleport && !CVAR_TO_BOOL (rt_classic_render))
+		if (is_teleport_portal)
 		{
 			qboolean portal_is_mirror = false;
 
@@ -2304,74 +2309,6 @@ static struct rt_parsetriggers_result_t ParseTeleportTriggers (void)
 	}
 }
 
-static float DistanceSqr (const vec3_t a, const vec3_t b);
-
-#define CUSTOM_PORTAL_DISTANCE_THRESHOLD (METRIC_TO_QUAKEUNIT (3.0f))
-static void LoadCustomTeleportInfoAndPatch ()
-{
-	if (rt_teleports_count == 0)
-	{
-		return;
-	}
-
-    const char *cur_mapname = cl.worldmodel->name;
-	if (cur_mapname == NULL)
-	{
-		Con_Printf ("Null world\n");
-		return;
-	}
-
-	FILE *f = fopen (RT_CUSTOMPORTALS_PATH, "r");
-	if (!f)
-	{
-		return;
-	}
-	
-	char line[1024] = "";
-	
-	while (fgets (line, sizeof (line), f))
-	{
-		vec3_t   entry_a = {0, 0, 0};
-		vec3_t   custom_output = {0, 0, 0};
-		qboolean custom_ismirror = false;
-
-		char mapname[128] = "";
-
-		int components = sscanf (
-			line, 
-			"%s %f %f %f %f %f %f %d", 
-			mapname,
-			&entry_a[0],
-			&entry_a[1],
-			&entry_a[2],
-			&custom_output[0],
-			&custom_output[1],
-			&custom_output[2],
-			&custom_ismirror );
-
-		if (components == 7)
-		{
-			custom_ismirror = false;
-			components = 8;
-		}
-
-		if (components == 8 && strncmp (mapname, cur_mapname, sizeof (mapname)) == 0)
-		{
-			for (int i = 0; i < rt_teleports_count;i++)
-			{
-				if (DistanceSqr (rt_teleports[i].a, entry_a) < CUSTOM_PORTAL_DISTANCE_THRESHOLD * CUSTOM_PORTAL_DISTANCE_THRESHOLD)
-				{
-					VectorCopy (custom_output, rt_teleports[i].b);
-					rt_teleports[i].potentially_mirror = !!custom_ismirror;
-				}
-			}
-		}
-	}
-
-	fclose (f);
-}
-
-
 #define RG_MAX_PORTALS 62
 
 void RT_ParseTeleports (void)
@@ -2433,8 +2370,6 @@ void RT_ParseTeleports (void)
 
 	Mem_Free (r.trigs);
 	Mem_Free (r.dsts);
-
-	LoadCustomTeleportInfoAndPatch ();
 }
 
 
@@ -2513,6 +2448,10 @@ void RT_UploadAllTeleports ()
 {
 	assert (rt_teleports_count >= 0 && rt_teleports_count <= RG_MAX_PORTALS);
 
+	if (!CVAR_TO_BOOL (rt_teleport_portals))
+	{
+		return;
+	}
 
 	const vec3_t outoffset = {0, 0, 64};
 
@@ -2542,50 +2481,6 @@ void RT_UploadAllTeleports ()
 	}
 }
 
-
-void RT_PrintNearestPortal ()
-{
-	assert (rt_teleports_count >= 0 && rt_teleports_count <= RG_MAX_PORTALS);
-
-    Con_Printf ("Camera: %.1f %.1f %.1f\n", r_refdef.vieworg[0], r_refdef.vieworg[1], r_refdef.vieworg[2]);
-	
-	for (int i = 0; i < rt_teleports_count; i++)
-	{
-		qboolean isnear = DistanceSqr (rt_teleports[i].a, r_refdef.vieworg) < CUSTOM_PORTAL_DISTANCE_THRESHOLD * CUSTOM_PORTAL_DISTANCE_THRESHOLD;
-
-		if (isnear)
-		{
-			Con_Printf ("[Near] Portal %d: %.1f %.1f %.1f\n", i, rt_teleports[i].a[0], rt_teleports[i].a[1], rt_teleports[i].a[2]);
-		}
-		else
-		{
-			Con_Printf ("       Portal %d: %.1f %.1f %.1f\n", i, rt_teleports[i].a[0], rt_teleports[i].a[1], rt_teleports[i].a[2]);
-		}
-	}
-
-	int   nearest = -1;
-	float nearest_dist = FLT_MAX;
-
-	for (int i = 0; i < rt_teleports_count; i++)
-	{
-		float d = DistanceSqr (rt_teleports[i].a, r_refdef.vieworg);
-
-		if (d < nearest_dist)
-		{
-			nearest = i;
-			nearest_dist = d;
-		}
-	}
-
-	if (nearest >= 0)
-	{
-		Con_Printf ("[NRST] Portal %d: %.1f %.1f %.1f\n", nearest, rt_teleports[nearest].a[0], rt_teleports[nearest].a[1], rt_teleports[nearest].a[2]);
-	}
-	
-	{
-		Con_Printf ("%s\n", cl.worldmodel->name);
-	}
-}
 
 void RT_PrintEmissiveStats (void)
 {
