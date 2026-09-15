@@ -1950,7 +1950,7 @@ void M_Quit_Draw (cb_context_t *cbx) // johnfitz -- modified for new quit messag
 		m_state = m_quit;
 	}
 
-	sprintf (msg1, "vkQuake " ENGINE_VER_STRING);
+	sprintf (msg1, "QuakeRay " ENGINE_VER_STRING);
 
 	// okay, this is kind of fucked up.  M_DrawTextBox will always act as if
 	// width is even. Also, the width and lines values are for the interior of the box,

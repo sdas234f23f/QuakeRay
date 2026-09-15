@@ -42,10 +42,10 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #ifndef QUAKESPASM_VER_SUFFIX
 #define QUAKESPASM_VER_SUFFIX // optional version suffix string literal like "-beta1"
 #endif
-#define ENGINE_VERSION   0.30
+#define ENGINE_VERSION   0.9
 #define ENGINE_VER_PATCH 0 // helper to print a string like 0.92.1
 #ifndef ENGINE_VER_SUFFIX
-#define ENGINE_VER_SUFFIX "alpha" // optional version suffix like -beta1
+#define ENGINE_VER_SUFFIX "" // optional version suffix like -beta1
 #endif
 
 #define QS_STRINGIFY_(x) #x
@@ -57,10 +57,10 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #ifdef QSS_DATE
 // combined version string like "2020-10-20-beta1"
-#define ENGINE_NAME_AND_VER "VkQuakeRay " QS_STRINGIFY (QSS_DATE) ENGINE_VER_SUFFIX
+#define ENGINE_NAME_AND_VER "QuakeRay " QS_STRINGIFY (QSS_DATE) ENGINE_VER_SUFFIX
 #else
 #define ENGINE_NAME_AND_VER \
-	"VkQuakeRay"               \
+	"QuakeRay"                 \
 	" " ENGINE_VER_STRING
 #endif
 

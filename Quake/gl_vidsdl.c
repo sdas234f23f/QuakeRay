@@ -467,7 +467,7 @@ static qboolean VID_SetMode (int width, int height, int refreshrate, qboolean fu
 	CDAudio_Pause ();
 	BGM_Pause ();
 
-	q_snprintf (caption, sizeof (caption), "vkQuake " ENGINE_VER_STRING);
+	q_snprintf (caption, sizeof (caption), "QuakeRay " ENGINE_VER_STRING);
 
 	/* Create the window if needed, hidden */
 	if (!draw_context)
@@ -695,7 +695,7 @@ static void GL_InitInstance (void)
 	const char pWaterTexturePath[] = RT_OVERRIDEN_FOLDER "WaterNormal_n.ktx2";
 
 	RgInstanceCreateInfo info = {
-		.pAppName = "VkQuakeRay",
+		.pAppName = "QuakeRay",
 		.pAppGUID = "8d1f551a-b0e4-4365-985c-5e1182f3c54a",
 
 #ifdef RG_USE_SURFACE_WIN32
