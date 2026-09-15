@@ -391,7 +391,6 @@ void RT_UploadAllWorldModelLights (void);
 
 void RT_ParseTeleports (void);
 void RT_UploadAllTeleports (void);
-void RT_PrintNearestPortal (void);
 
 #define DRAW_GL_POLY_TYPE_SKY 1
 #define DRAW_GL_POLY_TYPE_SHOWTRI 2

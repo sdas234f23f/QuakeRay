@@ -63,7 +63,7 @@
 #define Q2_FLT_ATROUS_NORMAL_HF 16.0
 #define Q2_FLT_ATROUS_NORMAL_SPEC 1.0
 #define Q2_FLT_ATROUS_LUM_HF 16.0
-#define Q2_FLT_ATROUS_DEFLICKER_LF 0.75
+#define Q2_FLT_ATROUS_DEFLICKER_LF 0.75 // Q2RTX flt_atrous_deflicker_lf is 2.0 here; lower = stronger firefly/flat-LF clamp
 
 // Lower clamp for fwidth_depth: the reciprocal of the per-pixel depth change of
 // the pixel footprint (Q2RTX path_tracer_rgen.h). Same value as upstream, in

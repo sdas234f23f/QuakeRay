@@ -207,8 +207,10 @@ task_handle_t prev_end_rendering_task = INVALID_TASK_HANDLE;
 	CVAR_DEF_T (rt_water_normstren, "1") \
 	CVAR_DEF_T (rt_water_normsharp, "5") \
 	CVAR_DEF_T (rt_water_scale, "1") \
+	CVAR_DEF_T (rt_turb_warp, "1") \
 	\
 	CVAR_DEF_T (rt_portal_twirl, "1") \
+	CVAR_DEF_T (rt_teleport_portals, "0") \
     \
 	CVAR_DEF_T (rt_sharpen, "0") \
 	CVAR_DEF_T (rt_renderscale, "0") \
@@ -746,7 +748,6 @@ static void GL_InitInstance (void)
 
 	Cmd_AddCommand ("rt_pfnreloadshaders", RT_ReloadShaders);
 	Cmd_AddCommand ("rt_pfnswitch", RT_SwitchRenderer);
-	Cmd_AddCommand ("rt_pfnportal", RT_PrintNearestPortal);
 	Cmd_AddCommand ("rt_water_color", RT_WaterColor);
 	Cmd_AddCommand ("rt_water_acidcolor", RT_AcidColor);
 	Cmd_AddCommand ("rt_light_report", RT_LightReport_f);
@@ -1154,6 +1155,7 @@ static void GL_EndRenderingTask (end_rendering_parms_t *parms)
 		.indexOfRefractionWater = CVAR_TO_FLOAT (rt_refr_water),
 		.waterWaveSpeed = METRIC_TO_QUAKEUNIT (CVAR_TO_FLOAT (rt_water_speed)),
 		.waterWaveNormalStrength = CVAR_TO_FLOAT (rt_water_normstren),
+		.turbWarpStrength = CVAR_TO_FLOAT (rt_turb_warp),
 		.waterColor = RT_VEC3 (rt_water_color),
 		.acidColor = RT_VEC3 (rt_acid_color),
 		.acidDensity = CVAR_TO_FLOAT(rt_water_aciddensity),

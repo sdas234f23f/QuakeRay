@@ -79,7 +79,7 @@
 #define MATERIAL_BLENDING_MASK_FIRST_LAYER (15)
 #define MATERIAL_BLENDING_MASK_SECOND_LAYER (240)
 #define MATERIAL_BLENDING_MASK_THIRD_LAYER (3840)
-#define GEOM_INST_FLAG_RESERVED_0 (1 << 13)
+#define GEOM_INST_FLAG_TURB_WARP (1 << 13)
 #define GEOM_INST_FLAG_RESERVED_1 (1 << 14)
 #define GEOM_INST_FLAG_RESERVED_2 (1 << 15)
 #define GEOM_INST_FLAG_RESERVED_3 (1 << 16)
@@ -298,7 +298,7 @@ struct ShGlobalUniform
     uint q2LightStatsMode;
     uint reflRefrEarlyOut;
     uint neeLightSamples;
-    float _pad5;
+    float turbWarpStrength;
     ivec4 instanceGeomInfoOffset[12];
     ivec4 instanceGeomInfoOffsetPrev[12];
     ivec4 instanceGeomCount[12];

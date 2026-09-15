@@ -375,6 +375,9 @@ typedef enum RgGeometryUploadFlagBits
     RG_GEOMETRY_UPLOAD_REFL_REFR_ALBEDO_ADD_BIT = 32,
     // If hit the geometry with this flag, ignore refract geometry after.
     RG_GEOMETRY_UPLOAD_IGNORE_REFRACT_AFTER_REFRACT_BIT = 64,
+    // Animate the texture coordinates of the turbulent surfaces (lava, teleport)
+    // with the "warp" that the classic engine used for them.
+    RG_GEOMETRY_UPLOAD_TURB_WARP_BIT = 128,
 } RgGeometryUploadFlagBits;
 typedef RgFlags RgGeometryUploadFlags;
 
@@ -1184,6 +1187,9 @@ typedef struct RgDrawFrameReflectRefractParams
     RgBool32    forceNoWaterRefraction;
     float       waterWaveSpeed;
     float       waterWaveNormalStrength;
+    // Strength of the classic turbulent surface warp (lava, teleport).
+    // Default: 1.0, which is the amplitude of the classic warp (8 quake units).
+    float       turbWarpStrength;
     // Color at 1 meter depth.
     RgFloat3D   waterColor;
     // Color at 1 meter depth.

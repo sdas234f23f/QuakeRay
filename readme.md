@@ -15,6 +15,7 @@ QuakeRay is based on the [vkQuake](https://github.com/Novum/vkQuake) — a port 
 * Q2RTX-style materials: `.mat` definitions + `.pkz` archives mounted as native search paths, automatic detection from HD texture pack suffixes (`_gloss`, `_luma`, `_glow`)
 * Emissive surfaces: Q2RTX `.mat` emissives and classic fullbright textures (buttons, switches, light panels, runes, lava) emit light and tint nearby walls with their color
 * Dynamic lights (torches, muzzle flashes, explosions) and map `light` entities as RT light sources
+* Classic turbulent-surface warp on lava and teleport textures, evaluated per hit in the ray tracer (`rt_turb_warp`)
 * `rt_debugflags` diagnostic views (raw unfiltered direct/indirect/specular, gradients, etc.)
 
 The classic (non-RT) engine lighting is fully disabled in the ray-traced renderer — the ray tracer produces all the lighting (Q2RTX model). The classic renderer fallback is still available via `rt_classic_render 1`.
@@ -87,6 +88,8 @@ Everything is exposed as console variables; run `cvarlist rt_` in the console fo
 * `rt_indir2bounces 0` — second diffuse bounce (its own NEE and sun sample are skipped when they cannot change the result)
 * `rt_emis_light_intensity 1.0` — how much light the emissive (luma-masked) surfaces emit
 * `rt_light_styles 1` with `rt_light_styles_reach 48` — animated light entities make their own fixture flicker; the reach (Quake units, measured from the surface centre to the light) keeps the flicker on the fixture instead of every surface that light happens to illuminate, `-1` removes the limit
+* `rt_turb_warp 1` — amplitude of the classic texture warp on lava and teleport surfaces (`0` freezes them; water and slime use the RT water waves instead)
+* `rt_teleport_portals 0` — the RT portal effect on teleport surfaces is off, so they render as ordinary surfaces; `1` re-enables the mirrored destination
 * `rt_stats 0` — on-screen ray statistics (rays per second, per-category ray counts)
 * `rt_pass_stats 0` — on-screen GPU timing per render pass, next to the ray statistics
 * `rt_debugflags 0` — diagnostic views (raw direct/indirect/specular, gradients, ...)

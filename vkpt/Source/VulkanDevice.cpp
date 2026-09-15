@@ -312,6 +312,13 @@ void VulkanDevice::FillUniform(ShGlobalUniform *gu, const RgDrawFrameInfo &drawI
         {
             gu->debugShowFlags |= DEBUG_SHOW_FLAG_LUMA;
         }
+
+        // Indirect-path GI probe bits (rt_debugflags 1<<15 .. 1<<19). They are read only
+        // by RtQ2Indirect.rgen (sphere/spot dw clamp A/B, second-bounce x50, sanity) and
+        // have no display branch, so they pass straight through.
+        const uint32_t giProbeBits =
+            ( 1u << 15 ) | ( 1u << 16 ) | ( 1u << 17 ) | ( 1u << 18 ) | ( 1u << 19 );
+        gu->debugShowFlags |= ( fs & giProbeBits );
     }
 
     gu->coreQ2RTX = 1u;
@@ -425,6 +432,7 @@ void VulkanDevice::FillUniform(ShGlobalUniform *gu, const RgDrawFrameInfo &drawI
         gu->forceNoWaterRefraction            = !!rr.forceNoWaterRefraction;
         gu->waterWaveSpeed                    = rr.waterWaveSpeed;
         gu->waterWaveStrength                 = rr.waterWaveNormalStrength;
+        gu->turbWarpStrength                  = std::max( 0.0f, rr.turbWarpStrength );
         gu->waterTextureDerivativesMultiplier = std::max( 0.0f, rr.waterWaveTextureDerivativesMultiplier );
         if( rr.waterTextureAreaScale < 0.0001f )
         {
@@ -456,6 +464,7 @@ void VulkanDevice::FillUniform(ShGlobalUniform *gu, const RgDrawFrameInfo &drawI
         gu->forceNoWaterRefraction            = false;
         gu->waterWaveSpeed                    = 1.0f;
         gu->waterWaveStrength                 = 1.0f;
+        gu->turbWarpStrength                  = 1.0f;
         gu->waterTextureDerivativesMultiplier = 1.0f;
         gu->waterTextureAreaScale             = 1.0f;
 

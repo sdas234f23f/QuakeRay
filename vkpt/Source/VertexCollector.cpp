@@ -361,6 +361,11 @@ uint32_t VertexCollector::AddGeometry( uint32_t                         frameInd
         geomInfo.flags |= GEOM_INST_FLAG_REFL_REFR_ALBEDO_ADD;
     }
 
+    if( info.flags & RG_GEOMETRY_UPLOAD_TURB_WARP_BIT )
+    {
+        geomInfo.flags |= GEOM_INST_FLAG_TURB_WARP;
+    }
+
     if( info.flags & RG_GEOMETRY_UPLOAD_IGNORE_REFRACT_AFTER_REFRACT_BIT )
     {
         geomInfo.flags |= GEOM_INST_FLAG_IGNORE_REFRACT_AFTER;

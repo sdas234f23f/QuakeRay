@@ -28,6 +28,50 @@ layout (constant_id = 0) const uint maxAlbedoLayerCount = 0;
 
 #define Q2_INDIR_MAX_SPHERE_SOLID_ANGLE 0.02
 
+// Indirect-light debug probes, driven by rt_debugflags bits 15..19. Those bits sit
+// above the RgDebugDrawFlagBits enum, so they reach the shader only through the
+// pass-through in VulkanDevice.cpp. They have no display branch: the final image stays
+// normal, which makes them usable as A/B tests of the GI estimator without a rebuild.
+//   1<<15 (32768)   sphere/spot dw clamp 0.0001 - a floor, so it binds for any light
+//                   closer than ~142 u (sphere radius 0.8 u) and therefore darkens
+//                   almost everywhere if this clamp controls the image at all
+//   1<<16 (65536)   sphere/spot dw clamp like the direct path (2*pi, no clamp at all)
+//   1<<17 (131072)  sphere/spot indirect NEE gain x100 (clamp applied first, then scaled)
+//   1<<18 (262144)  second bounce contribution x50 (applied after the final clamp)
+//   1<<19 (524288)  SANITY: flat red indirect channel, to prove the bits arrive here
+// 1<<18 is inert while rt_indir2bounces is 0 (the default).
+#define INDIR_DBG_CLAMP_FLOOR   ( 1u << 15 )
+#define INDIR_DBG_CLAMP_FULL    ( 1u << 16 )
+#define INDIR_DBG_SPHOT_X100    ( 1u << 17 )
+#define INDIR_DBG_BOUNCE2_X50   ( 1u << 18 )
+#define INDIR_DBG_SANITY        ( 1u << 19 )
+
+bool indirDbg( const uint bit )
+{
+    return ( globalUniform.debugShowFlags & bit ) != 0u;
+}
+
+float indirMaxSphereSolidAngle()
+{
+    if ( indirDbg( INDIR_DBG_CLAMP_FULL ) )
+    {
+        return 2.0 * M_PI;
+    }
+    if ( indirDbg( INDIR_DBG_CLAMP_FLOOR ) )
+    {
+        return 0.0001;
+    }
+    return Q2_INDIR_MAX_SPHERE_SOLID_ANGLE;
+}
+
+// Debug gain for the sphere/spot indirect NEE contribution. light.dw enters shade()
+// linearly (diffuse = dw * nl * color * brdf * oneOverPdf), so scaling it is a clean
+// multiplicative gain on exactly the light types the clamp above applies to.
+float indirSphotGain()
+{
+    return indirDbg( INDIR_DBG_SPHOT_X100 ) ? 100.0 : 1.0;
+}
+
 vec3 getSpecularBounce(const uint seed, uint bounceIndex,
                        const vec3 n, const float roughness, const vec3 surfSpecularColor,
                        const vec3 v,
@@ -111,7 +155,7 @@ vec3 processSecondDiffuseBounce(const uint seed, const Surface surf, const vec3 
             if ( lightSources[ lightIndex ].lightType == LIGHT_TYPE_SPHERE ||
                  lightSources[ lightIndex ].lightType == LIGHT_TYPE_SPOT )
             {
-                light.dw = min( light.dw, Q2_INDIR_MAX_SPHERE_SOLID_ANGLE );
+                light.dw = min( light.dw, indirMaxSphereSolidAngle() ) * indirSphotGain();
             }
 
             if ( getLuminance( light.color ) > 0.0 )
@@ -310,7 +354,7 @@ void main()
                 if ( lightSources[ lightIndex ].lightType == LIGHT_TYPE_SPHERE ||
                      lightSources[ lightIndex ].lightType == LIGHT_TYPE_SPOT )
                 {
-                    light.dw = min( light.dw, Q2_INDIR_MAX_SPHERE_SOLID_ANGLE );
+                    light.dw = min( light.dw, indirMaxSphereSolidAngle() ) * indirSphotGain();
                 }
 
                 if ( getLuminance( light.color ) > 0.0 )
@@ -360,16 +404,24 @@ void main()
             }
         }
 
+        vec3 secondBounce = vec3( 0.0 );
         if ( globalUniform.indirSecondBounce != 0u )
         {
             float oneOverPdfSecond;
             const vec3 bounceDirSecond =
                 getDiffuseBounce( seed, 2u, hitSurf.normalGeom, oneOverPdfSecond );
-            directDiffuse += processSecondDiffuseBounce(
+            secondBounce = processSecondDiffuseBounce(
                 seed, hitSurf, bounceDirSecond, oneOverPdfSecond );
+            directDiffuse += secondBounce;
         }
 
         directDiffuse = clamp( directDiffuse, vec3( 0.0 ), vec3( 50.0 ) );
+
+        if ( indirDbg( INDIR_DBG_BOUNCE2_X50 ) )
+        {
+            directDiffuse = clamp( directDiffuse - secondBounce, vec3( 0.0 ), vec3( 50.0 ) )
+                + 50.0 * secondBounce;
+        }
 
         hitPos = hitSurf.position;
         hitRadiance = boostChroma( directDiffuse * hitSurf.albedo );
@@ -393,6 +445,11 @@ void main()
     {
         SH sh = irradianceToSH( diffuse * skyBsdfWeight, safeNormalize( hitPos - surf.position ) );
         accumulateSH( sh, irradianceToSH( q2SkyNee( surf, seed ), surf.normal ), 1.0 );
+
+        if ( indirDbg( INDIR_DBG_SANITY ) )
+        {
+            sh = irradianceToSH( vec3( 10.0, 0.0, 0.0 ), surf.normal );
+        }
 
         imageStoreUnfilteredIndirectSH( pix, sh );
     }
