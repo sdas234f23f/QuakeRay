@@ -361,6 +361,7 @@ void VulkanDevice::FillUniform(ShGlobalUniform *gu, const RgDrawFrameInfo &drawI
         gu->q2DepthGradMode            = drawInfo.pIlluminationParams->q2DepthGradMode;
         gu->q2LightStatsMode           = drawInfo.pIlluminationParams->q2LightStatsMode;
         gu->reflRefrEarlyOut           = drawInfo.pIlluminationParams->reflRefrEarlyOut != 0;
+        gu->neeLightSamples            = std::clamp( drawInfo.pIlluminationParams->neeLightSamples, 1u, 2u );
     }
     else
     {
@@ -374,6 +375,7 @@ void VulkanDevice::FillUniform(ShGlobalUniform *gu, const RgDrawFrameInfo &drawI
         gu->q2DepthGradMode            = 1u;
         gu->q2LightStatsMode           = 1u;
         gu->reflRefrEarlyOut           = 1u;
+        gu->neeLightSamples            = 2u;
     }
 
     if( drawInfo.pBloomParams != nullptr )

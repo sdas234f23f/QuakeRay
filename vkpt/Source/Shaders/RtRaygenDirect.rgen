@@ -70,9 +70,13 @@ void main()
     vec3 directDiffuse = vec3(0.0);
     vec3 directSpecular = vec3(0.0);
 
-    const int Q2_NEE_LIGHT_SAMPLES = 2;
+    // Halving the count stays unbiased because the accumulated result is divided
+    // by it below, so it only trades noise for shadow rays. The value cannot
+    // exceed 2: above it the light-point salt (Q2_RNG_LIGHT_POINT + 2*s) would
+    // reach Q2_RNG_SUN_DISK and recycle that stream for a second purpose.
+    const int numNeeSamples = clamp(int(globalUniform.neeLightSamples), 1, 2);
 
-    for (int s = 0; s < Q2_NEE_LIGHT_SAMPLES; s++)
+    for (int s = 0; s < numNeeSamples; s++)
     {
         const uint saltBase = uint(Q2_RNG_CELL_SELECT) + uint(s) * 4u;
         const vec3 rng = vec3(
@@ -121,8 +125,8 @@ void main()
             }
         }
     }
-    directDiffuse  *= (1.0 / float(Q2_NEE_LIGHT_SAMPLES));
-    directSpecular *= (1.0 / float(Q2_NEE_LIGHT_SAMPLES));
+    directDiffuse  *= (1.0 / float(numNeeSamples));
+    directSpecular *= (1.0 / float(numNeeSamples));
 
     if (globalUniform.directionalLightExists != 0)
     {
