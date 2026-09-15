@@ -225,7 +225,7 @@ VulkanDevice::VulkanDevice( const RgInstanceCreateInfo* info )
         uniform,
         tonemapping);
 
-    amdFsr              = std::make_shared<FSR>(
+    amdFsr              = std::make_shared<FidelityFX::FSR>(
         device,
         physDevice->Get(),
         userPrint.get());

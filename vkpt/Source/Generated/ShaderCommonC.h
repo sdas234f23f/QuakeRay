@@ -315,6 +315,9 @@ struct ShGlobalUniform
     float fogColor[32];
     float fogDensity[32];
     float lightStyleScales[64];
+    float giBounceRays[4];
+    float fltEnable[4];
+    float fixedAlbedo[4];
 };
 
 struct ShGeometryInstance

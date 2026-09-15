@@ -422,6 +422,16 @@ void Q2Denoiser::Denoise(
         vkCmdDispatch(cmd, wgX, wgY, 1);
     }
 
+    if (uniform->GetData()->fltEnable[0] < 0.5f)
+    {
+        // CmQ2Adapter.comp composites the raw ReSTIR outputs directly into
+        // framebufQ2Color (Q2RTX flt_enable = 0), so the whole ASVGF chain is
+        // skipped and only the checkerboard resolve is left.
+        InterleaveCheckerboard(cmd, frameIndex, uniform);
+
+        return;
+    }
+
     {
         CmdLabel label(cmd, "Q2 ASVGF gradient img");
 
@@ -576,6 +586,18 @@ void Q2Denoiser::Denoise(
             vkCmdDispatch(cmd, wgX, wgY, 1);
         }
     }
+
+    InterleaveCheckerboard(cmd, frameIndex, uniform);
+}
+
+void Q2Denoiser::InterleaveCheckerboard(
+    VkCommandBuffer cmd, uint32_t frameIndex,
+    const std::shared_ptr<const GlobalUniform> &uniform)
+{
+    typedef FramebufferImageIndex FI;
+
+    const uint32_t wgX = Utils::GetWorkGroupCount(uniform->GetData()->renderWidth, 16);
+    const uint32_t wgY = Utils::GetWorkGroupCount(uniform->GetData()->renderHeight, 16);
 
     // checkerboard interleave -> PreFinal (regular layout)
     {

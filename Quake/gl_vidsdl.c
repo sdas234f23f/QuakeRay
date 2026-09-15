@@ -78,6 +78,7 @@ viddef_t        vid; // global video state
 modestate_t     modestate = MS_UNINIT;
 extern qboolean scr_initialized;
 extern cvar_t   r_particles, host_maxfps, r_gpulightmapupdate;
+extern cvar_t   scr_showfps, scr_fov;
 
 //====================================
 
@@ -104,6 +105,10 @@ task_handle_t prev_end_rendering_task = INVALID_TASK_HANDLE;
 	CVAR_DEF_T (rt_enable_pvs, "0") \
 	CVAR_DEF_T (rt_shadowrays, "2") \
 	CVAR_DEF_T (rt_indir2bounces, "0") \
+	CVAR_DEF_T (rt_gi_level, "1") \
+	CVAR_DEF_T (rt_godrays, "1") \
+	CVAR_DEF_T (rt_denoiser, "1") \
+	CVAR_DEF_T (rt_no_textures, "0") \
 	CVAR_DEF_T (rt_antifirefly, "1") \
 	CVAR_DEF_T (rt_roughmin, "0.02") \
     \
@@ -232,6 +237,9 @@ task_handle_t prev_end_rendering_task = INVALID_TASK_HANDLE;
 	CVAR_DEF_T (rt_bloom_emis_mult, "50") \
 	CVAR_DEF_T (rt_bloom, "0") \
 	\
+	CVAR_DEF_T (rt_exposure_bias, "-2.8") \
+	CVAR_DEF_T (rt_contrast, "0.6") \
+	\
 	CVAR_DEF_T (rt_ef_crt, "0") \
 	CVAR_DEF_T (rt_ef_chraber, "0.3") \
 	CVAR_DEF_T (rt_ef_waves_stren, "1") \
@@ -247,7 +255,7 @@ task_handle_t prev_end_rendering_task = INVALID_TASK_HANDLE;
 	CVAR_DEF_T (rt_q2_depthgrad, "1") \
 	CVAR_DEF_T (rt_q2_lightstats, "1") \
 	CVAR_DEF_T (rt_reflrefr_earlyout, "1") \
-	CVAR_DEF_T (rt_nee_samples, "2") \
+	CVAR_DEF_T (rt_nee_samples, "1") \
 	CVAR_DEF_T (rt_stats, "0") \
 	CVAR_DEF_T (rt_pass_stats, "0") \
 	\
@@ -1127,9 +1135,17 @@ static void GL_EndRenderingTask (end_rendering_parms_t *parms)
 	// a third sample's RNG salt would collide with the sun disk stream.
 	const uint32_t nee_samples = (CVAR_TO_FLOAT (rt_nee_samples) < 1.5f) ? 1u : 2u;
 
+	// Q2RTX-style global illumination level (pt_num_bounce_rays): 0 disables the
+	// indirect pass, 1 mirrors the historical single-bounce behavior and 2 adds a
+	// second indirect bounce.
+	const float gi_level = CLAMP (0.0f, CVAR_TO_FLOAT (rt_gi_level), 2.0f);
+
 	RgDrawFrameIlluminationParams illum_params = {
 	    .maxBounceShadows = CVAR_TO_UINT32 (rt_shadowrays),
-		.enableSecondBounceForIndirect = CVAR_TO_BOOL (rt_indir2bounces),
+		// The level alone decides the bounce count, like Q2RTX pt_num_bounce_rays.
+		// rt_indir2bounces is kept for config compatibility but no longer forces the
+		// second bounce on at every level, which made medium and high identical.
+		.enableSecondBounceForIndirect = (gi_level >= 1.5f),
 		.cellWorldSize = METRIC_TO_QUAKEUNIT(2.0f),
 		.directDiffuseSensitivityToChange = CVAR_TO_FLOAT (rt_sensit_dir),
 		.indirectDiffuseSensitivityToChange = CVAR_TO_FLOAT (rt_sensit_indir),
@@ -1139,6 +1155,11 @@ static void GL_EndRenderingTask (end_rendering_parms_t *parms)
 		.q2LightStatsMode = q2_lightstats_mode,
 		.reflRefrEarlyOut = CVAR_TO_BOOL (rt_reflrefr_earlyout),
 		.neeLightSamples = nee_samples,
+		.giBounceRays = gi_level,
+		.denoiserEnabled = CVAR_TO_BOOL (rt_denoiser),
+		// Q2RTX writes 2 through its "textures" toggle (flt_fixed_albedo ~1),
+		// so the unchecked state uses the same flat albedo value.
+		.fixedAlbedo = CVAR_TO_BOOL (rt_no_textures) ? 2.0f : 0.0f,
 		.lightUniqueIdIgnoreFirstPersonViewerShadows = NULL,
 	};
 
@@ -1146,6 +1167,16 @@ static void GL_EndRenderingTask (end_rendering_parms_t *parms)
 		.bloomIntensity = (CVAR_TO_BOOL (rt_classic_render) || !CVAR_TO_BOOL (rt_bloom)) ? 0 : CVAR_TO_FLOAT (rt_bloom_intensity),
 		.inputThreshold = 0.0f,
 		.bloomEmissionMultiplier = CVAR_TO_FLOAT (rt_bloom_emis_mult),
+	};
+
+	// Exposure bias is in EV and darkens the image when negative; contrast blends
+	// the adaptive tone curve with Reinhard (Q2RTX tm_exposure_bias / tm_reinhard).
+	RgDrawFrameTonemappingParams tonemap_params = {
+		.minLogLuminance = -3.9f,
+		.maxLogLuminance = -2.8f,
+		.luminanceWhitePoint = 10.0f,
+		.exposureBias = CLAMP (-5.0f, CVAR_TO_FLOAT (rt_exposure_bias), 0.0f),
+		.contrast = CLAMP (0.0f, CVAR_TO_FLOAT (rt_contrast), 1.0f),
 	};
 
 	RgDrawFrameReflectRefractParams refl_refr_params = {
@@ -1209,6 +1240,7 @@ static void GL_EndRenderingTask (end_rendering_parms_t *parms)
 		.skyAmbientLod = CVAR_TO_FLOAT (rt_sky_ambient_lod),
 		.skyNee = CVAR_TO_FLOAT (rt_sky_nee) > 0.0f,
 		.skyViewerPosition = RT_VEC3 (r_origin),
+		.godRaysEnabled = CVAR_TO_BOOL (rt_godrays),
 	};
 
 	if (usePhysicalSky)
@@ -1401,6 +1433,7 @@ static void GL_EndRenderingTask (end_rendering_parms_t *parms)
 		.pIlluminationParams = &illum_params,
 		.pVolumetricParams = &volumetric_params,
 		.pBloomParams = &bloom_params,
+		.pTonemappingParams = &tonemap_params,
 		.pReflectRefractParams = &refl_refr_params,
 		.pSkyParams = &sky_params,
 		.pTexturesParams = &texture_params,
@@ -2101,6 +2134,8 @@ enum
 
 	VID_OPT_RENDERER,
 	VID_OPT_BLOOM,
+	VID_OPT_EXPOSURE_BIAS,
+	VID_OPT_CONTRAST,
 	VID_OPT_VSYNC,
 	VID_OPT_MAX_FPS,
 
@@ -2114,12 +2149,36 @@ enum
 	VID_OPT_MATERIALS_ONLY,
 	VID_OPT_RENDER_SCALE,
 
+	VID_OPT_NEXT_PAGE, // last row of the first page
+
+
+	// second page
+	VID_OPT_FOV,
+	VID_OPT_SHOWFPS,
+
+
+	VID_OPT_GI_LEVEL,
+	VID_OPT_GODRAYS,
+	VID_OPT_REFLECT,
+	VID_OPT_DENOISER,
+	VID_OPT_TEXTURES,
+
 	VID_OPT_BACK,
 
 	VIDEO_OPTIONS_ITEMS
 };
 
+// The menu canvas is a fixed 640x200 without scrolling, so the rows are split
+// into two pages, in enum order.
+#define VID_OPT_PAGE_COUNT 2
+
+static int VID_MenuRowPage (int vidopt)
+{
+	return (vidopt <= VID_OPT_NEXT_PAGE) ? 0 : 1;
+}
+
 static int video_options_cursor = 0;
+static int video_options_page = 0;
 
 typedef struct
 {
@@ -2389,6 +2448,91 @@ static void VID_Menu_ChooseNextAA (int vidopt, int dir)
 
 /*
 ================
+VID_Menu_StepFloatCvar -- step a float cvar in 0.1 increments, clamped
+================
+*/
+static void VID_Menu_StepFloatCvar (cvar_t *var, float step, float minval, float maxval)
+{
+	float v = CLAMP (minval, var->value + step, maxval);
+
+	// snap to the displayed precision so the value cannot drift
+	v = floorf (v * 10.0f + 0.5f) / 10.0f;
+
+	Cvar_SetValueQuick (var, v);
+}
+
+/*
+================
+VID_Menu_GetGiLevelName -- Q2RTX pt_num_bounce_rays as a word
+================
+*/
+static const char *VID_Menu_GetGiLevelName (void)
+{
+	const float v = CVAR_TO_FLOAT (rt_gi_level);
+
+	if (v < 0.25f)
+		return "off";
+	if (v < 0.75f)
+		return "low";
+	if (v < 1.5f)
+		return "medium";
+
+	return "high";
+}
+
+/*
+================
+VID_Menu_StepGiLevel -- cycle through the Q2RTX gi levels
+================
+*/
+static void VID_Menu_StepGiLevel (float dir)
+{
+	static const float levels[] = { 0.0f, 0.5f, 1.0f, 2.0f };
+	const int numlevels = (int)(sizeof (levels) / sizeof (levels[0]));
+	const float cur = CVAR_TO_FLOAT (rt_gi_level);
+
+	int   idx = 2; // medium
+	float best = 1e9f;
+
+	for (int i = 0; i < numlevels; i++)
+	{
+		const float d = fabsf (levels[i] - cur);
+
+		if (d < best)
+		{
+			best = d;
+			idx = i;
+		}
+	}
+
+	idx = CLAMP (0, idx + ((dir > 0.0f) ? 1 : -1), numlevels - 1);
+
+	Cvar_SetValueQuick (&rt_gi_level, levels[idx]);
+}
+
+/*
+================
+VID_Menu_SetPage -- switch page, keeping the cursor on a visible row
+================
+*/
+static void VID_Menu_SetPage (int page)
+{
+	int i;
+
+	video_options_page = CLAMP (0, page, VID_OPT_PAGE_COUNT - 1);
+
+	for (i = 0; i < VIDEO_OPTIONS_ITEMS; i++)
+	{
+		if (VID_MenuRowPage (i) == video_options_page)
+		{
+			video_options_cursor = i;
+			break;
+		}
+	}
+}
+
+/*
+================
 VID_MenuKey
 ================
 */
@@ -2425,16 +2569,22 @@ static void VID_MenuKey (int key)
 	{
 	case K_UPARROW:
 		S_LocalSound ("misc/menu1.wav");
-		video_options_cursor--;
-		if (video_options_cursor < 0)
-			video_options_cursor = VIDEO_OPTIONS_ITEMS - 1;
+		do
+		{
+			video_options_cursor--;
+			if (video_options_cursor < 0)
+				video_options_cursor = VIDEO_OPTIONS_ITEMS - 1;
+		} while (VID_MenuRowPage (video_options_cursor) != video_options_page);
 		break;
 
 	case K_DOWNARROW:
 		S_LocalSound ("misc/menu1.wav");
-		video_options_cursor++;
-		if (video_options_cursor >= VIDEO_OPTIONS_ITEMS)
-			video_options_cursor = 0;
+		do
+		{
+			video_options_cursor++;
+			if (video_options_cursor >= VIDEO_OPTIONS_ITEMS)
+				video_options_cursor = 0;
+		} while (VID_MenuRowPage (video_options_cursor) != video_options_page);
 		break;
 
 	case K_LEFTARROW:
@@ -2459,6 +2609,12 @@ static void VID_MenuKey (int key)
 			break;
 		case VID_OPT_BLOOM:
 			Cvar_SetValueQuick (&rt_bloom, !CVAR_TO_BOOL (rt_bloom));
+			break;
+		case VID_OPT_EXPOSURE_BIAS:
+			VID_Menu_StepFloatCvar (&rt_exposure_bias, -0.1f, -5.0f, 0.0f);
+			break;
+		case VID_OPT_CONTRAST:
+			VID_Menu_StepFloatCvar (&rt_contrast, -0.1f, 0.0f, 1.0f);
 			break;
 		case VID_OPT_UPSCALER:
 		case VID_OPT_UPSCALER_QUALITY:
@@ -2489,6 +2645,33 @@ static void VID_MenuKey (int key)
 		case VID_OPT_MATERIALS_ONLY:
 			Cvar_SetValueQuick (&rt_materials_only, !CVAR_TO_BOOL (rt_materials_only));
 			break;
+		case VID_OPT_NEXT_PAGE:
+			VID_Menu_SetPage (1);
+			break;
+		case VID_OPT_BACK:
+			VID_Menu_SetPage (0);
+			break;
+		case VID_OPT_FOV:
+			VID_Menu_StepFloatCvar (&scr_fov, -5.0f, 60.0f, 140.0f);
+			break;
+		case VID_OPT_SHOWFPS:
+			Cvar_SetValueQuick (&scr_showfps, !CVAR_TO_BOOL (scr_showfps));
+			break;
+		case VID_OPT_GI_LEVEL:
+			VID_Menu_StepGiLevel (-1.0f);
+			break;
+		case VID_OPT_GODRAYS:
+			Cvar_SetValueQuick (&rt_godrays, !CVAR_TO_BOOL (rt_godrays));
+			break;
+		case VID_OPT_REFLECT:
+			VID_Menu_StepFloatCvar (&rt_reflrefr_depth, -1.0f, 0.0f, 2.0f);
+			break;
+		case VID_OPT_DENOISER:
+			Cvar_SetValueQuick (&rt_denoiser, !CVAR_TO_BOOL (rt_denoiser));
+			break;
+		case VID_OPT_TEXTURES:
+			Cvar_SetValueQuick (&rt_no_textures, !CVAR_TO_BOOL (rt_no_textures));
+			break;
 		default:
 			break;
 		}
@@ -2516,6 +2699,12 @@ static void VID_MenuKey (int key)
 			break;
 		case VID_OPT_BLOOM:
 			Cvar_SetValueQuick (&rt_bloom, !CVAR_TO_BOOL (rt_bloom));
+			break;
+		case VID_OPT_EXPOSURE_BIAS:
+			VID_Menu_StepFloatCvar (&rt_exposure_bias, 0.1f, -5.0f, 0.0f);
+			break;
+		case VID_OPT_CONTRAST:
+			VID_Menu_StepFloatCvar (&rt_contrast, 0.1f, 0.0f, 1.0f);
 			break;
 		case VID_OPT_UPSCALER:
 		case VID_OPT_UPSCALER_QUALITY:
@@ -2545,6 +2734,33 @@ static void VID_MenuKey (int key)
 			break;
 		case VID_OPT_MATERIALS_ONLY:
 			Cvar_SetValueQuick (&rt_materials_only, !CVAR_TO_BOOL (rt_materials_only));
+			break;
+		case VID_OPT_NEXT_PAGE:
+			VID_Menu_SetPage (1);
+			break;
+		case VID_OPT_BACK:
+			VID_Menu_SetPage (0);
+			break;
+		case VID_OPT_FOV:
+			VID_Menu_StepFloatCvar (&scr_fov, 5.0f, 60.0f, 140.0f);
+			break;
+		case VID_OPT_SHOWFPS:
+			Cvar_SetValueQuick (&scr_showfps, !CVAR_TO_BOOL (scr_showfps));
+			break;
+		case VID_OPT_GI_LEVEL:
+			VID_Menu_StepGiLevel (1.0f);
+			break;
+		case VID_OPT_GODRAYS:
+			Cvar_SetValueQuick (&rt_godrays, !CVAR_TO_BOOL (rt_godrays));
+			break;
+		case VID_OPT_REFLECT:
+			VID_Menu_StepFloatCvar (&rt_reflrefr_depth, 1.0f, 0.0f, 2.0f);
+			break;
+		case VID_OPT_DENOISER:
+			Cvar_SetValueQuick (&rt_denoiser, !CVAR_TO_BOOL (rt_denoiser));
+			break;
+		case VID_OPT_TEXTURES:
+			Cvar_SetValueQuick (&rt_no_textures, !CVAR_TO_BOOL (rt_no_textures));
 			break;
 		default:
 			break;
@@ -2578,6 +2794,24 @@ static void VID_MenuKey (int key)
 		case VID_OPT_VSYNC:
 			Cbuf_AddText ("toggle vid_vsync\n");
 			break;
+		case VID_OPT_NEXT_PAGE:
+			VID_Menu_SetPage (1);
+			break;
+		case VID_OPT_BACK:
+			VID_Menu_SetPage (0);
+			break;
+		case VID_OPT_SHOWFPS:
+			Cvar_SetValueQuick (&scr_showfps, !CVAR_TO_BOOL (scr_showfps));
+			break;
+		case VID_OPT_GODRAYS:
+			Cvar_SetValueQuick (&rt_godrays, !CVAR_TO_BOOL (rt_godrays));
+			break;
+		case VID_OPT_DENOISER:
+			Cvar_SetValueQuick (&rt_denoiser, !CVAR_TO_BOOL (rt_denoiser));
+			break;
+		case VID_OPT_TEXTURES:
+			Cvar_SetValueQuick (&rt_no_textures, !CVAR_TO_BOOL (rt_no_textures));
+			break;
 		}
 		break;
 
@@ -2610,14 +2844,17 @@ static void VID_MenuDraw (cb_context_t *cbx)
 	y += 28;
 
 	// title
-	title = "Video Options";
+	title = (video_options_page == 0) ? "Video Options" : "Video Options (2/2)";
 	M_PrintWhite (cbx, (320 - 8 * strlen (title)) / 2, y, title);
 
-	y += 16;
+	y += 12;
 
 	// options
 	for (i = 0; i < VIDEO_OPTIONS_ITEMS; i++)
 	{
+		if (VID_MenuRowPage (i) != video_options_page)
+			continue;
+
 		switch (i)
 		{
 		case VID_OPT_MODE:
@@ -2634,7 +2871,7 @@ static void VID_MenuDraw (cb_context_t *cbx)
 
 
 		case VID_OPT_RENDERER:
-			y += 16; // separate x2
+			y += 8; // separate
 
 			M_Print (cbx, 16, y, "          Renderer");
 			M_Print (cbx, 184, y, CVAR_TO_BOOL (rt_classic_render) ? "Classic" : "Ray Traced");
@@ -2642,6 +2879,14 @@ static void VID_MenuDraw (cb_context_t *cbx)
 		case VID_OPT_BLOOM:
 			M_Print (cbx, 16, y, "             Bloom");
 			M_DrawCheckbox (cbx, 184, y, CVAR_TO_BOOL (rt_bloom));
+			break;
+		case VID_OPT_EXPOSURE_BIAS:
+			M_Print (cbx, 16, y, "     Exposure bias");
+			M_Print (cbx, 184, y, va ("%+.1f EV", CVAR_TO_FLOAT (rt_exposure_bias)));
+			break;
+		case VID_OPT_CONTRAST:
+			M_Print (cbx, 16, y, "          Contrast");
+			M_Print (cbx, 184, y, va ("%d%%", (int)(CVAR_TO_FLOAT (rt_contrast) * 100.0f + 0.5f)));
 			break;
 		case VID_OPT_VSYNC:
 			M_Print (cbx, 16, y, "     Vertical sync");
@@ -2691,9 +2936,7 @@ static void VID_MenuDraw (cb_context_t *cbx)
 
 
 		case VID_OPT_FILTER:
-			y += 8; // separate
-
-			M_Print (cbx, 16, y, "          Textures");
+			M_Print (cbx, 16, y, " Texture filtering");
 			M_Print (cbx, 184, y, (menu_settings.vid_filter == 0) ? "smooth" : "classic");
 			break;
 		case VID_OPT_PARTICLES:
@@ -2711,6 +2954,51 @@ static void VID_MenuDraw (cb_context_t *cbx)
 		case VID_OPT_RENDER_SCALE:
 			M_Print (cbx, 16, y, "           Vintage");
 			M_Print (cbx, 184, y, GetVintageOptionName (menu_settings.rt_vintage));
+			break;
+
+
+		case VID_OPT_NEXT_PAGE:
+			y += 8; // separate
+
+			M_Print (cbx, 16, y, "         Next page");
+			break;
+
+
+		case VID_OPT_FOV:
+			M_Print (cbx, 16, y, "     Field of view");
+			M_Print (cbx, 184, y, va ("%d", (int)scr_fov.value));
+			break;
+		case VID_OPT_SHOWFPS:
+			M_Print (cbx, 16, y, "       Display FPS");
+			M_DrawCheckbox (cbx, 184, y, (int)scr_showfps.value);
+			break;
+
+
+		case VID_OPT_GI_LEVEL:
+			y += 8; // separate
+
+			M_Print (cbx, 16, y, " Indirect lighting");
+			M_Print (cbx, 184, y, VID_Menu_GetGiLevelName ());
+			break;
+		case VID_OPT_GODRAYS:
+			M_Print (cbx, 16, y, "          God rays");
+			M_DrawCheckbox (cbx, 184, y, CVAR_TO_BOOL (rt_godrays));
+			break;
+		case VID_OPT_REFLECT:
+			{
+				const int depth = (int)(CVAR_TO_FLOAT (rt_reflrefr_depth) + 0.5f);
+
+				M_Print (cbx, 16, y, "       Reflections");
+				M_Print (cbx, 184, y, (depth <= 0) ? "off" : ((depth == 1) ? "1 bounce" : "2 bounces"));
+			}
+			break;
+		case VID_OPT_DENOISER:
+			M_Print (cbx, 16, y, "          Denoiser");
+			M_DrawCheckbox (cbx, 184, y, CVAR_TO_BOOL (rt_denoiser));
+			break;
+		case VID_OPT_TEXTURES:
+			M_Print (cbx, 16, y, "          Textures");
+			M_DrawCheckbox (cbx, 184, y, !CVAR_TO_BOOL (rt_no_textures));
 			break;
 
 

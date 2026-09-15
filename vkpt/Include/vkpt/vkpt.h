@@ -905,6 +905,12 @@ typedef struct RgDrawFrameTonemappingParams
     float       minLogLuminance;
     float       maxLogLuminance;
     float       luminanceWhitePoint;
+    // Exposure compensation in EV (log2 stops): the tone mapped result is
+    // scaled by 2^exposureBias. Negative values darken the image.
+    float       exposureBias;
+    // Blends the adaptive tone curve with Reinhard
+    // (0 = adaptive curve only, 1 = Reinhard only).
+    float       contrast;
 } RgDrawFrameTonemappingParams;
 
 typedef struct RgDrawFrameSkyParams
@@ -925,6 +931,10 @@ typedef struct RgDrawFrameSkyParams
     // If equals to zero, then default value is used.
     // Default: identity matrix.
     RgMatrix3D  skyCubemapRotationTransform;
+    // If false, the volumetric sun shafts (god rays) are disabled: the shadow map
+    // is not rendered at all and the god rays buffers are cleared to zero.
+    // Default: true
+    RgBool32    godRaysEnabled;
 } RgDrawFrameSkyParams;
 
 #define RG_LIGHT_STYLE_COUNT 64
@@ -1029,9 +1039,24 @@ typedef struct RgDrawFrameIlluminationParams
     // Number of NEE light samples per pixel in the direct pass. The estimator
     // divides by this count, so any value stays unbiased: lowering it only
     // trades noise for shadow rays. Clamped to 1..2 (see the RNG salt notes in
-    // RtRaygenDirect.rgen).
-    // Default: 2
+    // RtRaygenDirect.rgen). Q2RTX traces one sample, so 1 is the default.
+    // Default: 1
     uint32_t    neeLightSamples;
+    // Q2RTX pt_num_bounce_rays (host cvar rt_gi_level): 0 - no indirect lighting
+    // at all, 0.5 - low, 1 - medium (one indirect bounce), 2 - high (two indirect
+    // bounces). Values below 0.25 disable the indirect pass entirely, and the
+    // level on its own selects the bounce count above the first one.
+    // Default: 1
+    float       giBounceRays;
+    // Q2RTX flt_enable: 1 - run the ASVGF denoiser (default), 0 - composite the
+    // raw ReSTIR signal without any filtering. The denoised image is smoother,
+    // but the unfiltered one reacts to lighting changes instantly.
+    // Default: 1
+    RgBool32    denoiserEnabled;
+    // Q2RTX flt_fixed_albedo: if nonzero, the diffuse albedo is replaced with
+    // that value in the final composite, giving a "no textures" mode.
+    // Default: 0
+    float       fixedAlbedo;
     // For which light first-person viewer shadows should be ignored.
     // E.g. first-person flashlight.
     // Null, if none.

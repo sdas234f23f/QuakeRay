@@ -50,6 +50,13 @@ uint q2GetClusterLight(const uint cluster, const uint slot)
 
 bool q2GetIsGradient(const ivec2 pix)
 {
+    // The gradient sample positions are only produced by the denoiser; without
+    // it no pixel may be treated as a gradient sample (Q2RTX get_is_gradient).
+    if (globalUniform.fltEnable.x < 0.5)
+    {
+        return false;
+    }
+
     const uint u = texelFetch(framebufQ2GradSmplPos_Sampler, pix / Q2_GRAD_DWN, 0).r;
     if (u == 0u)
     {

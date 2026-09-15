@@ -48,7 +48,8 @@ public:
 
     void CalculateExposure(
         VkCommandBuffer cmd, uint32_t frameIndex,
-        const std::shared_ptr<const GlobalUniform> &uniform);
+        const std::shared_ptr<const GlobalUniform> &uniform,
+        float exposureBias, float contrast);
 
     VkDescriptorSetLayout GetDescSetLayout() const;
     VkDescriptorSet GetDescSet() const;

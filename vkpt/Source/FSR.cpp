@@ -133,7 +133,7 @@ namespace
     }
 }
 
-vkpt::FSR::FSR(VkDevice _device, VkPhysicalDevice _physDevice, UserPrint* pUserPrint)
+vkpt::FidelityFX::FSR::FSR(VkDevice _device, VkPhysicalDevice _physDevice, UserPrint* pUserPrint)
     : m_device(_device)
     , m_physDevice(_physDevice)
     , m_pUserPrint(pUserPrint)
@@ -148,12 +148,12 @@ vkpt::FSR::FSR(VkDevice _device, VkPhysicalDevice _physDevice, UserPrint* pUserP
 {
 }
 
-vkpt::FSR::~FSR()
+vkpt::FidelityFX::FSR::~FSR()
 {
     DestroyContext();
 }
 
-void vkpt::FSR::SetUpscaleVersion(RgRenderUpscaleTechnique technique)
+void vkpt::FidelityFX::FSR::SetUpscaleVersion(RgRenderUpscaleTechnique technique)
 {
     if (technique != RG_RENDER_UPSCALE_TECHNIQUE_AMD_FSR2 &&
         technique != RG_RENDER_UPSCALE_TECHNIQUE_AMD_FSR3)
@@ -182,7 +182,7 @@ void vkpt::FSR::SetUpscaleVersion(RgRenderUpscaleTechnique technique)
     RecreateContext();
 }
 
-void vkpt::FSR::OnFramebuffersSizeChange(const ResolutionState& resolutionState)
+void vkpt::FidelityFX::FSR::OnFramebuffersSizeChange(const ResolutionState& resolutionState)
 {
     m_renderWidth  = resolutionState.renderWidth;
     m_renderHeight = resolutionState.renderHeight;
@@ -201,7 +201,7 @@ void vkpt::FSR::OnFramebuffersSizeChange(const ResolutionState& resolutionState)
     }
 }
 
-uint64_t vkpt::FSR::FindVersionId(bool preferFsr3)
+uint64_t vkpt::FidelityFX::FSR::FindVersionId(bool preferFsr3)
 {
     ffxQueryDescGetVersions q = {};
     q.header.type       = FFX_API_QUERY_DESC_TYPE_GET_VERSIONS;
@@ -248,7 +248,7 @@ uint64_t vkpt::FSR::FindVersionId(bool preferFsr3)
     return 0;
 }
 
-bool vkpt::FSR::IsUpscaleVersionAvailable(RgRenderUpscaleTechnique technique)
+bool vkpt::FidelityFX::FSR::IsUpscaleVersionAvailable(RgRenderUpscaleTechnique technique)
 {
     switch (technique)
     {
@@ -261,7 +261,7 @@ bool vkpt::FSR::IsUpscaleVersionAvailable(RgRenderUpscaleTechnique technique)
     }
 }
 
-void vkpt::FSR::RecreateContext()
+void vkpt::FidelityFX::FSR::RecreateContext()
 {
     DestroyContext();
 
@@ -357,7 +357,7 @@ void vkpt::FSR::RecreateContext()
     }
 }
 
-void vkpt::FSR::DestroyContext()
+void vkpt::FidelityFX::FSR::DestroyContext()
 {
     if (m_context)
     {
@@ -367,7 +367,7 @@ void vkpt::FSR::DestroyContext()
     s_contextForJitter = nullptr;
 }
 
-vkpt::FramebufferImageIndex vkpt::FSR::Apply(
+vkpt::FramebufferImageIndex vkpt::FidelityFX::FSR::Apply(
     VkCommandBuffer cmd, uint32_t frameIndex,
     const std::shared_ptr<Framebuffers>& framebuffers,
     const RenderResolutionHelper& renderResolution,
@@ -440,7 +440,7 @@ vkpt::FramebufferImageIndex vkpt::FSR::Apply(
     return OUTPUT_IMAGE_INDEX;
 }
 
-RgFloat2D vkpt::FSR::GetJitter(const ResolutionState& resolutionState, uint32_t frameId)
+RgFloat2D vkpt::FidelityFX::FSR::GetJitter(const ResolutionState& resolutionState, uint32_t frameId)
 {
     if (!s_contextForJitter)
     {

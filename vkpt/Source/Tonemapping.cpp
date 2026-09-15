@@ -76,7 +76,8 @@ vkpt::Tonemapping::~Tonemapping()
     vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
 }
 
-void vkpt::Tonemapping::CalculateExposure(VkCommandBuffer cmd, uint32_t frameIndex, const std::shared_ptr<const GlobalUniform> &uniform)
+void vkpt::Tonemapping::CalculateExposure(VkCommandBuffer cmd, uint32_t frameIndex, const std::shared_ptr<const GlobalUniform> &uniform,
+                                          float exposureBias, float contrast)
 {
     CmdLabel label(cmd, "Exposure");
 
@@ -87,7 +88,7 @@ void vkpt::Tonemapping::CalculateExposure(VkCommandBuffer cmd, uint32_t frameInd
     {
         ShTonemapping *tm = static_cast<ShTonemapping *>(mappedTmBuffer);
 
-        tm->tmExposureBias     = -2.8f;
+        tm->tmExposureBias     = exposureBias;
         tm->tmExposureSpeedDown = 1.0f;
         tm->tmExposureSpeedUp   = 1.0f;
         tm->tmLowPercentile     = 70.0f;
@@ -97,7 +98,7 @@ void vkpt::Tonemapping::CalculateExposure(VkCommandBuffer cmd, uint32_t frameInd
         tm->tmNoiseBlend        = 0.5f;
         tm->tmNoiseStops        = -12.0f;
         tm->tmDynRangeStops     = 7.0f;
-        tm->tmReinhard          = 0.6f;
+        tm->tmReinhard          = contrast;
         tm->tmKneeStart         = 0.6f;
         tm->tmWhitePoint        = 10.0f;
         tm->tmSlopeBlurSigma    = 12.0f;

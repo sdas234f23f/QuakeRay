@@ -310,6 +310,9 @@ struct ShGlobalUniform
     vec4 fogColor[8];
     vec4 fogDensity[8];
     vec4 lightStyleScales[16];
+    vec4 giBounceRays;
+    vec4 fltEnable;
+    vec4 fixedAlbedo;
 };
 
 struct ShGeometryInstance

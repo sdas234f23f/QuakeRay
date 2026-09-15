@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- **Grain in dark areas coming from the indirect pass** — Q2RTX fades the sun out of a bounce by the distance the bounce ray travelled (`pt_sun_bounce_range`, 2000 units: `sun_attenuation = square(clamp(1 - square(square(hit_distance / sun_bounce_range)), 0, 1))`, applied on every bounce and on the sun shadow ray that goes with it). Our port had no such range at all: a bounce that flew across half the map added its full share of sun energy and paid for its own sun shadow ray, which is what the "dense salt" in dark corners was made of. The attenuation is now evaluated exactly as upstream does it — on the first bounce (`sun_bounce_range *= 1 - sqrt(roughness)`, the scaling Q2RTX applies to its specular ray) and on the second bounce without that scaling — with `2000` as the range, which is upstream's default and not the `10000` of its reference-accumulation mode.
+- **The diffuse second bounce traced its own light sampling** — the indirect pass in Q2RTX runs `get_direct_illumination` (cluster light selection plus a shadow ray) only while `spec_bounce_index == 0`, i.e. on the first bounce; the second bounce is a single ray whose only light is the sun. Our second bounce re-sampled the cluster's lights and traced an extra visibility ray per pixel, which no Q2RTX build does, and each of those rays ran to completion even when the bounce had landed on a distant surface the first bounce never sampled. Removed — the second bounce now adds the attenuated sun and nothing else.
+- **Low, Medium and High global illumination were the same setting** — the host enabled the diffuse second bounce as `rt_indir2bounces || gi_level >= 1.5`, and `rt_indir2bounces` is set to `2` in the shipped config, so the second bounce ran on **every** level: Low, Medium and High rendered the same image for the same price, and the menu row looked broken. The GI level alone now selects the bounce count (`enableSecondBounceForIndirect = gi_level >= 1.5`), which leaves Low at one bounce, Medium at one full-resolution bounce and High at two; `rt_indir2bounces` is still read so old configs load without an unknown-cvar warning, but it no longer forces the second bounce. Anyone who was running two bounces needs **`rt_gi_level 2`** to keep them.
+
+### Changed
+- **`rt_nee_samples` default 2 → 1** — Q2RTX traces one light sample per pixel in the direct pass. Two samples stay unbiased (the estimator divides by the sample count), but they double the shadow-ray count of every direct-lit pixel, so the default now matches upstream and `2` remains available in the menu for anyone who wants the slightly smoother per-frame result. The value only affects the direct pass; the indirect pass never read it.
+
 ## v0.9.0
 
 ### Added

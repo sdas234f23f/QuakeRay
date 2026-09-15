@@ -81,11 +81,17 @@ Everything is exposed as console variables; run `cvarlist rt_` in the console fo
 
 * `rt_classic_render 0` — `1` falls back to the classic (non-ray-traced) raster renderer
 * `rt_brightness 1.0` — overall brightness of the ray-traced image
+* `rt_exposure_bias -2.8` — exposure in EV, a power-of-two factor applied inside the tone curve (Q2RTX's exposure bias). The ray-traced image is rendered bright and pulled down here, which is what makes the noise in dark areas fade out instead of turning into visible grain
+* `rt_contrast 0.6` — mixes the fixed tone curve with the auto-exposure adapted one (`0` keeps the fixed curve, `1` is the adapted curve alone)
 * `rt_sun 1` with `rt_sun_pitch 140` / `rt_sun_yaw 120` — the sun (on/off) and its direction
 * `rt_sky 1`, `rt_sky_brightness 1.0`, `rt_physical_sky 1` — sky intensity and sky model
 * `rt_sky_ambient_lod 4` — mip level the ambient sky light is read from; lower is more directional, `10` is a flat wash
 * `rt_sky_nee 1` — sample the sky as an explicit light; `0` restores the pre-NEE result
-* `rt_indir2bounces 0` — second diffuse bounce (its own NEE and sun sample are skipped when they cannot change the result)
+* `rt_gi_level 1` — indirect lighting level (Q2RTX's `pt_num_bounce_rays`): `0` turns it off, `0.5` traces it at half resolution, `1` is one indirect bounce and `2` adds the diffuse second bounce; the menu cycles the same four levels
+* `rt_nee_samples 1` — next-event light samples per pixel in the direct pass, `1` (the Q2RTX count) or `2`; both estimators are unbiased, so `2` only trades shadow rays for a quieter image
+* `rt_indir2bounces 0` — legacy switch for the second diffuse bounce, kept for old configs; the GI level above now selects it
+* `rt_denoiser 1` — ASVGF reconstruction of the lighting channels (`0` composites the raw ReSTIR output)
+* `rt_no_textures 0` — `1` swaps the diffuse albedo for a fixed value, i.e. "no textures"
 * `rt_emis_light_intensity 1.0` — how much light the emissive (luma-masked) surfaces emit
 * `rt_light_styles 1` with `rt_light_styles_reach 48` — animated light entities make their own fixture flicker; the reach (Quake units, measured from the surface centre to the light) keeps the flicker on the fixture instead of every surface that light happens to illuminate, `-1` removes the limit
 * `rt_turb_warp 1` — amplitude of the classic texture warp on lava and teleport surfaces (`0` freezes them; water and slime use the RT water waves instead)
