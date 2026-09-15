@@ -16,15 +16,15 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
-    - name: Build vkQuake
+    - name: Build QuakeRay
       run: |
         cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=${{ matrix.configuration }}
         cmake --build build
 
-    - name: Upload vkQuake
+    - name: Upload QuakeRay
       uses: actions/upload-artifact@v4
       with:
-        name: vkQuake-${{ matrix.configuration }}
+        name: QuakeRay-${{ matrix.configuration }}
         path: |
-            build/vkquake.exe
+            build/quakeray.exe
             build/*.dll

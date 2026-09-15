@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(vkquake LANGUAGES C CXX)
+project(quakeray LANGUAGES C CXX)
 
 # ============================================================================
 # C / C++ Standard
@@ -31,11 +31,11 @@ option(ENABLE_MIMALLOC  "Use mimalloc allocator"              OFF)
 # Platform detection
 # ============================================================================
 if(WIN32)
-    set(VKQUAKE_PLATFORM_WINDOWS ON)
+    set(QUAKERAY_PLATFORM_WINDOWS ON)
 elseif(APPLE)
-    set(VKQUAKE_PLATFORM_MACOS ON)
+    set(QUAKERAY_PLATFORM_MACOS ON)
 else()
-    set(VKQUAKE_PLATFORM_LINUX ON)
+    set(QUAKERAY_PLATFORM_LINUX ON)
 endif()
 
 # ============================================================================
@@ -111,7 +111,7 @@ _add_codec_define(USE_CODEC_MODPLUG USE_CODEC_MODPLUG)
 #   On Windows, the project bundles vulkan-1.lib + headers in Windows/misc/
 #   but prefer the system Vulkan SDK if installed.
 # ============================================================================
-if(VKQUAKE_PLATFORM_WINDOWS)
+if(QUAKERAY_PLATFORM_WINDOWS)
     if(CMAKE_SIZEOF_VOID_P EQUAL 8)
         set(VK_BUNDLED_LIB_DIR "${CMAKE_SOURCE_DIR}/Windows/misc/x64")
     else()
@@ -137,7 +137,7 @@ endif()
 # ============================================================================
 # SDL2 — bundled on Windows
 # ============================================================================
-if(VKQUAKE_PLATFORM_WINDOWS)
+if(QUAKERAY_PLATFORM_WINDOWS)
     set(SDL2_ROOT "${CMAKE_SOURCE_DIR}/Windows/SDL2")
     set(SDL2_INCLUDE_DIR "${SDL2_ROOT}/include")
 
@@ -167,7 +167,7 @@ endif()
 # ============================================================================
 # Windows bundled codec libraries
 # ============================================================================
-if(VKQUAKE_PLATFORM_WINDOWS)
+if(QUAKERAY_PLATFORM_WINDOWS)
     set(CODECS_ROOT "${CMAKE_SOURCE_DIR}/Windows/codecs")
 
     if(CMAKE_SIZEOF_VOID_P EQUAL 8)
@@ -214,7 +214,7 @@ endif()
 # vkpt renderer — vendored
 # ============================================================================
 # The renderer source lives in the vkpt/ subdirectory and is built as a
-# static library linked into vkquake. The public RG_* API remains an internal
+# static library linked into quakeray. The public RG_* API remains an internal
 # interface (RG_STATIC is defined in vkpt/CMakeLists.txt).
 add_subdirectory(vkpt)
 
@@ -359,7 +359,7 @@ if(USE_CODEC_UMX)
 endif()
 
 # --- Platform-specific sources (matching vcxproj for Windows) ---
-if(VKQUAKE_PLATFORM_WINDOWS)
+if(QUAKERAY_PLATFORM_WINDOWS)
     set(PLATFORM_SOURCES
         Quake/net_win.c
         Quake/net_wins.c
@@ -367,8 +367,8 @@ if(VKQUAKE_PLATFORM_WINDOWS)
         Quake/pl_win.c
         Quake/sys_sdl_win.c
     )
-    set(PLATFORM_RESOURCE Windows/vkQuake.rc)
-elseif(VKQUAKE_PLATFORM_LINUX)
+    set(PLATFORM_RESOURCE Windows/QuakeRay.rc)
+elseif(QUAKERAY_PLATFORM_LINUX)
     set(PLATFORM_SOURCES
         Quake/net_bsd.c
         Quake/net_udp.c
@@ -376,7 +376,7 @@ elseif(VKQUAKE_PLATFORM_LINUX)
         Quake/sys_sdl_unix.c
     )
     set(PLATFORM_RESOURCE "")
-elseif(VKQUAKE_PLATFORM_MACOS)
+elseif(QUAKERAY_PLATFORM_MACOS)
     set(PLATFORM_SOURCES
         Quake/net_bsd.c
         Quake/net_udp.c
@@ -414,17 +414,17 @@ endif()
 # ============================================================================
 # Create executable
 # ============================================================================
-add_executable(vkquake ${ALL_SOURCES})
+add_executable(quakeray ${ALL_SOURCES})
 
 # ============================================================================
 # Include directories
 # ============================================================================
-target_include_directories(vkquake PRIVATE
+target_include_directories(quakeray PRIVATE
     ${CMAKE_SOURCE_DIR}/Quake
 )
 
-if(VKQUAKE_PLATFORM_WINDOWS)
-    target_include_directories(vkquake PRIVATE
+if(QUAKERAY_PLATFORM_WINDOWS)
+    target_include_directories(quakeray PRIVATE
         ${CODECS_INC_DIR}
         ${SDL2_INCLUDE_DIR}
     )
@@ -433,112 +433,112 @@ endif()
 # ============================================================================
 # Compile definitions (per-target)
 # ============================================================================
-target_compile_definitions(vkquake PRIVATE
+target_compile_definitions(quakeray PRIVATE
     $<$<CONFIG:Debug>:_DEBUG>
     $<$<CONFIG:Release>:NDEBUG>
     # The vendored vkpt renderer is linked statically: RGAPI must be empty.
     RG_STATIC
 )
 
-if(VKQUAKE_PLATFORM_WINDOWS)
-    target_compile_definitions(vkquake PRIVATE WIN32 _WINDOWS)
-elseif(VKQUAKE_PLATFORM_LINUX)
-    target_compile_definitions(vkquake PRIVATE LINUX)
+if(QUAKERAY_PLATFORM_WINDOWS)
+    target_compile_definitions(quakeray PRIVATE WIN32 _WINDOWS)
+elseif(QUAKERAY_PLATFORM_LINUX)
+    target_compile_definitions(quakeray PRIVATE LINUX)
 endif()
 
 # MSVC Release: /GS- (no buffer security check)
 if(MSVC)
-    target_compile_options(vkquake PRIVATE $<$<CONFIG:Release>:/GS->)
+    target_compile_options(quakeray PRIVATE $<$<CONFIG:Release>:/GS->)
 endif()
 
 # ============================================================================
 # Link libraries
 # ============================================================================
-target_link_libraries(vkquake PRIVATE Vulkan::Vulkan)
-target_link_libraries(vkquake PRIVATE vkpt)
-target_link_libraries(vkquake PRIVATE libyaml)
+target_link_libraries(quakeray PRIVATE Vulkan::Vulkan)
+target_link_libraries(quakeray PRIVATE vkpt)
+target_link_libraries(quakeray PRIVATE libyaml)
 
-if(VKQUAKE_PLATFORM_WINDOWS)
-    target_link_libraries(vkquake PRIVATE SDL2::SDL2 SDL2::SDL2main)
+if(QUAKERAY_PLATFORM_WINDOWS)
+    target_link_libraries(quakeray PRIVATE SDL2::SDL2 SDL2::SDL2main)
 else()
-    target_link_libraries(vkquake PRIVATE SDL2::SDL2)
+    target_link_libraries(quakeray PRIVATE SDL2::SDL2)
 endif()
 
-if(VKQUAKE_PLATFORM_WINDOWS)
-    target_link_libraries(vkquake PRIVATE ws2_32 winmm)
-elseif(VKQUAKE_PLATFORM_LINUX)
-    target_link_libraries(vkquake PRIVATE m dl pthread)
-elseif(VKQUAKE_PLATFORM_MACOS)
-    target_link_libraries(vkquake PRIVATE m dl pthread)
+if(QUAKERAY_PLATFORM_WINDOWS)
+    target_link_libraries(quakeray PRIVATE ws2_32 winmm)
+elseif(QUAKERAY_PLATFORM_LINUX)
+    target_link_libraries(quakeray PRIVATE m dl pthread)
+elseif(QUAKERAY_PLATFORM_MACOS)
+    target_link_libraries(quakeray PRIVATE m dl pthread)
 endif()
 
 # Codec libs
-if(VKQUAKE_PLATFORM_WINDOWS)
+if(QUAKERAY_PLATFORM_WINDOWS)
     if(USE_CODEC_MP3)
-        target_link_libraries(vkquake PRIVATE codec::mad)
+        target_link_libraries(quakeray PRIVATE codec::mad)
     endif()
     if(USE_CODEC_VORBIS)
-        target_link_libraries(vkquake PRIVATE codec::vorbisfile codec::vorbis codec::ogg)
+        target_link_libraries(quakeray PRIVATE codec::vorbisfile codec::vorbis codec::ogg)
     endif()
     if(USE_CODEC_FLAC)
-        target_link_libraries(vkquake PRIVATE codec::FLAC)
+        target_link_libraries(quakeray PRIVATE codec::FLAC)
     endif()
     if(USE_CODEC_OPUS)
-        target_link_libraries(vkquake PRIVATE codec::opusfile codec::opus)
+        target_link_libraries(quakeray PRIVATE codec::opusfile codec::opus)
     endif()
     if(USE_CODEC_XMP)
-        target_link_libraries(vkquake PRIVATE codec::xmp)
+        target_link_libraries(quakeray PRIVATE codec::xmp)
     endif()
     if(USE_CODEC_MIKMOD)
-        target_link_libraries(vkquake PRIVATE codec::mikmod)
+        target_link_libraries(quakeray PRIVATE codec::mikmod)
     endif()
 else()
     if(USE_CODEC_MP3)
         find_library(MAD_LIB mad REQUIRED)
-        target_link_libraries(vkquake PRIVATE ${MAD_LIB})
+        target_link_libraries(quakeray PRIVATE ${MAD_LIB})
     endif()
     if(USE_CODEC_VORBIS)
         find_package(Vorbis REQUIRED)
-        target_link_libraries(vkquake PRIVATE Vorbis::Vorbis Vorbis::Vorbisfile)
+        target_link_libraries(quakeray PRIVATE Vorbis::Vorbis Vorbis::Vorbisfile)
         find_package(OGG REQUIRED)
-        target_link_libraries(vkquake PRIVATE OGG::OGG)
+        target_link_libraries(quakeray PRIVATE OGG::OGG)
     endif()
     if(USE_CODEC_FLAC)
         find_package(FLAC REQUIRED)
-        target_link_libraries(vkquake PRIVATE FLAC::FLAC)
+        target_link_libraries(quakeray PRIVATE FLAC::FLAC)
     endif()
     if(USE_CODEC_OPUS)
         find_package(Opus REQUIRED)
         find_package(Opusfile REQUIRED)
-        target_link_libraries(vkquake PRIVATE Opus::Opus Opusfile::Opusfile)
+        target_link_libraries(quakeray PRIVATE Opus::Opus Opusfile::Opusfile)
     endif()
     if(USE_CODEC_XMP)
         find_library(XMP_LIB xmp REQUIRED)
-        target_link_libraries(vkquake PRIVATE ${XMP_LIB})
+        target_link_libraries(quakeray PRIVATE ${XMP_LIB})
     endif()
     if(USE_CODEC_MIKMOD)
         find_library(MIKMOD_LIB mikmod REQUIRED)
-        target_link_libraries(vkquake PRIVATE ${MIKMOD_LIB})
+        target_link_libraries(quakeray PRIVATE ${MIKMOD_LIB})
     endif()
 endif()
 
 # ============================================================================
 # Windows: subsystem and resource file
 # ============================================================================
-if(VKQUAKE_PLATFORM_WINDOWS)
-    set_target_properties(vkquake PROPERTIES
+if(QUAKERAY_PLATFORM_WINDOWS)
+    set_target_properties(quakeray PROPERTIES
         WIN32_EXECUTABLE TRUE
     )
     if(MSVC)
-        target_link_options(vkquake PRIVATE /SUBSYSTEM:WINDOWS)
-        target_link_options(vkquake PRIVATE $<$<CONFIG:Debug>:/MAP>)
+        target_link_options(quakeray PRIVATE /SUBSYSTEM:WINDOWS)
+        target_link_options(quakeray PRIVATE $<$<CONFIG:Debug>:/MAP>)
     endif()
 endif()
 
 # ============================================================================
 # Post-build: copy DLLs (Windows)
 # ============================================================================
-if(VKQUAKE_PLATFORM_WINDOWS)
+if(QUAKERAY_PLATFORM_WINDOWS)
     if(CMAKE_SIZEOF_VOID_P EQUAL 8)
         set(DLL_CODEC_DIR "${CODECS_ROOT}/x64")
         set(DLL_SDL_DIR "${SDL2_ROOT}/lib64")
@@ -569,27 +569,27 @@ if(VKQUAKE_PLATFORM_WINDOWS)
     endif()
 
     foreach(dll IN LISTS CODEC_DLLS)
-        add_custom_command(TARGET vkquake POST_BUILD
+        add_custom_command(TARGET quakeray POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${DLL_CODEC_DIR}/${dll}"
-                "$<TARGET_FILE_DIR:vkquake>"
+                "$<TARGET_FILE_DIR:quakeray>"
             COMMENT "Copying ${dll}..."
         )
     endforeach()
 
     # SDL2 DLL
-    add_custom_command(TARGET vkquake POST_BUILD
+    add_custom_command(TARGET quakeray POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${DLL_SDL_DIR}/SDL2.dll"
-            "$<TARGET_FILE_DIR:vkquake>"
+            "$<TARGET_FILE_DIR:quakeray>"
         COMMENT "Copying SDL2.dll..."
     )
 
     # amd_fidelityfx_vk.dll (AMD-signed, FSR 2/3.1) — from the vendored vkpt
-    add_custom_command(TARGET vkquake POST_BUILD
+    add_custom_command(TARGET quakeray POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${CMAKE_SOURCE_DIR}/vkpt/Source/FidelityFX_SDK_1.1.4/src/PrebuiltSignedDLL/amd_fidelityfx_vk.dll"
-            "$<TARGET_FILE_DIR:vkquake>"
+            "$<TARGET_FILE_DIR:quakeray>"
         COMMENT "Copying amd_fidelityfx_vk.dll..."
     )
 endif()

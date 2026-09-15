@@ -1227,7 +1227,7 @@ void Con_DrawConsole (cb_context_t *cbx, int lines, qboolean drawinput)
 
 	// draw version number in bottom right
 	y += 8;
-	q_snprintf (ver, sizeof (ver), "vkQuake " ENGINE_VER_STRING);
+	q_snprintf (ver, sizeof (ver), "QuakeRay " ENGINE_VER_STRING);
 	for (x = 0; x < (int)strlen (ver); x++)
 		Draw_Character (cbx, (con_linewidth - strlen (ver) + x + 2) << 3, y, ver[x] /*+ 128*/);
 }

@@ -1,6 +1,6 @@
 # ============================================================================
-# vkpt renderer, vendored into vkquake. Built as a STATIC library and
-# linked into vkquake. The public RG_* API stays an internal interface
+# vkpt renderer, vendored into QuakeRay. Built as a STATIC library and
+# linked into QuakeRay. The public RG_* API stays an internal interface
 # (plain function calls).
 # ============================================================================
 cmake_minimum_required(VERSION 3.20)
@@ -172,5 +172,5 @@ if(WIN32)
     target_sources(vkpt PRIVATE "Source/FSR.cpp")
     target_include_directories(vkpt PRIVATE "${vkpt_FFX_API_DIR}/ffx-api/include")
     target_link_libraries(vkpt PUBLIC "${vkpt_FFX_API_DIR}/PrebuiltSignedDLL/amd_fidelityfx_vk.lib")
-    # amd_fidelityfx_vk.dll is copied next to vkquake.exe in the root CMakeLists
+    # amd_fidelityfx_vk.dll is copied next to quakeray.exe in the root CMakeLists
 endif()
