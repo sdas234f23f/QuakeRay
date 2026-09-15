@@ -244,6 +244,7 @@ task_handle_t prev_end_rendering_task = INVALID_TASK_HANDLE;
 	CVAR_DEF_T (rt_debugemissive, "0") \
 	CVAR_DEF_T (rt_q2_depthgrad, "1") \
 	CVAR_DEF_T (rt_q2_lightstats, "1") \
+	CVAR_DEF_T (rt_reflrefr_earlyout, "1") \
 	CVAR_DEF_T (rt_stats, "0") \
 	CVAR_DEF_T (rt_pass_stats, "0") \
 	\
@@ -1129,6 +1130,7 @@ static void GL_EndRenderingTask (end_rendering_parms_t *parms)
 		.polygonalLightSpotlightFactor = 2.0f,
 		.q2DepthGradMode = CVAR_TO_UINT32 (rt_q2_depthgrad) != 0,
 		.q2LightStatsMode = q2_lightstats_mode,
+		.reflRefrEarlyOut = CVAR_TO_BOOL (rt_reflrefr_earlyout),
 		.lightUniqueIdIgnoreFirstPersonViewerShadows = NULL,
 	};
 

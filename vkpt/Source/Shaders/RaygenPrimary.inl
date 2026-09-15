@@ -704,6 +704,29 @@ void main()
 
     // restore state from primary shader
     const uvec3 primaryToReflRefrBuf = texelFetch(framebufPrimaryToReflRefr_Sampler, pix, 0).rgb;
+
+    // The loop below can only write anything if the primary surface is one of the
+    // five kinds it handles, and at i == 0 that is decided by exactly the two
+    // values above plus the roughness channel - the same ones the loop reads, so
+    // the test below is the loop's first break condition. Pixels that fail it
+    // leave before loading the whole G-buffer for nothing.
+    if (globalUniform.reflRefrEarlyOut != 0u)
+    {
+        const uint primaryFlags = primaryToReflRefrBuf.r;
+        bool primaryNeedsReflRefr =
+            (primaryFlags & (GEOM_INST_FLAG_MEDIA_TYPE_WATER | GEOM_INST_FLAG_MEDIA_TYPE_ACID |
+                             GEOM_INST_FLAG_MEDIA_TYPE_GLASS)) != 0 ||
+            (isPortalFromFlags(primaryFlags) && primaryToReflRefrBuf.b != PORTAL_INDEX_NONE);
+        if (!primaryNeedsReflRefr && (primaryFlags & GEOM_INST_FLAG_REFLECT) != 0)
+        {
+            primaryNeedsReflRefr = texelFetch(framebufMetallicRoughness_Sampler, pix, 0).g < globalUniform.minRoughness;
+        }
+        if (!primaryNeedsReflRefr)
+        {
+            return;
+        }
+    }
+
     ShHitInfo h;
     h.albedo                            = texelFetch(framebufAlbedo_Sampler, getRegularPixFromCheckerboardPix(pix), 0).rgb;
     h.hitPosition                       = texelFetch(framebufSurfacePosition_Sampler, pix, 0).xyz;

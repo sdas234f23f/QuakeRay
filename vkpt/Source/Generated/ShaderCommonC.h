@@ -301,7 +301,7 @@ struct ShGlobalUniform
     uint32_t q2DepthGradMode;
     float skyNee;
     uint32_t q2LightStatsMode;
-    float _pad3;
+    uint32_t reflRefrEarlyOut;
     float _pad4;
     float _pad5;
     int32_t instanceGeomInfoOffset[48];
