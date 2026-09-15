@@ -76,7 +76,9 @@ public:
     // Q2 core path (phase 4.4.3).
     void TraceQ2ReflectionRefractionRays(const TraceParams &params);
     void TraceDirectllumination(const TraceParams &params);
-    void TraceQ2Indirectllumination(const TraceParams &params);
+    // numBounceRays mirrors Q2RTX pt_num_bounce_rays: 0.5 halves the traced rows
+    // (Low GI), the raygen doubles the contribution of the rows it does trace.
+    void TraceQ2Indirectllumination(const TraceParams &params, float numBounceRays = 1.0f);
 
 private:
     void TraceRays(

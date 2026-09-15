@@ -178,7 +178,7 @@ void PathTracer::TraceDirectllumination(const TraceParams &params)
     TraceRays(params.cmd, SBT_INDEX_RAYGEN_DIRECT, params.width, params.height);
 }
 
-void PathTracer::TraceQ2Indirectllumination(const TraceParams &params)
+void PathTracer::TraceQ2Indirectllumination(const TraceParams &params, float numBounceRays)
 {
     CmdLabel label(params.cmd, "Q2 Indirect illumination (NEE)");
 
@@ -200,5 +200,12 @@ void PathTracer::TraceQ2Indirectllumination(const TraceParams &params)
     params.framebuffers->BarrierMultiple(params.cmd, params.frameIndex, fs);
 
 
-    TraceRays(params.cmd, SBT_INDEX_RAYGEN_Q2_INDIRECT, params.width, params.height);
+    // Q2RTX Low GI (pt_num_bounce_rays == 0.5) covers half of the rows; the raygen
+    // picks the rows of the right parity for the current frame (see RtQ2Indirect.rgen).
+    const bool halfRes = numBounceRays > 0.25f && numBounceRays < 0.75f;
+
+    TraceRays(params.cmd,
+              SBT_INDEX_RAYGEN_Q2_INDIRECT,
+              params.width,
+              halfRes ? (params.height + 1) / 2 : params.height);
 }

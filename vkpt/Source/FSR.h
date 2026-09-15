@@ -23,64 +23,55 @@
 #include "Framebuffers.h"
 #include "UserFunction.h"
 
-/// Opaque FidelityFX API context handle (ffx_api/ffx_api.h: typedef void* ffxContext)
 using ffxContext = void*;
 
 namespace vkpt
 {
     class RenderResolutionHelper;
 
-    class FSR : public IFramebuffersDependency
+    namespace FidelityFX
     {
-    public:
-        FSR(VkDevice device, VkPhysicalDevice physDevice, UserPrint* pUserPrint);
-        ~FSR() override;
+        class FSR : public IFramebuffersDependency
+        {
+        public:
+            FSR(VkDevice device, VkPhysicalDevice physDevice, UserPrint* pUserPrint);
+            ~FSR() override;
 
-        FSR(const FSR& other) = delete;
-        FSR(FSR&& other) noexcept = delete;
-        FSR& operator=(const FSR& other) = delete;
-        FSR& operator=(FSR&& other) noexcept = delete;
+            FSR(const FSR& other) = delete;
+            FSR(FSR&& other) noexcept = delete;
+            FSR& operator=(const FSR& other) = delete;
+            FSR& operator=(FSR&& other) noexcept = delete;
 
-        // Selects which FSR version to use. Recreates the FidelityFX context if the version changed.
-        void SetUpscaleVersion(RgRenderUpscaleTechnique technique);
+            void SetUpscaleVersion(RgRenderUpscaleTechnique technique);
+            void OnFramebuffersSizeChange(const ResolutionState& resolutionState) override;
 
-        void OnFramebuffersSizeChange(const ResolutionState &resolutionState) override;
+            FramebufferImageIndex Apply(
+                VkCommandBuffer cmd, uint32_t frameIndex,
+                const std::shared_ptr<Framebuffers>& framebuffers,
+                const RenderResolutionHelper& renderResolution,
+                RgFloat2D jitterOffset,
+                float timeDelta,
+                float nearPlane, float farPlane, float fovVerticalRad);
 
-        FramebufferImageIndex Apply(
-            VkCommandBuffer cmd, uint32_t frameIndex,
-            const std::shared_ptr<Framebuffers> &framebuffers,
-            const RenderResolutionHelper &renderResolution,
-            RgFloat2D jitterOffset,
-            float timeDelta,
-            float nearPlane, float farPlane, float fovVerticalRad);
+            static RgFloat2D GetJitter(const ResolutionState& resolutionState, uint32_t frameId);
+            static bool IsUpscaleVersionAvailable(RgRenderUpscaleTechnique technique);
 
-        static RgFloat2D GetJitter(const ResolutionState &resolutionState, uint32_t frameId);
-
-        // Checks whether the requested FSR version (AMD_FSR2 / AMD_FSR3) is present in the FidelityFX DLL.
-        static bool IsUpscaleVersionAvailable(RgRenderUpscaleTechnique technique);
-
-    private:
-        void RecreateContext();
-        void DestroyContext();
-        static uint64_t FindVersionId(bool preferFsr3);
-
-        VkDevice        m_device;
-        VkPhysicalDevice m_physDevice;
-        UserPrint*      m_pUserPrint;
-
-        ffxContext      m_context;
-        // Version requested by the application (never changed by fallback)
-        RgRenderUpscaleTechnique m_requestedTechnique;
-        // Version actually used (may differ from requested after a fallback)
-        RgRenderUpscaleTechnique m_technique;
-
-        uint32_t        m_renderWidth;
-        uint32_t        m_renderHeight;
-        uint32_t        m_displayWidth;
-        uint32_t        m_displayHeight;
-
-        bool            m_hasSize;
-
-        static inline ffxContext s_contextForJitter = nullptr;
-    };
+        private:
+            void RecreateContext();
+            void DestroyContext();
+            static uint64_t FindVersionId(bool preferFsr3);
+            VkDevice m_device;
+            VkPhysicalDevice m_physDevice;
+            UserPrint* m_pUserPrint;
+            ffxContext m_context;
+            RgRenderUpscaleTechnique m_requestedTechnique;
+            RgRenderUpscaleTechnique m_technique;
+            uint32_t m_renderWidth;
+            uint32_t m_renderHeight;
+            uint32_t m_displayWidth;
+            uint32_t m_displayHeight;
+            bool m_hasSize;
+            static inline ffxContext s_contextForJitter = nullptr;
+        };
+    }
 }

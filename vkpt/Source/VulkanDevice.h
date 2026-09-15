@@ -189,7 +189,7 @@ private:
     std::shared_ptr<GodRays>                godRays;
     std::shared_ptr<RayStats>               rayStats;
     std::shared_ptr<PassTimings>            passTimings;
-    std::shared_ptr<FSR>                    amdFsr;
+    std::shared_ptr<FidelityFX::FSR>        amdFsr;
     std::shared_ptr<DLSS>                   nvDlss;
     std::shared_ptr<Sharpening>             sharpening;
     std::shared_ptr<EffectWipe>                 effectWipe;

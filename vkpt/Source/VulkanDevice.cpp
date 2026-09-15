@@ -178,7 +178,7 @@ void VulkanDevice::FillUniform(ShGlobalUniform *gu, const RgDrawFrameInfo &drawI
         gu->upscaledRenderHeight = static_cast< float >( renderResolution.UpscaledHeight() );
 
         RgFloat2D jitter = renderResolution.IsNvDlssEnabled() ? HaltonSequence::GetJitter_Halton23( frameId ) :
-                           (renderResolution.IsAmdFsr2Enabled() || renderResolution.IsAmdFsr3Enabled()) ? FSR::GetJitter( renderResolution.GetResolutionState(), frameId ) :
+                           (renderResolution.IsAmdFsr2Enabled() || renderResolution.IsAmdFsr3Enabled()) ? FidelityFX::FSR::GetJitter( renderResolution.GetResolutionState(), frameId ) :
                            RgFloat2D{ 0, 0 };
 
         gu->jitterX = jitter.data[ 0 ];
@@ -369,11 +369,14 @@ void VulkanDevice::FillUniform(ShGlobalUniform *gu, const RgDrawFrameInfo &drawI
         gu->q2LightStatsMode           = drawInfo.pIlluminationParams->q2LightStatsMode;
         gu->reflRefrEarlyOut           = drawInfo.pIlluminationParams->reflRefrEarlyOut != 0;
         gu->neeLightSamples            = std::clamp( drawInfo.pIlluminationParams->neeLightSamples, 1u, 2u );
+        gu->giBounceRays[0]            = std::clamp( drawInfo.pIlluminationParams->giBounceRays, 0.0f, 2.0f );
+        gu->fltEnable[0]               = drawInfo.pIlluminationParams->denoiserEnabled != 0 ? 1.0f : 0.0f;
+        gu->fixedAlbedo[0]             = std::max( drawInfo.pIlluminationParams->fixedAlbedo, 0.0f );
     }
     else
     {
         gu->polyLightSpotlightFactor   = 2.0f;
-        gu->indirSecondBounce          = true;
+        gu->indirSecondBounce          = false;
         gu->lightIndexIgnoreFPVShadows = LIGHT_INDEX_NONE;
         gu->cellWorldSize              = 1.0f;
         gu->gradientMultDiffuse        = 0.5f;
@@ -382,7 +385,10 @@ void VulkanDevice::FillUniform(ShGlobalUniform *gu, const RgDrawFrameInfo &drawI
         gu->q2DepthGradMode            = 1u;
         gu->q2LightStatsMode           = 1u;
         gu->reflRefrEarlyOut           = 1u;
-        gu->neeLightSamples            = 2u;
+        gu->neeLightSamples            = 1u;
+        gu->giBounceRays[0]            = 1.0f;
+        gu->fltEnable[0]               = 1.0f;
+        gu->fixedAlbedo[0]             = 0.0f;
     }
 
     if( drawInfo.pBloomParams != nullptr )
@@ -854,6 +860,16 @@ void VulkanDevice::Render(VkCommandBuffer cmd, const RgDrawFrameInfo &drawInfo)
         bool godRaysActive = false;
         GodRays::Params gr = {};
         {
+            // Host cvar rt_godrays. When disabled the shadow map is not rendered
+            // and the god rays buffers are cleared by the shader itself
+            // (CmGodRays returns early for godRaysEnabled == 0).
+            const bool godRaysEnabled =
+                (drawInfo.pSkyParams == nullptr) || (drawInfo.pSkyParams->godRaysEnabled != 0);
+
+            gr.godRaysIntensity = 8.0f;
+            gr.godRaysEccentricity = 0.75f;
+            gr.godRaysEnabled = godRaysEnabled ? 1u : 0u;
+
             float sunColor[3], sunDir[3], sunAngularRadius = 0.0047f;
             if (!scene->GetLightManager()->GetLastDirectionalLight(sunColor, sunDir, &sunAngularRadius))
             {
@@ -883,9 +899,15 @@ void VulkanDevice::Render(VkCommandBuffer cmd, const RgDrawFrameInfo &drawInfo)
                 const auto &staticCollector  = scene->GetASManager()->GetStaticCollector();
                 const auto &dynamicCollector = scene->GetASManager()->GetDynamicCollector(frameIndex);
 
-                if (shadowMap->Render(cmd, sunDir, aabbMin, aabbMax,
-                                      staticCollector.get(), dynamicCollector.get(),
-                                      shadowMapVP, &shadowMapDepthScale))
+                if (!godRaysEnabled)
+                {
+                    // Nothing to march: the pass only clears the buffers.
+                    godRays->Trace(cmd, frameIndex, gr, 0);
+                    godRays->Filter(cmd, frameIndex);
+                }
+                else if (shadowMap->Render(cmd, sunDir, aabbMin, aabbMax,
+                                           staticCollector.get(), dynamicCollector.get(),
+                                           shadowMapVP, &shadowMapDepthScale))
                 {
                     // The god rays sun direction points TOWARD the sun (Q2RTX
                     // convention): the phase function peaks around the sun and
@@ -906,9 +928,6 @@ void VulkanDevice::Render(VkCommandBuffer cmd, const RgDrawFrameInfo &drawInfo)
 
                     memcpy(gr.shadowMapVP, shadowMapVP, 16 * sizeof(float));
                     gr.shadowMapDepthScale = shadowMapDepthScale;
-                    gr.godRaysIntensity = 8.0f;
-                    gr.godRaysEccentricity = 0.75f;
-                    gr.godRaysEnabled = 1u;
 
                     godRays->Trace(cmd, frameIndex, gr, 0);
                     godRaysActive = true;
@@ -939,7 +958,10 @@ void VulkanDevice::Render(VkCommandBuffer cmd, const RgDrawFrameInfo &drawInfo)
 
         passTimings->Mark(cmd, frameIndex, GPU_PASS_GRADIENT);
 
-        q2Denoiser->GradientReproject(cmd, frameIndex, uniform);
+        if (uniform->GetData()->fltEnable[0] >= 0.5f)
+        {
+            q2Denoiser->GradientReproject(cmd, frameIndex, uniform);
+        }
 
         passTimings->Mark(cmd, frameIndex, GPU_PASS_DIRECT);
 
@@ -947,7 +969,7 @@ void VulkanDevice::Render(VkCommandBuffer cmd, const RgDrawFrameInfo &drawInfo)
 
         passTimings->Mark(cmd, frameIndex, GPU_PASS_INDIRECT);
 
-        pathTracer->TraceQ2Indirectllumination(params);
+        pathTracer->TraceQ2Indirectllumination(params, uniform->GetData()->giBounceRays[0]);
 
         passTimings->Mark(cmd, frameIndex, GPU_PASS_DENOISE);
 
@@ -955,7 +977,17 @@ void VulkanDevice::Render(VkCommandBuffer cmd, const RgDrawFrameInfo &drawInfo)
 
         passTimings->Mark(cmd, frameIndex, GPU_PASS_EXPOSURE);
 
-        tonemapping->CalculateExposure(cmd, frameIndex, uniform);
+        // Q2RTX tone mapping controls (menu items); keep the historical hardcoded
+        // values when the host does not provide the params.
+        float exposureBias = -2.8f;
+        float contrast = 0.6f;
+        if (drawInfo.pTonemappingParams != nullptr)
+        {
+            exposureBias = drawInfo.pTonemappingParams->exposureBias;
+            contrast = std::clamp(drawInfo.pTonemappingParams->contrast, 0.0f, 1.0f);
+        }
+
+        tonemapping->CalculateExposure(cmd, frameIndex, uniform, exposureBias, contrast);
 
         passTimings->Mark(cmd, frameIndex, GPU_PASS_COMPOSITE_RASTER);
     }
@@ -1223,7 +1255,7 @@ bool vkpt::VulkanDevice::IsRenderUpscaleTechniqueAvailable(RgRenderUpscaleTechni
             return true;
         case RG_RENDER_UPSCALE_TECHNIQUE_AMD_FSR2:
         case RG_RENDER_UPSCALE_TECHNIQUE_AMD_FSR3:
-            return FSR::IsUpscaleVersionAvailable(technique);
+            return FidelityFX::FSR::IsUpscaleVersionAvailable(technique);
         case RG_RENDER_UPSCALE_TECHNIQUE_NVIDIA_DLSS:
             return nvDlss->IsDlssAvailable();
         default:

@@ -27,27 +27,27 @@
 materials:
   - name: textures/#lava1
     texture_gloss: textures/#lava1_gloss.png
-    texture_emissive: textures/#lava1_luma.png
+    texture_emissive: textures/_lava1_luma.png
     metalness_factor: 0.5
-    light_brightness: 0.7
+    light_brightness: 0.8
     is_light: true
   - name: textures/#teleport
     texture_gloss: textures/#teleport_gloss.png
-    texture_emissive: textures/#teleport_luma.png
+    texture_emissive: textures/_teleport_luma.png
     metalness_factor: 0.9
-    light_brightness: 0.3
+    light_brightness: 5.0
     is_light: true
   - name: textures/+0_med25
     texture_gloss: textures/+0_med25_gloss.png
     texture_emissive: textures/+0_med25_luma.png
     metalness_factor: 0.5
-    light_brightness: 0.2
+    light_brightness: 0.3
     is_light: true
   - name: textures/+0_med25s
     texture_gloss: textures/+0_med25s_gloss.png
     texture_emissive: textures/+0_med25s_luma.png
     metalness_factor: 0.5
-    light_brightness: 0.2
+    light_brightness: 0.3
     is_light: true
   - name: textures/med100
     texture_gloss: textures/med100_gloss.png
@@ -58,25 +58,25 @@ materials:
     texture_gloss: textures/+0_med100_gloss.png
     texture_emissive: textures/+0_med100_luma.png
     metalness_factor: 0.5
-    light_brightness: 0.3
+    light_brightness: 0.4
     is_light: true
   - name: textures/+1_med100
     texture_gloss: textures/+1_med100_gloss.png
     texture_emissive: textures/+1_med100_luma.png
     metalness_factor: 0.5
-    light_brightness: 0.3
+    light_brightness: 0.4
     is_light: true
   - name: textures/+2_med100
     texture_gloss: textures/+2_med100_gloss.png
     texture_emissive: textures/+2_med100_luma.png
     metalness_factor: 0.5
-    light_brightness: 0.3
+    light_brightness: 0.4
     is_light: true
   - name: textures/+3_med100
     texture_gloss: textures/+3_med100_gloss.png
     texture_emissive: textures/+3_med100_luma.png
     metalness_factor: 0.5
-    light_brightness: 0.3
+    light_brightness: 0.4
     is_light: true
   - name: textures/+1_med25
     texture_gloss: textures/+1_med25_gloss.png
@@ -95,6 +95,24 @@ materials:
     texture_emissive: textures/+2_med25_luma.png
     metalness_factor: 0.5
     light_brightness: 0.3
+    is_light: true
+  - name: textures/+3_med25
+    texture_gloss: textures/+3_med25_gloss.png
+    texture_emissive: textures/+3_med25_luma.png
+    metalness_factor: 0.5
+    light_brightness: 0.3
+    is_light: true
+  - name: textures/med3_0
+    texture_gloss: textures/med3_0_gloss.png
+    texture_emissive: textures/med3_0_luma.png
+    metalness_factor: 0.5
+    light_brightness: 0.5
+    is_light: true
+  - name: textures/med3_1
+    texture_gloss: textures/med3_1_gloss.png
+    texture_emissive: textures/med3_1_luma.png
+    metalness_factor: 0.5
+    light_brightness: 0.5
     is_light: true
   - name: textures/+ashoot
     texture_emissive: textures/+0shoot_luma.png
@@ -120,12 +138,6 @@ materials:
     texture_emissive: textures/+0shoot_luma.png
     light_color: ff0000
     light_brightness: 0.25
-    is_light: true
-  - name: textures/+3_med25
-    texture_gloss: textures/+3_med25_gloss.png
-    texture_emissive: textures/+3_med25_luma.png
-    metalness_factor: 0.5
-    light_brightness: 0.5
     is_light: true
   - name: textures/+0_box_side
     texture_emissive: textures/ex_box_big_luma.png
@@ -179,17 +191,7 @@ materials:
   - name: textures/dem5_3
     texture_emissive: textures/dem5_3_luma.png
     light_color: ffffdd
-    light_brightness: 2
-    is_light: true
-  - name: textures/med3_0
-    texture_gloss: textures/med3_0_gloss.png
-    texture_emissive: textures/med3_0_luma.png
-    metalness_factor: 0.5
-    is_light: true
-  - name: textures/med3_1
-    texture_gloss: textures/med3_1_gloss.png
-    texture_emissive: textures/med3_1_luma.png
-    metalness_factor: 0.5
+    light_brightness: 1.5
     is_light: true
   - name: textures/nail0sid
     texture_gloss: textures/nail0sid_gloss.png
@@ -375,7 +377,7 @@ materials:
   - name: textures/tlight11
     texture_emissive: textures/tlight11_luma.png
     light_color: ffffff
-    light_brightness: 0.7
+    light_brightness: 1.0
     is_light: true
   - name: textures/+0slip
     color_emissive: 8b0000
@@ -581,7 +583,7 @@ materials:
     is_light: false
   - name: textures/woodflr1_4
     texture_gloss: textures/woodflr1_4_gloss.png
-    metalness_factor: 0.1
+    metalness_factor: 0.5
     is_light: false
   - name: textures/z_exit
     texture_emissive: textures/z_exit_luma.png

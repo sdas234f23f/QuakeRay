@@ -71,6 +71,12 @@ public:
     void OnShaderReload(const ShaderManager *shaderManager) override;
 
 private:
+    // Resolves the checkerboard packed Q2Color image into PreFinal, which uses
+    // the regular pixel layout. Shared by the denoised and the unfiltered path.
+    void InterleaveCheckerboard(
+        VkCommandBuffer cmd, uint32_t frameIndex,
+        const std::shared_ptr<const GlobalUniform> &uniform);
+
     void CreatePipelineLayout(VkDescriptorSetLayout *pSetLayouts, uint32_t setLayoutCount);
     void CreatePipelines(const ShaderManager *shaderManager);
     void DestroyPipelines();

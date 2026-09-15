@@ -30,6 +30,7 @@
 #define DESC_SET_FRAMEBUFFERS 0
 #define DESC_SET_GLOBAL_UNIFORM 1
 #include "ShaderCommonGLSLFunc.h"
+#include "BRDF.h"
 #include "Q2Asvgf.h"
 
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
@@ -76,6 +77,74 @@ vec3 q2AntiFirefly(const ivec2 pix, const vec3 center, const usampler2D buf, con
     return center;
 }
 
+// Composites the raw, unfiltered ReSTIR signal. Used when the denoiser is
+// disabled (Q2RTX flt_enable = 0): the lighting channels come straight from the
+// path tracer instead of the ASVGF reconstructions, so the image is noisy but
+// reacts to any lighting change immediately.
+void q2CompositeUnfiltered(const ivec2 pix)
+{
+    const vec3 diffuse = texelFetchUnfilteredDirect(pix);
+    const vec3 specular = texelFetchUnfilteredSpecular(pix);
+    const SH indir = texelFetchUnfilteredIndirectSH(pix);
+
+    const vec3 albedo = texelFetch(framebufAlbedo_Sampler, getRegularPixFromCheckerboardPix(pix), 0).rgb;
+    const vec3 throughput = texelFetch(framebufThroughput_Sampler, pix, 0).rgb;
+
+    vec3 illuminated;
+
+    if (!isSkyPix(pix) && globalUniform.lightmapEnable == 0)
+    {
+        const vec2 mrFb = texelFetch(framebufMetallicRoughness_Sampler, pix, 0).xy;
+        const vec3 normal = texelFetchNormal(pix);
+
+        const float metallic = mrFb.x;
+
+        const vec3 indirect = SHToIrradiance(indir, normal);
+
+        const vec3 ro_s = getSpecularColor(albedo, metallic);
+        vec3 ro_d = albedo * (1.0 - metallic);
+
+        // Q2RTX flt_fixed_albedo: replace the diffuse albedo after filtering,
+        // keeping the specular reflectivity textured, for a "no textures" mode.
+        if (globalUniform.fixedAlbedo.x != 0.0)
+        {
+            ro_d = vec3(globalUniform.fixedAlbedo.x);
+        }
+
+        illuminated =
+            (diffuse + indirect) * ro_d +
+            specular * ro_s;
+
+        if ((globalUniform.debugShowFlags & DEBUG_SHOW_FLAG_ONLY_DIRECT_DIFFUSE) != 0)
+        {
+            illuminated = diffuse * albedo;
+        }
+        else if ((globalUniform.debugShowFlags & DEBUG_SHOW_FLAG_ONLY_SPECULAR) != 0)
+        {
+            illuminated = specular * ro_s;
+        }
+        else if ((globalUniform.debugShowFlags & DEBUG_SHOW_FLAG_ONLY_INDIRECT_DIFFUSE) != 0)
+        {
+            illuminated = indirect;
+        }
+
+        illuminated *= throughput;
+        illuminated *= getMaterialAmbient(albedo);
+    }
+    else
+    {
+        illuminated = albedo * throughput;
+    }
+
+    const vec4 q2Transparent = texelFetch(framebufQ2Transparent_Sampler, pix, 0);
+    illuminated = q2Transparent.rgb + illuminated * (1.0 - q2Transparent.a);
+
+    const vec4 fogAccum = texelFetch(framebufQ2FogAccum_Sampler, pix, 0);
+    illuminated = fogAccum.rgb + illuminated * (1.0 - fogAccum.a);
+
+    imageStore(framebufQ2Color, pix, vec4(max(vec3(0.0), illuminated), 0));
+}
+
 void main()
 {
     const ivec2 pix = ivec2(gl_GlobalInvocationID);
@@ -84,6 +153,12 @@ void main()
 
     if (pix.x >= width || pix.y >= height)
     {
+        return;
+    }
+
+    if (globalUniform.fltEnable.x < 0.5)
+    {
+        q2CompositeUnfiltered(pix);
         return;
     }
 

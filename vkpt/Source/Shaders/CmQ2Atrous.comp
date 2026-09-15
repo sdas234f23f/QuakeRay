@@ -321,7 +321,14 @@ main()
                 smoothstep(FAKE_ROUGH_SPECULAR_THRESHOLD, FAKE_ROUGH_SPECULAR_THRESHOLD + FAKE_ROUGH_SPECULAR_LENGTH, roughness));
 
             const vec3 ro_s = getSpecularColor(albedo, metallic);
-            const vec3 ro_d = albedo * (1.0 - metallic);
+            vec3 ro_d = albedo * (1.0 - metallic);
+
+            // Q2RTX flt_fixed_albedo: replace the diffuse albedo after filtering,
+            // keeping the specular reflectivity textured, for a "no textures" mode.
+            if (globalUniform.fixedAlbedo.x != 0.0)
+            {
+                ro_d = vec3(globalUniform.fixedAlbedo.x);
+            }
 
             illuminated =
                 (diffuse + indirect) * ro_d +

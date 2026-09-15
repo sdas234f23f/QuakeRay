@@ -689,6 +689,24 @@ GLOBAL_UNIFORM_STRUCT = [
 
     # Per-lightstyle emission multipliers (64 styles as 16 vec4s).
     (TYPE_FLOAT32,      4,      "lightStyleScales",         16),
+
+    # Q2RTX pt_num_bounce_rays (host cvar rt_gi_level): 0 = no indirect lighting
+    # at all, 0.5 = low, 1 = medium (one indirect bounce), 2 = high (two indirect
+    # bounces). Only .x is used; the vec4 keeps the dense C mirror on the std140
+    # 16-byte boundary.
+    (TYPE_FLOAT32,      4,      "giBounceRays",              1),
+
+    # Q2RTX flt_enable: 1 - the ASVGF denoiser reconstructs the lighting
+    # channels, 0 - the raw ReSTIR outputs are composited without any filtering
+    # (see Shaders/CmQ2Adapter.comp). Only .x is used; the vec4 keeps the dense
+    # C mirror on the std140 16-byte boundary.
+    (TYPE_FLOAT32,      4,      "fltEnable",                1),
+
+    # Q2RTX flt_fixed_albedo: if nonzero, the diffuse albedo used by the final
+    # composite is replaced with this value, giving a "no textures" mode (host
+    # cvar rt_no_textures). Only .x is used; the vec4 keeps the dense C mirror
+    # on the std140 16-byte boundary.
+    (TYPE_FLOAT32,      4,      "fixedAlbedo",              1),
 ]
 
 GEOM_INSTANCE_STRUCT = [
