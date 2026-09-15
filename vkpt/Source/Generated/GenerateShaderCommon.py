@@ -649,10 +649,13 @@ GLOBAL_UNIFORM_STRUCT = [
     # 3: accumulate on every sample, but do not apply the result
     # 4: accumulate without atomics on every sample (diagnostic, racy)
     (TYPE_UINT32,       1,      "q2LightStatsMode",                 1),
+    # 1: the Q2 reflection/refraction raygen returns before loading the rest of
+    # the G-buffer when the primary surface neither reflects nor refracts
+    # (host cvar rt_reflrefr_earlyout)
+    (TYPE_UINT32,       1,      "reflRefrEarlyOut",                 1),
     # Layout alignment: ShGlobalUniform is std140 and the dense C mirror has no
     # implicit padding, so the scalar block before the first vec4/ivec4 array must
-    # stay a multiple of 16 bytes. 4 bytes of payload + 12 bytes of pads = 16.
-    (TYPE_FLOAT32,      1,      "_pad3",                            1),
+    # stay a multiple of 16 bytes. 8 bytes of payload + 8 bytes of pads = 16.
     (TYPE_FLOAT32,      1,      "_pad4",                            1),
     (TYPE_FLOAT32,      1,      "_pad5",                            1),
 

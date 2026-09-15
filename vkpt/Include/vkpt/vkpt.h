@@ -1018,6 +1018,11 @@ typedef struct RgDrawFrameIlluminationParams
     // 4: accumulate without atomics on every sample (diagnostic: increments are racy)
     // Default: 1
     uint32_t    q2LightStatsMode;
+    // If 1, the Q2 reflection/refraction raygen returns before loading the rest of
+    // the G-buffer when the primary surface neither reflects nor refracts. Purely
+    // a bandwidth optimization: such pixels write nothing either way.
+    // Default: 1
+    uint32_t    reflRefrEarlyOut;
     // For which light first-person viewer shadows should be ignored.
     // E.g. first-person flashlight.
     // Null, if none.
