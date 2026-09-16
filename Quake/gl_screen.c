@@ -673,25 +673,30 @@ void SCR_DrawRTProf (cb_context_t *cbx)
 		const char *label;
 	} right[] = {
 		{ RT_PROF_ELIGHTS, "elights" }, { RT_PROF_WMODEL_LIGHTS, "wmodel lights" }, { RT_PROF_TELEPORTS, "teleports" },
-		{ RT_PROF_CLUSTERS, "clusters" },
+		{ RT_PROF_CLUSTERS, "clusters" }, { RT_PROF_CLUSTERS1, "clust pvs" }, { RT_PROF_CLUSTERS2, "clust rest" },
 	};
 
 	const rt_prof_report_t *rep = &rt_prof_report;
+	const qboolean         stats_panel = (rt_stats.value || rt_pass_stats.value);
 
 	const float scale = 4.0f;
 	const int   step = 8 * (int)scale;
 	const float pass_scale = 2.0f;
 	const int   pass_step = 8 * (int)pass_scale;
-	const int   x = (rt_stats.value || rt_pass_stats.value) ? 640 : 8;
+	const int   x = stats_panel ? 640 : 8;
 	int         y = 8;
 	int         i;
 	char        st[64];
 
 	GL_SetCanvas (cbx, CANVAS_DEFAULT);
 
-	sprintf (st, "FPS: %u.%u", (unsigned)(rep->fps * 10.0f + 0.5f) / 10, (unsigned)(rep->fps * 10.0f + 0.5f) % 10);
-	SCR_DrawRTStatsString (cbx, x, y, st, scale, &color_orange, &color_shadow);
-	y += step;
+	// rt_stats prints the frame rate itself, so only show it here when standing alone
+	if (!stats_panel)
+	{
+		sprintf (st, "FPS: %u.%u", (unsigned)(rep->fps * 10.0f + 0.5f) / 10, (unsigned)(rep->fps * 10.0f + 0.5f) % 10);
+		SCR_DrawRTStatsString (cbx, x, y, st, scale, &color_orange, &color_shadow);
+		y += step;
+	}
 
 	unsigned ms10 = (unsigned)(rep->frameMs * 10.0f + 0.5f);
 	sprintf (st, "FRAME: %u.%u ms", ms10 / 10, ms10 % 10);
@@ -1313,5 +1318,5 @@ void SCR_UpdateScreen (qboolean use_tasks)
 	in_update_screen = false;
 
 	RT_Prof_FrameEnd ();
-	RT_Prof_Print ();
+	RT_Prof_Update ();
 }
