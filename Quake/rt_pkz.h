@@ -7,10 +7,6 @@
 void RT_PKZ_Init(void);
 void RT_PKZ_Shutdown(void);
 
-qboolean RT_PKZ_Active(void);
-
-qboolean RT_PKZ_Exists(const char *name);
-
 byte *RT_PKZ_LoadFile(const char *name, int *outLen);
 
 int RT_PKZ_ListFiles(const char *dir, const char *ext,

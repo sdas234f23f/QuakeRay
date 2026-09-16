@@ -222,29 +222,6 @@ void RT_PKZ_Shutdown(void)
     rt_pkz_temp_count = 0;
 }
 
-qboolean RT_PKZ_Active(void)
-{
-    return rt_pkz_count > 0;
-}
-
-qboolean RT_PKZ_Exists(const char *name)
-{
-    for (int i = 0; i < rt_pkz_count; i++)
-    {
-        rt_pkz_archive_t *a = &rt_pkz_archives[i];
-        if (!a->valid)
-        {
-            continue;
-        }
-        mz_uint32 file_index;
-        if (mz_zip_reader_locate_file_v2(&a->zip, name, NULL, 0, &file_index))
-        {
-            return true;
-        }
-    }
-    return false;
-}
-
 byte *RT_PKZ_LoadFile(const char *name, int *outLen)
 {
     for (int i = 0; i < rt_pkz_count; i++)

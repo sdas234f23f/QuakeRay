@@ -1,12 +1,19 @@
 Misc/vq_pak/vkquake.pak
 build/
 build-cmake/
-Packaging/AppImage/AppDir
-Packaging/AppImage/quakeray*
 .idea
+.vscode
 .settings
 .project
 .cproject
 .DS_Store
 history.txt
 vkpt.txt
+
+# local build/analysis leftovers (untracked by design)
+crash.log
+*.ilk
+*.map
+*.npy
+*.pdb
+*.diff.txt
