@@ -424,7 +424,7 @@ void VulkanDevice::FillUniform(ShGlobalUniform *gu, const RgDrawFrameInfo &drawI
             gu->cameraMediaType = MEDIA_TYPE_VACUUM;
         }
 
-        gu->reflectRefractMaxDepth     = std::min( 4u, rr.maxReflectRefractDepth );
+        gu->reflectRefractMaxDepth     = std::min( 8u, rr.maxReflectRefractDepth );
 
         gu->indexOfRefractionGlass = std::max( 0.0f, rr.indexOfRefractionGlass );
         gu->indexOfRefractionWater = std::max( 0.0f, rr.indexOfRefractionWater );

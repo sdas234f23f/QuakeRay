@@ -2512,6 +2512,36 @@ static void VID_Menu_StepGiLevel (float dir)
 
 /*
 ================
+VID_Menu_StepReflDepth -- cycle through the Q2RTX reflection depths
+================
+*/
+static void VID_Menu_StepReflDepth (float dir)
+{
+	static const float depths[] = { 0.0f, 1.0f, 2.0f, 4.0f, 8.0f };
+	const int numdepths = (int)(sizeof (depths) / sizeof (depths[0]));
+	const float cur = CVAR_TO_FLOAT (rt_reflrefr_depth);
+
+	int   idx = 2; // 2 bounces
+	float best = 1e9f;
+
+	for (int i = 0; i < numdepths; i++)
+	{
+		const float d = fabsf (depths[i] - cur);
+
+		if (d < best)
+		{
+			best = d;
+			idx = i;
+		}
+	}
+
+	idx = CLAMP (0, idx + ((dir > 0.0f) ? 1 : -1), numdepths - 1);
+
+	Cvar_SetValueQuick (&rt_reflrefr_depth, depths[idx]);
+}
+
+/*
+================
 VID_Menu_SetPage -- switch page, keeping the cursor on a visible row
 ================
 */
@@ -2664,7 +2694,7 @@ static void VID_MenuKey (int key)
 			Cvar_SetValueQuick (&rt_godrays, !CVAR_TO_BOOL (rt_godrays));
 			break;
 		case VID_OPT_REFLECT:
-			VID_Menu_StepFloatCvar (&rt_reflrefr_depth, -1.0f, 0.0f, 2.0f);
+			VID_Menu_StepReflDepth (-1.0f);
 			break;
 		case VID_OPT_DENOISER:
 			Cvar_SetValueQuick (&rt_denoiser, !CVAR_TO_BOOL (rt_denoiser));
@@ -2754,7 +2784,7 @@ static void VID_MenuKey (int key)
 			Cvar_SetValueQuick (&rt_godrays, !CVAR_TO_BOOL (rt_godrays));
 			break;
 		case VID_OPT_REFLECT:
-			VID_Menu_StepFloatCvar (&rt_reflrefr_depth, 1.0f, 0.0f, 2.0f);
+			VID_Menu_StepReflDepth (1.0f);
 			break;
 		case VID_OPT_DENOISER:
 			Cvar_SetValueQuick (&rt_denoiser, !CVAR_TO_BOOL (rt_denoiser));
@@ -2987,9 +3017,17 @@ static void VID_MenuDraw (cb_context_t *cbx)
 		case VID_OPT_REFLECT:
 			{
 				const int depth = (int)(CVAR_TO_FLOAT (rt_reflrefr_depth) + 0.5f);
+				char      label[32];
+
+				if (depth <= 0)
+					q_strlcpy (label, "off", sizeof (label));
+				else if (depth == 1)
+					q_strlcpy (label, "1 bounce", sizeof (label));
+				else
+					q_snprintf (label, sizeof (label), "%d bounces", depth);
 
 				M_Print (cbx, 16, y, "       Reflections");
-				M_Print (cbx, 184, y, (depth <= 0) ? "off" : ((depth == 1) ? "1 bounce" : "2 bounces"));
+				M_Print (cbx, 184, y, label);
 			}
 			break;
 		case VID_OPT_DENOISER:
