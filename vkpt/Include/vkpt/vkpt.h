@@ -1105,6 +1105,29 @@ typedef struct RgDrawFrameVolumetricParams
     float       sourceAssymetry;
 } RgDrawFrameVolumetricParams;
 
+typedef struct RgDrawFrameLevelFogParams
+{
+    // Color of the classic Quake level fog (the worldspawn "fog" key and the
+    // `fog` console command), mixed into the tonemapped image. The value is
+    // used as-is, without an sRGB decoding, the same way the classic renderer
+    // blended it and the same way the host already hands it to the sky, so a
+    // solid-colored sky stays identical to the fog.
+    // Default: 0, 0, 0
+    RgFloat3D   color;
+    // Density of the level fog, already divided by the 64 the classic renderer
+    // scaled it with: the fog amount is 1 - exp(-(density * distance)^2), and
+    // the distance is the same world-space ray length the fog volumes use.
+    // 0 disables the fog.
+    // Default: 0.0
+    float       density;
+    // How much of the sky the fog replaces: the level's `skyfog`, which is 0.5
+    // by default and may be overridden by a worldspawn "skyfog" key. Sky texels
+    // carry no distance, so this is the blend weight itself, as in the classic
+    // sky shader.
+    // Default: 0.0
+    float       skyBlend;
+} RgDrawFrameLevelFogParams;
+
 // Maximum number of Q2RTX-style fog volumes (matches MAX_FOG_VOLUMES in the renderer).
 #define RG_MAX_FOG_VOLUMES 8
 
@@ -1356,6 +1379,7 @@ typedef struct RgDrawFrameInfo
     const RgDrawFrameTexturesParams             *pTexturesParams;
     const RgDrawFrameLensFlareParams            *pLensFlareParams;
     const RgDrawFrameLightmapParams             *pLightmapParams;
+    const RgDrawFrameLevelFogParams             *pLevelFogParams;
     const RgDrawFrameDebugParams                *pDebugParams;
     RgDrawFramePostEffectsParams                postEffectParams;
 

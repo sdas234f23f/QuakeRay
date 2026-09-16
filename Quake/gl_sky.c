@@ -897,6 +897,7 @@ void Sky_DrawSkyBox (cb_context_t *cbx, const float skyTint[3])
 
 		RgRasterizedGeometryUploadInfo info = {
 			.renderType = RG_RASTERIZED_GEOMETRY_RENDER_TYPE_SKY,
+			.vertexCount = countof (vertices),
 			.pVertices = vertices,
 			.indexCount = RT_GetFanIndexCount (countof (vertices)),
 			.pIndices = RT_GetFanIndices (countof (vertices)),

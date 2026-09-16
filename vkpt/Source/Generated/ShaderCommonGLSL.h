@@ -314,6 +314,8 @@ struct ShGlobalUniform
     vec4 fltEnable;
     vec4 fixedAlbedo;
     vec4 sunBounce;
+    vec4 levelFogColorDensity;
+    vec4 levelFogSkyBlend;
 };
 
 struct ShGeometryInstance

@@ -466,6 +466,8 @@ R_SetupViewBeforeMark
 */
 void R_SetupViewBeforeMark (void *unused)
 {
+	double prof_start = RT_Prof_Begin ();
+
 	if (CVAR_TO_BOOL (rt_classic_render) && !r_gpulightmapupdate.value)
 		R_PushDlights ();
 	R_AnimateLight ();
@@ -544,6 +546,8 @@ void R_SetupViewBeforeMark (void *unused)
 	RT_ClusterLightListsReset ();
 
 	RT_UploadAllDlights ();
+
+	RT_Prof_End (RT_PROF_SETUP, prof_start);
 }
 
 //==============================================================================
@@ -844,8 +848,11 @@ R_DrawWorldTask
 */
 void R_DrawWorldTask (void *unused)
 {
+	double prof_start = RT_Prof_Begin ();
+
 	if (!Atomic_LoadUInt32 (&rt_require_static_submit))
 	{
+		RT_Prof_End (RT_PROF_WORLD, prof_start);
 		return;
 	}
 
@@ -863,6 +870,8 @@ void R_DrawWorldTask (void *unused)
 	RG_CHECK (r);
 
 	Atomic_StoreUInt32 (&rt_require_static_submit, false);
+
+	RT_Prof_End (RT_PROF_WORLD, prof_start);
 }
 
 /*
@@ -872,11 +881,15 @@ R_DrawSkyAndWaterTask
 */
 static void R_DrawSkyAndWaterTask (void *unused)
 {
+	double prof_start = RT_Prof_Begin ();
+
 	R_SetupContext (&vulkan_globals.secondary_cb_contexts[CBX_SKY_AND_WATER]);
 	Fog_EnableGFog (&vulkan_globals.secondary_cb_contexts[CBX_SKY_AND_WATER]);
 	Sky_DrawSky (&vulkan_globals.secondary_cb_contexts[CBX_SKY_AND_WATER]);
 	R_DrawWorld_Water (&vulkan_globals.secondary_cb_contexts[CBX_SKY_AND_WATER]);
 	R_DrawWorld_Animated (&vulkan_globals.secondary_cb_contexts[CBX_SKY_AND_WATER]);
+
+	RT_Prof_End (RT_PROF_SKY, prof_start);
 }
 
 /*
@@ -886,6 +899,8 @@ R_DrawEntitiesTask
 */
 static void R_DrawEntitiesTask (int index, void *unused)
 {
+	double prof_start = RT_Prof_Begin ();
+
 	const int cbx_index = index + CBX_ENTITIES_0;
 	R_SetupContext (&vulkan_globals.secondary_cb_contexts[cbx_index]);
 	Fog_EnableGFog (&vulkan_globals.secondary_cb_contexts[cbx_index]); // johnfitz
@@ -893,6 +908,8 @@ static void R_DrawEntitiesTask (int index, void *unused)
 	int       startedict = index * num_edicts_per_cb;
 	int       endedict = q_min ((index + 1) * num_edicts_per_cb, cl_numvisedicts);
 	R_DrawEntitiesOnList (&vulkan_globals.secondary_cb_contexts[cbx_index], false, index + chain_model_0, startedict, endedict);
+
+	RT_Prof_End (RT_PROF_ENTS, prof_start);
 }
 
 /*
@@ -902,11 +919,15 @@ R_DrawAlphaEntitiesTask
 */
 static void R_DrawAlphaEntitiesTask (void *unused)
 {
+	double prof_start = RT_Prof_Begin ();
+
 	R_SetupContext (&vulkan_globals.secondary_cb_contexts[CBX_ALPHA_ENTITIES]);
 	Fog_EnableGFog (&vulkan_globals.secondary_cb_contexts[CBX_ALPHA_ENTITIES]);
 	R_DrawEntitiesOnList (
 		&vulkan_globals.secondary_cb_contexts[CBX_ALPHA_ENTITIES], true, chain_alpha_model, 0,
 		cl_numvisedicts); // johnfitz -- true means this is the pass for alpha entities
+
+	RT_Prof_End (RT_PROF_ALPHA, prof_start);
 }
 
 /*
@@ -916,12 +937,16 @@ R_DrawParticlesTask
 */
 static void R_DrawParticlesTask (void *unused)
 {
+	double prof_start = RT_Prof_Begin ();
+
 	R_SetupContext (&vulkan_globals.secondary_cb_contexts[CBX_PARTICLES]);
 	Fog_EnableGFog (&vulkan_globals.secondary_cb_contexts[CBX_PARTICLES]); // johnfitz
 	R_DrawParticles (&vulkan_globals.secondary_cb_contexts[CBX_PARTICLES]);
 #ifdef PSET_SCRIPT
 	PScript_DrawParticles (&vulkan_globals.secondary_cb_contexts[CBX_PARTICLES]);
 #endif
+
+	RT_Prof_End (RT_PROF_PARTICLES, prof_start);
 }
 
 /*
@@ -931,15 +956,31 @@ R_DrawViewModelTask
 */
 static void R_DrawViewModelTask (void *unused)
 {
+	double prof_task = RT_Prof_Begin ();
+	double prof_start;
+
 	R_SetupContext (&vulkan_globals.secondary_cb_contexts[CBX_VIEW_MODEL]);
 	R_DrawViewModel (&vulkan_globals.secondary_cb_contexts[CBX_VIEW_MODEL]);     // johnfitz -- moved here from R_RenderView
 	R_ShowTris (&vulkan_globals.secondary_cb_contexts[CBX_VIEW_MODEL]);          // johnfitz
 	R_ShowBoundingBoxes (&vulkan_globals.secondary_cb_contexts[CBX_VIEW_MODEL]); // johnfitz
-	RT_UploadAllElights ();                                                      // RT
-	RT_UploadAllWorldModelLights ();                                             // RT
-	RT_UploadAllTeleports ();                                                    // RT
 
-	RT_ClusterLightListsUpload ();                                               // RT
+	prof_start = RT_Prof_Begin ();
+	RT_UploadAllElights (); // RT
+	RT_Prof_End (RT_PROF_ELIGHTS, prof_start);
+
+	prof_start = RT_Prof_Begin ();
+	RT_UploadAllWorldModelLights (); // RT
+	RT_Prof_End (RT_PROF_WMODEL_LIGHTS, prof_start);
+
+	prof_start = RT_Prof_Begin ();
+	RT_UploadAllTeleports (); // RT
+	RT_Prof_End (RT_PROF_TELEPORTS, prof_start);
+
+	prof_start = RT_Prof_Begin ();
+	RT_ClusterLightListsUpload (); // RT
+	RT_Prof_End (RT_PROF_CLUSTERS, prof_start);
+
+	RT_Prof_End (RT_PROF_VIEWMODEL, prof_task);
 }
 
 /*
