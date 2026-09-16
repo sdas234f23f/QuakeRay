@@ -434,10 +434,18 @@ static void RT_UploadAllDlights ()
 		AngleVectors (angles, forward, right, up);
 
 		vec3_t color;
-		RT_INIT_SKY_LIGHT_COLOR (color);
-		extern cvar_t rt_brightness;
-		VectorScale (color, CVAR_TO_FLOAT (rt_sun) * CVAR_TO_FLOAT (rt_brightness), color);
-		RT_APPLY_LIGHT_TINT (color);
+		RT_GetSkyColor (color);
+		VectorScale (color, CVAR_TO_FLOAT (rt_sun), color);
+		// The sun is a light source like every other one, so it needs the same
+		// radiometric fixup the world and dlight sources get. Without it its 0..1
+		// sky tint reached the shading orders of magnitude below them, which is
+		// why rt_sun only did anything from ~10^4 up.
+		RT_FIXUP_LIGHT_INTENSITY (color, true);
+		// A sun emits from no area and covers the whole sky, so it takes that
+		// fixup at a fraction of its strength (RT_SUN_LIGHT_INTENSITY_SCALE) --
+		// otherwise rt_sun 1 overdrives the scene. The god rays read this colour,
+		// so they follow the sun too.
+		VectorScale (color, RT_SUN_LIGHT_INTENSITY_SCALE, color);
 
 		RgDirectionalLightUploadInfo info = {
 			.uniqueID = (uint64_t)UINT32_MAX + 1,

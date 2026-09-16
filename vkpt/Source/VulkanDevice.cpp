@@ -372,6 +372,8 @@ void VulkanDevice::FillUniform(ShGlobalUniform *gu, const RgDrawFrameInfo &drawI
         gu->giBounceRays[0]            = std::clamp( drawInfo.pIlluminationParams->giBounceRays, 0.0f, 2.0f );
         gu->fltEnable[0]               = drawInfo.pIlluminationParams->denoiserEnabled != 0 ? 1.0f : 0.0f;
         gu->fixedAlbedo[0]             = std::max( drawInfo.pIlluminationParams->fixedAlbedo, 0.0f );
+        gu->sunBounce[0]               = std::max( drawInfo.pIlluminationParams->sunBounceRange, 0.0f );
+        gu->sunBounce[1]               = std::max( drawInfo.pIlluminationParams->sunBounceScale, 0.0f );
     }
     else
     {
@@ -389,6 +391,8 @@ void VulkanDevice::FillUniform(ShGlobalUniform *gu, const RgDrawFrameInfo &drawI
         gu->giBounceRays[0]            = 1.0f;
         gu->fltEnable[0]               = 1.0f;
         gu->fixedAlbedo[0]             = 0.0f;
+        gu->sunBounce[0]               = 2000.0f;
+        gu->sunBounce[1]               = 1.0f;
     }
 
     if( drawInfo.pBloomParams != nullptr )
@@ -748,7 +752,7 @@ void VulkanDevice::Render(VkCommandBuffer cmd, const RgDrawFrameInfo &drawInfo)
         {
             RenderCubemap::ProceduralSkyParams p = {};
 
-            // sky color follows the sun preset (rt_sky_light_*), sent by the host via skyColorDefault;
+            // sky color follows rt_sky_color, sent by the host via skyColorDefault;
             // this keeps the sky tint independent from whether the sun light is enabled (rt_sun)
             p.sunColor[0] = uniform->GetData()->skyColorDefault[0];
             p.sunColor[1] = uniform->GetData()->skyColorDefault[1];
@@ -775,7 +779,13 @@ void VulkanDevice::Render(VkCommandBuffer cmd, const RgDrawFrameInfo &drawInfo)
             p.sunColor[3] = sunAngularRadius;
             p.skyParams[0] = uniform->GetData()->skyColorMultiplier;
             p.skyParams[1] = uniform->GetData()->skyColorSaturation;
-            p.skyParams[2] = 25.0f;  // sun disc intensity
+            // Sun disc intensity, multiplied into the 0..1 sky tint. The sky's own
+            // halo already reaches an order of magnitude more than that tint does,
+            // so the disc needs a value in the hundreds to be the brightest thing
+            // over the horizon -- at 25 it was dimmer than the sky around it. It
+            // only reaches the visible cubemap; the indirect sky samples the
+            // disc-less envCubemap, so this is not a light source.
+            p.skyParams[2] = 750.0f; // sun disc intensity
             p.skyParams[3] = 0.025f; // display sun disc angular radius (rad), ~1.4 deg; physical 0.05 deg is sub-pixel
 
             // cloud params are packed into the otherwise-unused skyCubemapRotationTransform field
@@ -860,13 +870,31 @@ void VulkanDevice::Render(VkCommandBuffer cmd, const RgDrawFrameInfo &drawInfo)
         bool godRaysActive = false;
         GodRays::Params gr = {};
         {
-            // Host cvar rt_godrays. When disabled the shadow map is not rendered
-            // and the god rays buffers are cleared by the shader itself
-            // (CmGodRays returns early for godRaysEnabled == 0).
+            // Host cvars rt_godrays and gr_intensity. When disabled the shadow
+            // map is not rendered and the god rays buffers are cleared by the
+            // shader itself (CmGodRays returns early for godRaysEnabled == 0).
+            // Like Q2RTX (god_rays.c: enabled && intensity > 0), gr_intensity 0
+            // counts as disabled as well, so the shadow map that feeds the shafts
+            // is skipped rather than marched and thrown away.
+            const float godRaysIntensity = (drawInfo.pSkyParams == nullptr)
+                ? 1.0f : std::max(drawInfo.pSkyParams->godRaysIntensity, 0.0f);
             const bool godRaysEnabled =
-                (drawInfo.pSkyParams == nullptr) || (drawInfo.pSkyParams->godRaysEnabled != 0);
+                ((drawInfo.pSkyParams == nullptr) || (drawInfo.pSkyParams->godRaysEnabled != 0)) &&
+                (godRaysIntensity > 0.0f);
 
-            gr.godRaysIntensity = 8.0f;
+            // The shafts are inscattered sunlight, so they are proportional to the
+            // sun light colour exactly as in Q2RTX (inscatter * sun_color *
+            // intensity * 1e-4, CmGodRays.comp). That colour carries the light
+            // fixup, so 8.0 here is the ratio the shafts were originally
+            // calibrated against; rt_sun, rt_brightness and the light tint now all
+            // reach them through it, and gr_intensity scales them on top.
+            constexpr float godRaysIntensityBase = 8.0f;
+            // What the sun colour carries that the shafts were calibrated without:
+            // RT_QUAKE_LIGHT_AREA_INTENSITY_FIX * rt_globallight_mult *
+            // RT_SUN_LIGHT_INTENSITY_SCALE (glquake.h), the same way the no-sun
+            // fallback below stands that colour in.
+            constexpr float sunColorFixup = 1600.0f * 5.0f * 0.1f;
+            gr.godRaysIntensity = godRaysIntensityBase * godRaysIntensity;
             gr.godRaysEccentricity = 0.75f;
             gr.godRaysEnabled = godRaysEnabled ? 1u : 0u;
 
@@ -883,9 +911,9 @@ void VulkanDevice::Render(VkCommandBuffer cmd, const RgDrawFrameInfo &drawInfo)
                 sunDir[0] = -towardSun[0] / len;
                 sunDir[1] = -towardSun[1] / len;
                 sunDir[2] = -towardSun[2] / len;
-                sunColor[0] = uniform->GetData()->skyColorDefault[0];
-                sunColor[1] = uniform->GetData()->skyColorDefault[1];
-                sunColor[2] = uniform->GetData()->skyColorDefault[2];
+                sunColor[0] = uniform->GetData()->skyColorDefault[0] * sunColorFixup;
+                sunColor[1] = uniform->GetData()->skyColorDefault[1] * sunColorFixup;
+                sunColor[2] = uniform->GetData()->skyColorDefault[2] * sunColorFixup;
             }
 
             float aabbMin[3], aabbMax[3];

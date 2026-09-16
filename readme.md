@@ -1,6 +1,6 @@
 # QuakeRay
 
-QuakeRay **0.9.0** adds a path tracing renderer to id Software's [Quake](https://en.wikipedia.org/wiki/Quake_(video_game)).
+QuakeRay **0.9.1** adds a path tracing renderer to id Software's [Quake](https://en.wikipedia.org/wiki/Quake_(video_game)).
 
 The renderer is a Q2RTX-style ray tracer (ported from [Q2RTX](https://github.com/NVIDIA/Q2RTX)) — it is **vendored into this repository** in the `vkpt/` folder (source + shaders + KTX/FidelityFX) and built as a static library linked straight into `quakeray.exe`. There is no external renderer library dependency.
 
@@ -83,16 +83,23 @@ Everything is exposed as console variables; run `cvarlist rt_` in the console fo
 * `rt_brightness 1.0` — overall brightness of the ray-traced image
 * `rt_exposure_bias -2.8` — exposure in EV, a power-of-two factor applied inside the tone curve (Q2RTX's exposure bias). The ray-traced image is rendered bright and pulled down here, which is what makes the noise in dark areas fade out instead of turning into visible grain
 * `rt_contrast 0.6` — mixes the fixed tone curve with the auto-exposure adapted one (`0` keeps the fixed curve, `1` is the adapted curve alone)
-* `rt_sun 1` with `rt_sun_pitch 140` / `rt_sun_yaw 120` — the sun (on/off) and its direction
+* `rt_sun 1` with `rt_sun_pitch 140` / `rt_sun_yaw 120` — the sun's intensity and its direction. The sun is coloured by the sky (`rt_sky_color`) and goes through the same radiometric fixup as the dlights and the world lights, at a tenth of its strength (a sun emits from no area and lights the whole sky, where those lights have an area to pay for), so `1` is a usable daylight, larger values overdrive it and `0` turns it off; the indirect sun (`rt_sun_bounce_range` / `rt_sun_bounce_scale`) and the god rays both scale with it
+* `gr_intensity 1` with `rt_godrays 1` — strength of the volumetric sun shafts and their on/off switch: `2` doubles the shafts, `0` takes them out of the frame along with the shadow map they are marched through (as in Q2RTX). The name is Q2RTX's `gr_intensity` and means the same, but the two are not interchangeable: upstream scales its accumulated sun-disc radiance with it, this one scales the directional light colour
 * `rt_sky 1`, `rt_sky_brightness 1.0`, `rt_physical_sky 1` — sky intensity and sky model
+* `rt_sky_color 32 0 64` — colour of the sky as `<r> <g> <b>` in `0-255`; it tints the drawn sky (the sun disc drawn in it included) and colours the light the sky casts (sun, sky ambient, god rays). It is a command rather than a cvar, so `cvarlist` does not list it, and running it without arguments prints the current value; the value it stores is archived, so it survives a restart. `rt_sky_color "32 0 64"` and `rt_sky_color 32,0,64` work as well
+* `rt_sky_clouds_color 0 0 0` — colour the procedural clouds are composited over the sky with, as `<r> <g> <b>` in `0-255`; it is the same kind of command as `rt_sky_color` (`rt_sky_clouds_color 0,0,0` and a bare `rt_sky_clouds_color` work too). The clouds themselves are shaped and animated by `rt_sky_clouds` (on/off), `rt_sky_cloud_coverage`, `rt_sky_cloud_density` and `rt_sky_cloud_speed`
 * `rt_sky_ambient_lod 4` — mip level the ambient sky light is read from; lower is more directional, `10` is a flat wash
 * `rt_sky_nee 1` — sample the sky as an explicit light; `0` restores the pre-NEE result
 * `rt_gi_level 1` — indirect lighting level (Q2RTX's `pt_num_bounce_rays`): `0` turns it off, `0.5` traces it at half resolution, `1` is one indirect bounce and `2` adds the diffuse second bounce; the menu cycles the same four levels
+* `rt_sun_bounce_range 2000` — how far the sun reaches into an indirect bounce, in Quake units. A bounce ray longer than this receives no sun light and does not trace its sun shadow ray either, which is what keeps indirect sunlight out of dark corners; smaller values are cheaper and dimmer, `0` turns indirect sunlight off. It is Q2RTX's `pt_sun_bounce_range`, default included; upstream's reference-accumulation mode uses `10000`
+* `rt_sun_bounce_scale 1.0` — multiplier on the sun's contribution to an indirect bounce, applied on top of the distance falloff above (Q2RTX's `sun_bounce`); `1.0` is the physical value
 * `rt_nee_samples 1` — next-event light samples per pixel in the direct pass, `1` (the Q2RTX count) or `2`; both estimators are unbiased, so `2` only trades shadow rays for a quieter image
 * `rt_indir2bounces 0` — legacy switch for the second diffuse bounce, kept for old configs; the GI level above now selects it
 * `rt_denoiser 1` — ASVGF reconstruction of the lighting channels (`0` composites the raw ReSTIR output)
 * `rt_no_textures 0` — `1` swaps the diffuse albedo for a fixed value, i.e. "no textures"
 * `rt_emis_light_intensity 1.0` — how much light the emissive (luma-masked) surfaces emit
+* `rt_light_color 255 255 255` — tint multiplied into every light source (sun, dynamic, world, emissive), as `<r> <g> <b>` in `0-255`. It is a command like `rt_sky_color` above, so `cvarlist` does not list it and a bare `rt_light_color` prints the current value; `rt_light_color "255 255 255"` and `255,255,255` work too, and the value is archived
+* `rt_globallight 255 255 255` — colour a light starts from before its own colour and the tint above are applied, as `<r> <g> <b>` in `0-255`; same command form, and `rt_globallight_mult` is still the separate intensity multiplier
 * `rt_light_styles 1` with `rt_light_styles_reach 48` — animated light entities make their own fixture flicker; the reach (Quake units, measured from the surface centre to the light) keeps the flicker on the fixture instead of every surface that light happens to illuminate, `-1` removes the limit
 * `rt_turb_warp 1` — amplitude of the classic texture warp on lava and teleport surfaces (`0` freezes them; water and slime use the RT water waves instead)
 * `rt_teleport_portals 0` — the RT portal effect on teleport surfaces is off, so they render as ordinary surfaces; `1` re-enables the mirrored destination

@@ -106,7 +106,10 @@ task_handle_t prev_end_rendering_task = INVALID_TASK_HANDLE;
 	CVAR_DEF_T (rt_shadowrays, "2") \
 	CVAR_DEF_T (rt_indir2bounces, "0") \
 	CVAR_DEF_T (rt_gi_level, "1") \
+	CVAR_DEF_T (rt_sun_bounce_range, "2000") \
+	CVAR_DEF_T (rt_sun_bounce_scale, "1.0") \
 	CVAR_DEF_T (rt_godrays, "1") \
+	CVAR_DEF_T (gr_intensity, "1") /* Q2RTX's god ray strength, hence the name */ \
 	CVAR_DEF_T (rt_denoiser, "1") \
 	CVAR_DEF_T (rt_no_textures, "0") \
 	CVAR_DEF_T (rt_antifirefly, "1") \
@@ -161,21 +164,12 @@ task_handle_t prev_end_rendering_task = INVALID_TASK_HANDLE;
 	CVAR_DEF_T (rt_sky_ambient_lod, "4") \
 	CVAR_DEF_T (rt_sky_nee, "1") \
 	CVAR_DEF_T (rt_physical_sky, "1") \
-	CVAR_DEF_T (rt_sky_light_r, "32") \
-	CVAR_DEF_T (rt_sky_light_g, "0") \
-	CVAR_DEF_T (rt_sky_light_b, "64") \
-	CVAR_DEF_T (rt_sky_color_r, "32") \
-	CVAR_DEF_T (rt_sky_color_g, "0") \
-	CVAR_DEF_T (rt_sky_color_b, "64") \
+	CVAR_DEF_T (rt_sky_color, "32 0 64") \
 	CVAR_DEF_T (rt_sky_brightness, "1.0") \
 	CVAR_DEF_T (rt_brightness, "1.0") \
-	CVAR_DEF_T (rt_light_color_r, "255") \
-	CVAR_DEF_T (rt_light_color_g, "255") \
-	CVAR_DEF_T (rt_light_color_b, "255") \
+	CVAR_DEF_T (rt_light_color, "255 255 255") \
 	CVAR_DEF_T (rt_sky_clouds, "1") \
-	CVAR_DEF_T (rt_sky_cloud_color_r, "0") \
-	CVAR_DEF_T (rt_sky_cloud_color_g, "0") \
-	CVAR_DEF_T (rt_sky_cloud_color_b, "0") \
+	CVAR_DEF_T (rt_sky_clouds_color, "0 0 0") \
 	CVAR_DEF_T (rt_sky_cloud_coverage, "0.2") \
 	CVAR_DEF_T (rt_sky_cloud_density, "0.8") \
 	CVAR_DEF_T (rt_sky_cloud_speed, "0.3") \
@@ -229,9 +223,7 @@ task_handle_t prev_end_rendering_task = INVALID_TASK_HANDLE;
 	CVAR_DEF_T (rt_sensit_spec, "0.03") \
 	\
 	CVAR_DEF_T (rt_globallight_mult, "5") \
-	CVAR_DEF_T (rt_globallight_r, "255") \
-	CVAR_DEF_T (rt_globallight_g, "255") \
-	CVAR_DEF_T (rt_globallight_b, "255") \
+	CVAR_DEF_T (rt_globallight, "255 255 255") \
 	\
 	CVAR_DEF_T (rt_bloom_intensity, "1") \
 	CVAR_DEF_T (rt_bloom_emis_mult, "50") \
@@ -681,6 +673,182 @@ static void RT_AcidColor(void)
 		strtof (Cmd_Argv (1), NULL) / 255.0f, 
 		strtof (Cmd_Argv (2), NULL) / 255.0f, 
 		strtof (Cmd_Argv (3), NULL) / 255.0f );
+}
+
+// A colour setting is a console command plus an archived cvar of the same name,
+// so one setting describes a colour completely. It cannot be a plain cvar:
+// Cvar_Command takes a single token, so "rt_sky_color 32 0 64" would never reach
+// three channels. The command writes the cvar, so the value is archived with the
+// rest of the config.
+typedef struct
+{
+	cvar_t  *cvar;       // its name is also the name of the command
+	vec3_t   fallback;   // used while the cvar holds something unparsable
+	char     parsed[64]; // the string `value` was parsed from
+	vec3_t   value;
+} rt_color_t;
+
+typedef enum
+{
+	RT_COLOR_SKY,
+	RT_COLOR_CLOUDS,
+	RT_COLOR_LIGHT,
+	RT_COLOR_GLOBALLIGHT,
+
+	RT_COLOR_COUNT
+} rt_color_index_t;
+
+static rt_color_t rt_colors[RT_COLOR_COUNT] = {
+	[RT_COLOR_SKY]         = {&rt_sky_color,        {32 / 255.0f, 0.0f, 64 / 255.0f} },
+	[RT_COLOR_CLOUDS]      = {&rt_sky_clouds_color, {0.0f, 0.0f, 0.0f} },
+	[RT_COLOR_LIGHT]       = {&rt_light_color,      {1.0f, 1.0f, 1.0f} },
+	[RT_COLOR_GLOBALLIGHT] = {&rt_globallight,      {1.0f, 1.0f, 1.0f} },
+};
+
+static qboolean RT_ColorParse (const char *s, float *out)
+{
+	char buf[64];
+	int  i;
+
+	for (i = 0; s[i] && i < (int)sizeof (buf) - 1; i++)
+	{
+		buf[i] = (s[i] == ',') ? ' ' : s[i];
+	}
+	buf[i] = '\0';
+
+	float r, g, b;
+
+	if (3 != sscanf (buf, "%f %f %f", &r, &g, &b))
+	{
+		return false;
+	}
+
+	out[0] = CLAMP (0, r, 255) / 255.0f;
+	out[1] = CLAMP (0, g, 255) / 255.0f;
+	out[2] = CLAMP (0, b, 255) / 255.0f;
+	return true;
+}
+
+static rt_color_t *RT_ColorFind (const char *name)
+{
+	for (size_t i = 0; i < countof (rt_colors); i++)
+	{
+		if (!q_strcasecmp (name, rt_colors[i].cvar->name))
+		{
+			return &rt_colors[i];
+		}
+	}
+
+	return NULL;
+}
+
+// Parses the archived string, and only re-parses it when it changed, so a bad
+// value is reported once instead of on every frame.
+static void RT_ColorGet (rt_color_t *c, float *out)
+{
+	if (!c->parsed[0] || strcmp (c->parsed, c->cvar->string))
+	{
+		q_strlcpy (c->parsed, c->cvar->string, sizeof (c->parsed));
+
+		if (!RT_ColorParse (c->parsed, c->value))
+		{
+			Con_Printf ("%s: expected <r 0..255> <g 0..255> <b 0..255>, got \"%s\"\n", c->cvar->name, c->cvar->string);
+			VectorCopy (c->fallback, c->value);
+		}
+	}
+
+	VectorCopy (c->value, out);
+}
+
+void RT_GetSkyColor (float color[3])
+{
+	RT_ColorGet (&rt_colors[RT_COLOR_SKY], color);
+}
+
+void RT_GetSkyCloudsColor (float color[3])
+{
+	RT_ColorGet (&rt_colors[RT_COLOR_CLOUDS], color);
+}
+
+void RT_GetLightColor (float color[3])
+{
+	RT_ColorGet (&rt_colors[RT_COLOR_LIGHT], color);
+}
+
+void RT_GetGlobalLightColor (float color[3])
+{
+	RT_ColorGet (&rt_colors[RT_COLOR_GLOBALLIGHT], color);
+}
+
+static void RT_ColorPrint (rt_color_t *c)
+{
+	float color[3];
+
+	RT_ColorGet (c, color);
+	Con_Printf ("current: %d %d %d\n", (int)(color[0] * 255 + 0.5f), (int)(color[1] * 255 + 0.5f), (int)(color[2] * 255 + 0.5f));
+	Con_Printf ("usage: <r 0..255> <g 0..255> <b 0..255>\n");
+	Con_Printf ("       (\"r g b\" and r,g,b are accepted too)\n");
+}
+
+static void RT_ColorSet (rt_color_t *c, const float color[3])
+{
+	Cvar_Set (c->cvar->name, va ("%d %d %d",
+		(int)(CLAMP (0, color[0], 1.0f) * 255 + 0.5f),
+		(int)(CLAMP (0, color[1], 1.0f) * 255 + 0.5f),
+		(int)(CLAMP (0, color[2], 1.0f) * 255 + 0.5f)));
+
+	c->parsed[0] = '\0';
+}
+
+static void RT_Color (void)
+{
+	rt_color_t *c = RT_ColorFind (Cmd_Argv (0));
+	float       color[3];
+
+	if (!c)
+	{
+		return;
+	}
+
+	if (Cmd_Argc () == 4)
+	{
+		RT_VEC3_SET (
+			color,
+			CLAMP (0, strtof (Cmd_Argv (1), NULL), 255) / 255.0f,
+			CLAMP (0, strtof (Cmd_Argv (2), NULL), 255) / 255.0f,
+			CLAMP (0, strtof (Cmd_Argv (3), NULL), 255) / 255.0f );
+	}
+	else if (Cmd_Argc () == 2)
+	{
+		if (!RT_ColorParse (Cmd_Argv (1), color))
+		{
+			Con_Printf ("invalid color '%s'\n", Cmd_Argv (1));
+			RT_ColorPrint (c);
+			return;
+		}
+	}
+	else
+	{
+		RT_ColorPrint (c);
+		return;
+	}
+
+	RT_ColorSet (c, color);
+	RT_ColorPrint (c);
+}
+
+// Colour settings are commands backed by archivable cvars: the command parses the
+// "r g b" form, the cvar stores the value and writes it to config.cfg. The two
+// registrations get in each other's way -- Cmd_AddCommand2 rejects a name that is
+// already a registered var, and Cvar_RegisterVariable rejects a name that is already
+// a src_command command (Cmd_Exists ignores non-console commands) -- so the commands
+// are added as client commands, from VID_Init, before the RT cvars are registered.
+static void RT_ColorInit (void)
+{
+	for (size_t i = 0; i < countof (rt_colors); i++)
+	{
+		Cmd_AddCommand2 (rt_colors[i].cvar->name, RT_Color, src_client);
+	}
 }
 
 /*
@@ -1156,6 +1324,13 @@ static void GL_EndRenderingTask (end_rendering_parms_t *parms)
 		.reflRefrEarlyOut = CVAR_TO_BOOL (rt_reflrefr_earlyout),
 		.neeLightSamples = nee_samples,
 		.giBounceRays = gi_level,
+		// Q2RTX pt_sun_bounce_range / sun_bounce: how far the sun reaches into an
+		// indirect bounce (game units, 0 turns indirect sunlight off) and a
+		// multiplier on what it delivers there. Both only affect the indirect
+		// pass, and the shadow ray a bounce casts for the sun is skipped once the
+		// distance falloff is zero.
+		.sunBounceRange = CVAR_TO_FLOAT (rt_sun_bounce_range),
+		.sunBounceScale = CVAR_TO_FLOAT (rt_sun_bounce_scale),
 		.denoiserEnabled = CVAR_TO_BOOL (rt_denoiser),
 		// Q2RTX writes 2 through its "textures" toggle (flt_fixed_albedo ~1),
 		// so the unchecked state uses the same flat albedo value.
@@ -1216,7 +1391,7 @@ static void GL_EndRenderingTask (end_rendering_parms_t *parms)
 
 	if (usePhysicalSky)
 	{
-		RT_INIT_SKY_LIGHT_COLOR (sky_base_color);
+		RT_GetSkyColor (sky_base_color);
 	}
 	else
 	{
@@ -1241,14 +1416,13 @@ static void GL_EndRenderingTask (end_rendering_parms_t *parms)
 		.skyNee = CVAR_TO_FLOAT (rt_sky_nee) > 0.0f,
 		.skyViewerPosition = RT_VEC3 (r_origin),
 		.godRaysEnabled = CVAR_TO_BOOL (rt_godrays),
+		.godRaysIntensity = CVAR_TO_FLOAT (gr_intensity),
 	};
 
 	if (usePhysicalSky)
 	{
 		float *c = &sky_params.skyCubemapRotationTransform.matrix[0][0];
-		c[0] = CVAR_TO_FLOAT (rt_sky_cloud_color_r) / 255.0f;
-		c[1] = CVAR_TO_FLOAT (rt_sky_cloud_color_g) / 255.0f;
-		c[2] = CVAR_TO_FLOAT (rt_sky_cloud_color_b) / 255.0f;
+		RT_GetSkyCloudsColor (c);
 		c[3] = CVAR_TO_FLOAT (rt_sky_cloud_coverage);
 		c[4] = CVAR_TO_FLOAT (rt_sky_cloud_density);
 		c[5] = CVAR_TO_FLOAT (rt_sky_cloud_speed);
@@ -1262,7 +1436,7 @@ static void GL_EndRenderingTask (end_rendering_parms_t *parms)
 	if (CVAR_TO_BOOL (rt_sun))
 	{
 		RT_VEC3_SET (volume_light_angles, CVAR_TO_FLOAT (rt_sun_pitch), CVAR_TO_FLOAT (rt_sun_yaw), 0);
-		RT_INIT_SKY_LIGHT_COLOR (volume_light_color);
+		RT_GetSkyColor (volume_light_color);
 	}
 	else
 	{
@@ -1632,9 +1806,7 @@ static void RT_SunPreset_f (cvar_t *var)
 		{140, 180, 255},
 	};
 
-	Cvar_SetValueQuick (&rt_sky_light_r, presets[preset][0]);
-	Cvar_SetValueQuick (&rt_sky_light_g, presets[preset][1]);
-	Cvar_SetValueQuick (&rt_sky_light_b, presets[preset][2]);
+	Cvar_Set ("rt_sky_color", va ("%d %d %d", presets[preset][0], presets[preset][1], presets[preset][2]));
 }
 
 extern atomic_uint32_t rt_require_static_submit;
@@ -1811,6 +1983,8 @@ void VID_Init (void)
 
 	// RT
 	{
+		RT_ColorInit ();
+
 #define CVAR_DEF_T(name, default_value) Cvar_RegisterVariable (&name);
 		CVAR_DEF_LIST (CVAR_DEF_T)
 #undef CVAR_DEF_T

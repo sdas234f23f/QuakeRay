@@ -707,6 +707,14 @@ GLOBAL_UNIFORM_STRUCT = [
     # cvar rt_no_textures). Only .x is used; the vec4 keeps the dense C mirror
     # on the std140 16-byte boundary.
     (TYPE_FLOAT32,      4,      "fixedAlbedo",              1),
+
+    # Q2RTX pt_sun_bounce_range / sun_bounce (host cvars rt_sun_bounce_range
+    # and rt_sun_bounce_scale): how far the sun reaches into an indirect bounce,
+    # in game units, and a straight multiplier on what it delivers there.
+    # .x = range (0 disables indirect sunlight), .y = scale. Only the pair is
+    # packed into one vec4 so the dense C mirror stays on the std140 16-byte
+    # boundary.
+    (TYPE_FLOAT32,      4,      "sunBounce",                1),
 ]
 
 GEOM_INSTANCE_STRUCT = [

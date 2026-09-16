@@ -464,52 +464,61 @@ static inline uint32_t RT_PackColorToUint32_FromFloat01(float r, float g, float 
 
 // because of units are not in meters
 #define RT_QUAKE_LIGHT_AREA_INTENSITY_FIX (1.0f / (QUAKEUNIT_IN_METERS * QUAKEUNIT_IN_METERS))
+// The fixup above pays for the area a lamp emits from. A sun emits from none and
+// lights the whole sky, so it takes the same conversion at a fraction of it: at
+// full strength rt_sun 1 overdrives the scene.
+#define RT_SUN_LIGHT_INTENSITY_SCALE 0.1f
 #define RT_FIXUP_LIGHT_INTENSITY(color, witharea)                                   \
 	do                                                                              \
 	{                                                                               \
 		extern cvar_t rt_globallight_mult;                                          \
 		extern cvar_t rt_brightness;                                                \
-		extern cvar_t rt_light_color_r, rt_light_color_g, rt_light_color_b;         \
+		float         rt_light_color_[3];                                           \
 		float         area = (witharea) ? RT_QUAKE_LIGHT_AREA_INTENSITY_FIX : 1.0f; \
 		float         base = CVAR_TO_FLOAT (rt_globallight_mult) * area * CVAR_TO_FLOAT (rt_brightness); \
-		(color)[0] *= base * (CLAMP (0, CVAR_TO_INT32 (rt_light_color_r), 255) / 255.0f); \
-		(color)[1] *= base * (CLAMP (0, CVAR_TO_INT32 (rt_light_color_g), 255) / 255.0f); \
-		(color)[2] *= base * (CLAMP (0, CVAR_TO_INT32 (rt_light_color_b), 255) / 255.0f); \
+		RT_GetLightColor (rt_light_color_);                                         \
+		(color)[0] *= base * rt_light_color_[0];                                    \
+		(color)[1] *= base * rt_light_color_[1];                                    \
+		(color)[2] *= base * rt_light_color_[2];                                    \
 	} while (0)
 
 #define RT_EMIS_LIGHT_INTENSITY_REFERENCE 0.01f
 #define RT_EMIS_INTENSITY_TO_RAW(x)        ((x) * RT_EMIS_LIGHT_INTENSITY_REFERENCE)
-#define RT_APPLY_LIGHT_TINT(color)                                              \
-	do                                                                          \
-	{                                                                           \
-		extern cvar_t rt_light_color_r, rt_light_color_g, rt_light_color_b;     \
-		(color)[0] *= CLAMP (0, CVAR_TO_INT32 (rt_light_color_r), 255) / 255.0f; \
-		(color)[1] *= CLAMP (0, CVAR_TO_INT32 (rt_light_color_g), 255) / 255.0f; \
-		(color)[2] *= CLAMP (0, CVAR_TO_INT32 (rt_light_color_b), 255) / 255.0f; \
+#define RT_APPLY_LIGHT_TINT(color)         \
+	do                                     \
+	{                                      \
+		float rt_light_color_[3];          \
+		RT_GetLightColor (rt_light_color_); \
+		(color)[0] *= rt_light_color_[0];  \
+		(color)[1] *= rt_light_color_[1];  \
+		(color)[2] *= rt_light_color_[2];  \
 	} while (0)
-#define RT_APPLY_SKY_COLOR(color)                                              \
-	do                                                                         \
-	{                                                                          \
-		extern cvar_t rt_sky_color_r, rt_sky_color_g, rt_sky_color_b;          \
-		(color)[0] *= CLAMP (0, CVAR_TO_INT32 (rt_sky_color_r), 255) / 255.0f; \
-		(color)[1] *= CLAMP (0, CVAR_TO_INT32 (rt_sky_color_g), 255) / 255.0f; \
-		(color)[2] *= CLAMP (0, CVAR_TO_INT32 (rt_sky_color_b), 255) / 255.0f; \
+
+// Sky tint and sky light share the single rt_sky_color "r g b" setting.
+void RT_GetSkyColor (float color[3]);
+// The colour the procedural clouds are composited over the sky with.
+void RT_GetSkyCloudsColor (float color[3]);
+// The tint every light source is multiplied by (see RT_FIXUP_LIGHT_INTENSITY).
+void RT_GetLightColor (float color[3]);
+// The colour a light starts from before its own colour and the tint are applied.
+void RT_GetGlobalLightColor (float color[3]);
+#define RT_APPLY_SKY_COLOR(color)        \
+	do                                   \
+	{                                    \
+		float rt_sky_color_[3];          \
+		RT_GetSkyColor (rt_sky_color_);  \
+		(color)[0] *= rt_sky_color_[0];  \
+		(color)[1] *= rt_sky_color_[1];  \
+		(color)[2] *= rt_sky_color_[2];  \
 	} while (0)
-#define RT_INIT_DEFAULT_LIGHT_COLOR(color)                                      \
-	do                                                                          \
-	{                                                                           \
-		extern cvar_t rt_globallight_r, rt_globallight_g, rt_globallight_b;     \
-		(color)[0] = CLAMP (0, CVAR_TO_INT32 (rt_globallight_r), 255) / 255.0f; \
-		(color)[1] = CLAMP (0, CVAR_TO_INT32 (rt_globallight_g), 255) / 255.0f; \
-		(color)[2] = CLAMP (0, CVAR_TO_INT32 (rt_globallight_b), 255) / 255.0f; \
-	} while (0)
-#define RT_INIT_SKY_LIGHT_COLOR(color)                                      \
-	do                                                                      \
-	{                                                                       \
-		extern cvar_t rt_sky_light_r, rt_sky_light_g, rt_sky_light_b;       \
-		(color)[0] = CLAMP (0, CVAR_TO_INT32 (rt_sky_light_r), 255) / 255.0f; \
-		(color)[1] = CLAMP (0, CVAR_TO_INT32 (rt_sky_light_g), 255) / 255.0f; \
-		(color)[2] = CLAMP (0, CVAR_TO_INT32 (rt_sky_light_b), 255) / 255.0f; \
+#define RT_INIT_DEFAULT_LIGHT_COLOR(color)        \
+	do                                            \
+	{                                             \
+		float rt_globallight_[3];                 \
+		RT_GetGlobalLightColor (rt_globallight_); \
+		(color)[0] = rt_globallight_[0];          \
+		(color)[1] = rt_globallight_[1];          \
+		(color)[2] = rt_globallight_[2];          \
 	} while (0)
 
 

@@ -633,7 +633,7 @@ void Sky_ClipPoly (int nump, vec3_t vecs, int stage)
 
 static void RT_GetSkyTintColor (float color[3])
 {
-	extern cvar_t rt_sky_color_r, rt_sky_color_g, rt_sky_color_b, rt_sky_brightness, rt_brightness;
+	extern cvar_t rt_sky_brightness, rt_brightness;
 	extern cvar_t rt_materials_only;
 
 	if (CVAR_TO_BOOL (rt_materials_only))
@@ -643,9 +643,8 @@ static void RT_GetSkyTintColor (float color[3])
 	}
 
 	const float mult = CVAR_TO_FLOAT (rt_sky_brightness) * CVAR_TO_FLOAT (rt_brightness);
-	color[0] = mult * (CLAMP (0, CVAR_TO_INT32 (rt_sky_color_r), 255) / 255.0f);
-	color[1] = mult * (CLAMP (0, CVAR_TO_INT32 (rt_sky_color_g), 255) / 255.0f);
-	color[2] = mult * (CLAMP (0, CVAR_TO_INT32 (rt_sky_color_b), 255) / 255.0f);
+	RT_GetSkyColor (color);
+	VectorScale (color, mult, color);
 }
 
 /*

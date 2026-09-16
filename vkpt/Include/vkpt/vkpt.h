@@ -935,6 +935,14 @@ typedef struct RgDrawFrameSkyParams
     // is not rendered at all and the god rays buffers are cleared to zero.
     // Default: true
     RgBool32    godRaysEnabled;
+    // Strength of the volumetric sun shafts: 1 is the look they were calibrated
+    // with, 2 is twice as bright, 0 disables them (and then the shadow map that
+    // feeds them is not rendered either). The name follows Q2RTX's own
+    // gr_intensity knob, but its value cannot be compared with it: upstream
+    // multiplies the accumulated sun disc radiance by it, this one multiplies
+    // the directional light colour.
+    // Default: 1
+    float       godRaysIntensity;
 } RgDrawFrameSkyParams;
 
 #define RG_LIGHT_STYLE_COUNT 64
@@ -1057,6 +1065,19 @@ typedef struct RgDrawFrameIlluminationParams
     // that value in the final composite, giving a "no textures" mode.
     // Default: 0
     float       fixedAlbedo;
+    // Q2RTX pt_sun_bounce_range: how far the sun reaches into an indirect
+    // bounce, in game units. A bounce ray that travelled farther than this
+    // receives no sun light and does not trace its sun shadow ray either, which
+    // is what keeps the indirect sun out of dark corners. 0 disables indirect
+    // sunlight.
+    // Default: 2000 (upstream's default; its reference-accumulation mode uses
+    // 10000)
+    float       sunBounceRange;
+    // Q2RTX sun_bounce: multiplier on the sun's contribution to an indirect
+    // bounce, applied on top of the distance falloff above. 1 is the physical
+    // value.
+    // Default: 1.0
+    float       sunBounceScale;
     // For which light first-person viewer shadows should be ignored.
     // E.g. first-person flashlight.
     // Null, if none.
