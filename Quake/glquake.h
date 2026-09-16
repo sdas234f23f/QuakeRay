@@ -320,6 +320,7 @@ extern task_handle_t prev_end_rendering_task;
 
 // johnfitz -- fog functions called from outside gl_fog.c
 void  Fog_ParseServerMessage (void);
+void  Fog_FogCommand_f (void);
 void  Fog_GetColor (float *c);
 float Fog_GetDensity (void);
 void  Fog_EnableGFog (cb_context_t *cbx);
@@ -536,6 +537,55 @@ RgTransform RT_GetBrushModelMatrix (entity_t *e);
 
 RgFloat3D RT_AnglesToDir (/* const */ vec3_t angles);
 float     RT_Luminance (const vec3_t color);
+
+// Frame profiler for the CPU side of the render loop, enabled with rt_prof.
+// Each slot keeps the longest duration seen in the reporting window, so tasks
+// that run on several worker threads report their slowest instance instead of
+// an overlapping sum.
+enum
+{
+	RT_PROF_SETUP,
+	RT_PROF_MARK,
+	RT_PROF_EFRAGS,
+	RT_PROF_CULL,
+	RT_PROF_CHAIN,
+	RT_PROF_WORLD,
+	RT_PROF_SKY,
+	RT_PROF_ENTS,
+	RT_PROF_ALPHA,
+	RT_PROF_PARTICLES,
+	RT_PROF_VIEWMODEL,
+	RT_PROF_ELIGHTS,
+	RT_PROF_WMODEL_LIGHTS,
+	RT_PROF_TELEPORTS,
+	RT_PROF_CLUSTERS,
+	RT_PROF_DRAWFRAME,
+	RT_PROF_WAIT,
+	RT_PROF_FRAME,
+
+	RT_PROF_COUNT
+};
+
+// The result of the latest reporting window, drawn on screen by SCR_DrawRTProf.
+typedef struct
+{
+	qboolean valid;
+	float    fps;
+	float    frameMs; // longest whole-frame time in the window
+	float    waitMs;  // longest wait for the task graph
+	float    ms[RT_PROF_COUNT];
+} rt_prof_report_t;
+
+extern cvar_t           rt_prof;
+extern double           rt_prof_ms[RT_PROF_COUNT];
+extern rt_prof_report_t rt_prof_report;
+
+// Returns 0 while the profiler is off, which RT_Prof_End treats as "no sample".
+double RT_Prof_Begin (void);
+void   RT_Prof_End (int slot, double start);
+void   RT_Prof_FrameStart (void);
+void   RT_Prof_FrameEnd (void);
+void   RT_Prof_Update (void);
 
 
 #endif /* GLQUAKE_H */

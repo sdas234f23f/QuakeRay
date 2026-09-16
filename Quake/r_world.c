@@ -420,6 +420,8 @@ R_MarkVisSurfacesSIMD
 */
 void R_MarkVisSurfacesSIMD (qboolean *use_tasks)
 {
+	double prof_start = RT_Prof_Begin ();
+
 	msurface_t  *surf;
 	unsigned int i, k;
 	unsigned int numleafs = cl.worldmodel->numleafs;
@@ -486,6 +488,8 @@ void R_MarkVisSurfacesSIMD (qboolean *use_tasks)
 
 	Atomic_AddUInt32 (&rs_brushpolys, brushpolys); // count wpolys here
 	R_SetupWorldCBXTexRanges (*use_tasks);
+
+	RT_Prof_End (RT_PROF_MARK, prof_start);
 }
 
 /*
@@ -495,6 +499,8 @@ R_MarkLeafsSIMD
 */
 void R_MarkLeafsSIMD (int index, void *unused)
 {
+	double prof_start = RT_Prof_Begin ();
+
 	unsigned int     j;
 	unsigned int     first_leaf = index * 32;
 	atomic_uint32_t *surfvis = (atomic_uint32_t *)cl.worldmodel->surfvis;
@@ -503,7 +509,10 @@ void R_MarkLeafsSIMD (int index, void *unused)
 
 	uint32_t *mask = &vis[index];
 	if (*mask == 0)
+	{
+		RT_Prof_End (RT_PROF_MARK, prof_start);
 		return;
+	}
 
 	*mask = R_CullBoxSIMD (&leafbounds[index * 4], *mask);
 
@@ -530,6 +539,8 @@ void R_MarkLeafsSIMD (int index, void *unused)
 		}
 		mask_iter &= bit_mask;
 	}
+
+	RT_Prof_End (RT_PROF_MARK, prof_start);
 }
 
 /*
@@ -539,12 +550,17 @@ R_BackfaceCullSurfacesSIMD
 */
 void R_BackfaceCullSurfacesSIMD (int index, void *unused)
 {
+	double prof_start = RT_Prof_Begin ();
+
 	uint32_t   *surfvis = (uint32_t *)cl.worldmodel->surfvis;
 	msurface_t *surf;
 
 	uint32_t *mask = &surfvis[index];
 	if (*mask == 0)
+	{
+		RT_Prof_End (RT_PROF_CULL, prof_start);
 		return;
+	}
 
 	*mask &= R_BackFaceCullSIMD (&cl.worldmodel->soa_surfplanes[index * 4]);
 
@@ -562,6 +578,8 @@ void R_BackfaceCullSurfacesSIMD (int index, void *unused)
 		const uint32_t bit_mask = ~(1u << i);
 		mask_iter &= bit_mask;
 	}
+
+	RT_Prof_End (RT_PROF_CULL, prof_start);
 }
 
 /*
@@ -571,6 +589,8 @@ R_StoreLeafEFrags
 */
 void R_StoreLeafEFrags (void *unused)
 {
+	double prof_start = RT_Prof_Begin ();
+
 	unsigned int i;
 	unsigned int numleafs = cl.worldmodel->numleafs;
 	uint32_t    *vis = (uint32_t *)mark_surfaces_state.vis;
@@ -585,6 +605,8 @@ void R_StoreLeafEFrags (void *unused)
 			R_StoreEfrags (&leaf->efrags);
 		}
 	}
+
+	RT_Prof_End (RT_PROF_EFRAGS, prof_start);
 }
 
 /*
@@ -594,6 +616,8 @@ R_ChainVisSurfaces
 */
 void R_ChainVisSurfaces (qboolean *use_tasks)
 {
+	double prof_start = RT_Prof_Begin ();
+
 	unsigned int i;
 	msurface_t  *surf;
 	unsigned int numsurfaces = cl.worldmodel->numsurfaces;
@@ -614,6 +638,8 @@ void R_ChainVisSurfaces (qboolean *use_tasks)
 
 	Atomic_AddUInt32 (&rs_brushpolys, brushpolys); // count wpolys here
 	R_SetupWorldCBXTexRanges (*use_tasks);
+
+	RT_Prof_End (RT_PROF_CHAIN, prof_start);
 }
 #endif // defined(USE_SIMD)
 
@@ -624,6 +650,8 @@ R_MarkVisSurfaces
 */
 void R_MarkVisSurfaces (qboolean *use_tasks)
 {
+	double prof_start = RT_Prof_Begin ();
+
 	int         i, j;
 	msurface_t *surf;
 	mleaf_t    *leaf;
@@ -677,6 +705,8 @@ void R_MarkVisSurfaces (qboolean *use_tasks)
 
 	Atomic_AddUInt32 (&rs_brushpolys, brushpolys); // count wpolys here
 	R_SetupWorldCBXTexRanges (*use_tasks);
+
+	RT_Prof_End (RT_PROF_MARK, prof_start);
 }
 
 /*

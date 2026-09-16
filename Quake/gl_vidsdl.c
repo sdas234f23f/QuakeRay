@@ -200,6 +200,7 @@ task_handle_t prev_end_rendering_task = INVALID_TASK_HANDLE;
 	CVAR_DEF_T (rt_volume_lassymetry, "0.0") \
 	CVAR_DEF_T (rt_volume_lpitch, "70") \
 	CVAR_DEF_T (rt_volume_lyaw, "-40") \
+	CVAR_DEF_T (rt_level_fog, "1") \
     \
 	CVAR_DEF_T (rt_water_aciddensity, "25") \
 	CVAR_DEF_T (rt_water_speed, "0.4") \
@@ -250,6 +251,7 @@ task_handle_t prev_end_rendering_task = INVALID_TASK_HANDLE;
 	CVAR_DEF_T (rt_nee_samples, "1") \
 	CVAR_DEF_T (rt_stats, "0") \
 	CVAR_DEF_T (rt_pass_stats, "0") \
+	CVAR_DEF_T (rt_prof, "0") \
 	\
 	CVAR_DEF_T (_rt_firsttime, "1")
 
@@ -272,6 +274,111 @@ enum
 
 	RT_VINTAGE__COUNT
 };
+
+
+/*
+================
+RT frame profiler -- rt_prof 1
+
+Times the CPU side of the frame, which the GPU timestamps of rt_pass_stats do
+not cover: the geometry marking chain, the per-pass scene submission and the
+main thread's wait for the task graph. The results are drawn on screen once a
+second by SCR_DrawRTProf, next to the rt_stats panel.
+
+The slots are written from worker threads without synchronization, so taking the
+report and the reset that follows it can race a running task; for a diagnostic
+tool the worst case is a garbage value in one window.
+================
+*/
+double           rt_prof_ms[RT_PROF_COUNT];
+rt_prof_report_t rt_prof_report;
+
+static double   rt_prof_frame_start;
+static double   rt_prof_window_start;
+static int      rt_prof_frames;
+static qboolean rt_prof_active;
+
+double RT_Prof_Begin (void)
+{
+	return rt_prof.value ? Sys_DoubleTime () : 0.0;
+}
+
+void RT_Prof_End (int slot, double start)
+{
+	if (start == 0.0)
+		return;
+
+	const double ms = (Sys_DoubleTime () - start) * 1000.0;
+	if (ms > rt_prof_ms[slot])
+		rt_prof_ms[slot] = ms;
+}
+
+void RT_Prof_FrameStart (void)
+{
+	if (!rt_prof.value)
+		return;
+
+	rt_prof_frame_start = Sys_DoubleTime ();
+	++rt_prof_frames;
+}
+
+void RT_Prof_FrameEnd (void)
+{
+	if (!rt_prof.value)
+		return;
+
+	RT_Prof_End (RT_PROF_FRAME, rt_prof_frame_start);
+}
+
+void RT_Prof_Update (void)
+{
+	if (!rt_prof.value)
+	{
+		if (!rt_prof_active)
+			return;
+
+		rt_prof_active = false;
+		rt_prof_report.valid = false;
+		memset (rt_prof_ms, 0, sizeof (rt_prof_ms));
+		rt_prof_frames = 0;
+		return;
+	}
+
+	const double now = Sys_DoubleTime ();
+
+	if (!rt_prof_active)
+	{
+		// start a fresh window, so switching the profiler on never shows stale numbers
+		rt_prof_active = true;
+		rt_prof_report.valid = false;
+		rt_prof_window_start = now;
+		rt_prof_frames = 0;
+		return;
+	}
+
+	const double elapsed = now - rt_prof_window_start;
+	if (elapsed < 1.0)
+		return;
+
+	rt_prof_window_start = now;
+
+	float fps = (float)(rt_prof_frames / elapsed);
+	if (fps < 0.1f)
+		fps = 0.1f;
+
+	memset (&rt_prof_report, 0, sizeof (rt_prof_report));
+	rt_prof_report.fps = fps;
+	rt_prof_report.frameMs = (float)rt_prof_ms[RT_PROF_FRAME];
+	rt_prof_report.waitMs = (float)rt_prof_ms[RT_PROF_WAIT];
+
+	for (int i = 0; i < RT_PROF_COUNT; ++i)
+		rt_prof_report.ms[i] = (float)rt_prof_ms[i];
+
+	rt_prof_report.valid = true;
+
+	memset (rt_prof_ms, 0, sizeof (rt_prof_ms));
+	rt_prof_frames = 0;
+}
 
 
 static qboolean request_shaders_reload = false;
@@ -1209,6 +1316,7 @@ extern float  GL_GetCameraFar (void);
 extern float  r_fovx, r_fovy;
 extern cvar_t r_fastsky;
 extern float  skyflatcolor[3];
+extern float  skyfog;
 extern float    rt_dmg_value;
 extern qboolean rt_dmg_inthisframe;
 extern RgMediaType rt_cameramedia;
@@ -1493,6 +1601,25 @@ static void GL_EndRenderingTask (end_rendering_parms_t *parms)
 		.lightmapLayerIndex = 1,
 	};
 
+	// Classic level fog: the worldspawn "fog" key and the `fog` console
+	// command, which Arcane Dimensions also uses to drive its dynamic fog. The
+	// color is passed as it is, without an sRGB decoding, the same way the
+	// classic renderer blended it into the framebuffer and the same way
+	// Sky_DrawSky above hands it to the sky. The density is divided by the 64
+	// the classic renderer scaled it with, so that a density of 0.05, a
+	// mid-range value for the shipped maps, fades the far plane into the fog
+	// instead of everything. rt_level_fog 0 ignores the level's fog.
+	float level_fog_color[4];
+	Fog_GetColor (level_fog_color);
+
+	const qboolean level_fog_active = CVAR_TO_BOOL (rt_level_fog) && Fog_GetDensity () > 0;
+
+	RgDrawFrameLevelFogParams level_fog_params = {
+		.color = RT_VEC3 (level_fog_color),
+		.density = (level_fog_active && !materials_only) ? Fog_GetDensity () / 64.0f : 0.0f,
+		.skyBlend = (level_fog_active && !materials_only) ? skyfog : 0.0f,
+	};
+
 	RgPostEffectCRT crt_effect = {
 		.isActive = CVAR_TO_BOOL (rt_ef_crt) || CVAR_TO_INT32 (rt_vintage) == RT_VINTAGE_CRT,
 	};
@@ -1613,6 +1740,7 @@ static void GL_EndRenderingTask (end_rendering_parms_t *parms)
 		.pTexturesParams = &texture_params,
 		.pLensFlareParams = &lens_flare_params,
 		.pLightmapParams = &lightmap_params,
+		.pLevelFogParams = &level_fog_params,
 		.postEffectParams =
 			{
 				.pChromaticAberration = &chromatic_aberration_effect,
@@ -1625,7 +1753,9 @@ static void GL_EndRenderingTask (end_rendering_parms_t *parms)
 	};
 	memcpy (info.view, vulkan_globals.view_matrix, 16 * sizeof(float));
 
+	double prof_start = RT_Prof_Begin ();
 	RgResult r = rgDrawFrame (vulkan_globals.instance, &info);
+	RT_Prof_End (RT_PROF_DRAWFRAME, prof_start);
 	RG_CHECK (r);
 }
 
@@ -1871,6 +2001,17 @@ static void RT_Fog_Cmd (void)
 	if (argc <= 1)
 	{
 		Con_Printf ("usage: fog -v <index> -a <x,y,z|here> -b <x,y,z|here> -c <r,g,b> -d <distance> -f <none|xa|xb|ya|yb|za|zb>\n");
+		Con_Printf ("       fog <density> <r> <g> <b>                      set the level fog\n");
+		return;
+	}
+
+	// The name is shared with the classic Quake fog command, which is also how
+	// mods set fog at runtime ("fog <density> <r> <g> <b>", as Arcane
+	// Dimensions does). Every option of the volume editor starts with a dash,
+	// so a first argument that does not is left to the classic handler.
+	if (Cmd_Argv (1)[0] != '-')
+	{
+		Fog_FogCommand_f ();
 		return;
 	}
 

@@ -107,6 +107,51 @@ void Fog_ParseServerMessage (void)
 
 /*
 =============
+Fog_FogCommand_f
+
+handle the 'fog' console command, which is also how mods set fog at runtime
+=============
+*/
+void Fog_FogCommand_f (void)
+{
+	switch (Cmd_Argc ())
+	{
+	default:
+	case 1:
+		Con_Printf ("usage:\n");
+		Con_Printf ("   fog <density>\n");
+		Con_Printf ("   fog <red> <green> <blue>\n");
+		Con_Printf ("   fog <density> <red> <green> <blue>\n");
+		Con_Printf ("current values:\n");
+		Con_Printf ("   \"density\" is \"%f\"\n", fog_density);
+		Con_Printf ("   \"red\" is \"%f\"\n", fog_red);
+		Con_Printf ("   \"green\" is \"%f\"\n", fog_green);
+		Con_Printf ("   \"blue\" is \"%f\"\n", fog_blue);
+		break;
+	case 2:
+		Fog_Update (q_max (0.0, atof (Cmd_Argv (1))), fog_red, fog_green, fog_blue, 0.0);
+		break;
+	case 3: // TEST
+		Fog_Update (q_max (0.0, atof (Cmd_Argv (1))), fog_red, fog_green, fog_blue, atof (Cmd_Argv (2)));
+		break;
+	case 4:
+		Fog_Update (fog_density, CLAMP (0.0, atof (Cmd_Argv (1)), 1.0), CLAMP (0.0, atof (Cmd_Argv (2)), 1.0), CLAMP (0.0, atof (Cmd_Argv (3)), 1.0), 0.0);
+		break;
+	case 5:
+		Fog_Update (
+			q_max (0.0, atof (Cmd_Argv (1))), CLAMP (0.0, atof (Cmd_Argv (2)), 1.0), CLAMP (0.0, atof (Cmd_Argv (3)), 1.0),
+			CLAMP (0.0, atof (Cmd_Argv (4)), 1.0), 0.0);
+		break;
+	case 6: // TEST
+		Fog_Update (
+			q_max (0.0, atof (Cmd_Argv (1))), CLAMP (0.0, atof (Cmd_Argv (2)), 1.0), CLAMP (0.0, atof (Cmd_Argv (3)), 1.0),
+			CLAMP (0.0, atof (Cmd_Argv (4)), 1.0), atof (Cmd_Argv (5)));
+		break;
+	}
+}
+
+/*
+=============
 Fog_ParseWorldspawn
 
 called at map load

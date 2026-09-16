@@ -319,6 +319,8 @@ struct ShGlobalUniform
     float fltEnable[4];
     float fixedAlbedo[4];
     float sunBounce[4];
+    float levelFogColorDensity[4];
+    float levelFogSkyBlend[4];
 };
 
 struct ShGeometryInstance

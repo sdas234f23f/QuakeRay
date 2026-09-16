@@ -634,6 +634,24 @@ void VulkanDevice::FillUniform(ShGlobalUniform *gu, const RgDrawFrameInfo &drawI
 
     gu->antiFireflyEnabled = !!drawInfo.forceAntiFirefly;
 
+    // Classic level fog (host data set from the engine's fog state)
+    if( drawInfo.pLevelFogParams != nullptr )
+    {
+        RG_SET_VEC3_A( gu->levelFogColorDensity, drawInfo.pLevelFogParams->color.data );
+        RG_MAX_VEC3( gu->levelFogColorDensity, 0.0f );
+        gu->levelFogColorDensity[ 3 ] = std::max( drawInfo.pLevelFogParams->density, 0.0f );
+
+        RG_SET_VEC3( gu->levelFogSkyBlend, 0.0f, 0.0f, 0.0f );
+        gu->levelFogSkyBlend[ 0 ] = std::clamp( drawInfo.pLevelFogParams->skyBlend, 0.0f, 1.0f );
+    }
+    else
+    {
+        RG_SET_VEC3( gu->levelFogColorDensity, 0.0f, 0.0f, 0.0f );
+        gu->levelFogColorDensity[ 3 ] = 0.0f;
+
+        RG_SET_VEC3( gu->levelFogSkyBlend, 0.0f, 0.0f, 0.0f );
+    }
+
     // Q2RTX-style fog volumes (host data set via rgSetFogVolumes)
     {
         for (uint32_t i = 0; i < MAX_FOG_VOLUMES; i++)

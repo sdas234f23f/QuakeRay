@@ -570,6 +570,10 @@ void SCR_DrawFPS (cb_context_t *cbx)
 	}
 }
 
+static const RgFloat4D color_orange = { 1.0f, 0.30f, 0.05f, 1.0f };
+static const RgFloat4D color_detail = { 0.60f, 0.85f, 1.00f, 1.0f };
+static const RgFloat4D color_shadow = { 0.0f, 0.0f, 0.0f, 1.0f };
+
 static void SCR_DrawRTStatsString (cb_context_t *cbx, int x, int y, const char *str, float scale,
                                    const RgFloat4D *color, const RgFloat4D *shadow)
 {
@@ -587,10 +591,6 @@ void SCR_DrawRTStats (cb_context_t *cbx)
 
 	if (rgGetFrameStatsEx (vulkan_globals.instance, &stats) != RG_SUCCESS)
 		return;
-
-	static const RgFloat4D color_orange = { 1.0f, 0.30f, 0.05f, 1.0f };
-	static const RgFloat4D color_detail = { 0.60f, 0.85f, 1.00f, 1.0f };
-	static const RgFloat4D color_shadow = { 0.0f, 0.0f, 0.0f, 1.0f };
 
 	const float scale = 4.0f;
 	const int   step = 8 * (int)scale;
@@ -639,6 +639,92 @@ void SCR_DrawRTStats (cb_context_t *cbx)
 		const unsigned ms10 = (unsigned)(stats.gpuPassMs[i] * 10.0f + 0.5f);
 		sprintf (st, "%-9s %4u.%u ms", rgGetGpuPassName (i), ms10 / 10, ms10 % 10);
 		SCR_DrawRTStatsString (cbx, x, y + step + i * pass_step, st, pass_scale, &color_detail, &color_shadow);
+	}
+}
+
+/*
+================
+SCR_DrawRTProf
+
+CPU counterpart of SCR_DrawRTStats, drawn beside it so both sides of the frame
+can be read at the same time. The numbers come from rt_prof_report, refreshed
+once a second by RT_Prof_Update.
+================
+*/
+void SCR_DrawRTProf (cb_context_t *cbx)
+{
+	if (!rt_prof.value || !rt_prof_report.valid)
+		return;
+
+	static const struct
+	{
+		int         slot;
+		const char *label;
+	} left[] = {
+		{ RT_PROF_SETUP, "setup" },       { RT_PROF_MARK, "mark" },         { RT_PROF_EFRAGS, "efrags" },
+		{ RT_PROF_CULL, "cull" },         { RT_PROF_CHAIN, "chain" },       { RT_PROF_WORLD, "world" },
+		{ RT_PROF_SKY, "sky" },           { RT_PROF_ENTS, "ents" },         { RT_PROF_ALPHA, "alpha" },
+		{ RT_PROF_PARTICLES, "particles" }, { RT_PROF_VIEWMODEL, "viewmodel" },
+	};
+
+	static const struct
+	{
+		int         slot;
+		const char *label;
+	} right[] = {
+		{ RT_PROF_ELIGHTS, "elights" }, { RT_PROF_WMODEL_LIGHTS, "wmodel lights" }, { RT_PROF_TELEPORTS, "teleports" },
+		{ RT_PROF_CLUSTERS, "clusters" },
+	};
+
+	const rt_prof_report_t *rep = &rt_prof_report;
+
+	const float scale = 4.0f;
+	const int   step = 8 * (int)scale;
+	const float pass_scale = 2.0f;
+	const int   pass_step = 8 * (int)pass_scale;
+	const int   x = (rt_stats.value || rt_pass_stats.value) ? 640 : 8;
+	int         y = 8;
+	int         i;
+	char        st[64];
+
+	GL_SetCanvas (cbx, CANVAS_DEFAULT);
+
+	sprintf (st, "FPS: %u.%u", (unsigned)(rep->fps * 10.0f + 0.5f) / 10, (unsigned)(rep->fps * 10.0f + 0.5f) % 10);
+	SCR_DrawRTStatsString (cbx, x, y, st, scale, &color_orange, &color_shadow);
+	y += step;
+
+	unsigned ms10 = (unsigned)(rep->frameMs * 10.0f + 0.5f);
+	sprintf (st, "FRAME: %u.%u ms", ms10 / 10, ms10 % 10);
+	SCR_DrawRTStatsString (cbx, x, y, st, scale, &color_orange, &color_shadow);
+	y += step;
+
+	ms10 = (unsigned)((rep->frameMs - rep->waitMs) * 10.0f + 0.5f);
+	sprintf (st, "MAIN: %u.%u ms", ms10 / 10, ms10 % 10);
+	SCR_DrawRTStatsString (cbx, x, y, st, scale, &color_orange, &color_shadow);
+	y += step;
+
+	ms10 = (unsigned)(rep->waitMs * 10.0f + 0.5f);
+	sprintf (st, "WAIT: %u.%u ms", ms10 / 10, ms10 % 10);
+	SCR_DrawRTStatsString (cbx, x, y, st, scale, &color_orange, &color_shadow);
+	y += step;
+
+	ms10 = (unsigned)(rep->ms[RT_PROF_DRAWFRAME] * 10.0f + 0.5f);
+	sprintf (st, "rgDrawFrame: %u.%u ms", ms10 / 10, ms10 % 10);
+	SCR_DrawRTStatsString (cbx, x, y, st, scale, &color_orange, &color_shadow);
+	y += step;
+
+	for (i = 0; i < (int)countof (left); i++)
+	{
+		ms10 = (unsigned)(rep->ms[left[i].slot] * 10.0f + 0.5f);
+		sprintf (st, "%-12s %4u.%u ms", left[i].label, ms10 / 10, ms10 % 10);
+		SCR_DrawRTStatsString (cbx, x, y + i * pass_step, st, pass_scale, &color_detail, &color_shadow);
+	}
+
+	for (i = 0; i < (int)countof (right); i++)
+	{
+		ms10 = (unsigned)(rep->ms[right[i].slot] * 10.0f + 0.5f);
+		sprintf (st, "%-12s %4u.%u ms", right[i].label, ms10 / 10, ms10 % 10);
+		SCR_DrawRTStatsString (cbx, x + 360, y + i * pass_step, st, pass_scale, &color_detail, &color_shadow);
 	}
 }
 
@@ -1102,6 +1188,7 @@ static void SCR_DrawGUI (void *unused)
 		SCR_DrawDevStats (cbx); // johnfitz
 		SCR_DrawFPS (cbx);      // johnfitz
 		SCR_DrawRTStats (cbx);
+		SCR_DrawRTProf (cbx);
 		SCR_DrawClock (cbx);    // johnfitz
 		SCR_DrawConsole (cbx);
 		M_Draw (cbx);
@@ -1150,6 +1237,7 @@ void SCR_UpdateScreen (qboolean use_tasks)
 		return; // not safe
 
 	in_update_screen = true;
+	RT_Prof_FrameStart ();
 #if 0
 	use_tasks = use_tasks && (Tasks_NumWorkers () > 1) && r_tasks.value && r_gpulightmapupdate.value && !r_showtris.value && !r_showbboxes.value;
 #else
@@ -1205,8 +1293,10 @@ void SCR_UpdateScreen (qboolean use_tasks)
 		task_handle_t tasks[] = {begin_rendering_task, setup_frame_task, draw_done_task, draw_gui_task, end_rendering_task};
 		Tasks_Submit (sizeof (tasks) / sizeof (task_handle_t), tasks);
 
+		double prof_wait = RT_Prof_Begin ();
 		while (!Task_Join (draw_done_task, 10))
 			S_ExtraUpdate ();
+		RT_Prof_End (RT_PROF_WAIT, prof_wait);
 		prev_end_rendering_task = end_rendering_task;
 	}
 	else
@@ -1221,4 +1311,7 @@ void SCR_UpdateScreen (qboolean use_tasks)
 	}
 
 	in_update_screen = false;
+
+	RT_Prof_FrameEnd ();
+	RT_Prof_Print ();
 }

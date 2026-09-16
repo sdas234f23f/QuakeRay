@@ -715,6 +715,21 @@ GLOBAL_UNIFORM_STRUCT = [
     # packed into one vec4 so the dense C mirror stays on the std140 16-byte
     # boundary.
     (TYPE_FLOAT32,      4,      "sunBounce",                1),
+
+    # Level fog (see Quake/gl_fog.c, Shaders/CmPrepareFinal.comp): the classic
+    # Quake fog the level asks for - the worldspawn "fog" key and the `fog`
+    # console command Arcane Dimensions drives through stuffcmd. .rgb is the
+    # colour the level asked for (0..1, treated as a display-referred colour and
+    # blended after tonemapping, as the classic renderer did) and .a is the
+    # density divided by 64, the scale QuakeSpasm's shaders use for their
+    # exp(-(density * distance)^2) falloff. A density of zero disables the fog.
+    (TYPE_FLOAT32,      4,      "levelFogColorDensity",     1),
+
+    # How much of the sky the level fog replaces: .x = the effective `skyfog`
+    # (the cvar, or the worldspawn key overriding it) while the fog is active, 0
+    # otherwise. The sky carries no distance (sky texels report
+    # MAX_RAY_LENGTH), so it is blended by this amount instead of by depth.
+    (TYPE_FLOAT32,      4,      "levelFogSkyBlend",         1),
 ]
 
 GEOM_INSTANCE_STRUCT = [

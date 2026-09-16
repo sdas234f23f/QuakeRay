@@ -232,6 +232,62 @@ vec3 applyVolumetrics( const ivec2 pix, const vec3 color )
 }
 
 
+// Ratio of the view-space depth (the distance the classic renderer fogged with,
+// gl_Position.w) to the ray length that framebufDepthWorld holds. A ray that is
+// off the view axis is longer by 1/cos(angle), and fogging by the ray length
+// would thicken the fog towards the screen edges, where the classic renderer
+// showed none of that.
+float getViewAxisFactor( const ivec2 pix )
+{
+    const vec2 inUV = getPixelUVWithJitter( pix ) * 2.0 - 1.0;
+
+    const vec4 target   = globalUniform.invProjection * vec4( inUV.x, inUV.y, 1.0, 1.0 );
+    const vec3 localDir = abs( target.w ) < 0.001 ? target.xyz : target.xyz / target.w;
+
+    return clamp( -normalize( localDir ).z, 0.0, 1.0 );
+}
+
+
+// Classic Quake level fog: the worldspawn "fog" key and the `fog` console
+// command, which is also how Arcane Dimensions drives its dynamic fog. Quake
+// fogged every fragment, so this runs on the composited image, after the
+// tonemapped color and after the rasterized geometry (sprites, viewmodel) has
+// been drawn into framebufFinal. The color is display-referred, and is used as
+// it is: the classic renderer mixed it into the framebuffer the same way, and
+// the sky below takes it from the same place, so a solid-colored sky stays
+// identical to the fog.
+vec3 applyLevelFog( const ivec2 pix, const vec3 color )
+{
+    const float density  = globalUniform.levelFogColorDensity.w;
+    const float skyBlend = globalUniform.levelFogSkyBlend.x;
+
+    // The classic renderer skipped the fog entirely when the level had none,
+    // and so does the sky blend below, which only makes sense with fog present.
+    if( density <= 0.0 )
+    {
+        return color;
+    }
+
+    const float depth = texelFetch( framebufDepthWorld_Sampler, getCheckerboardPix( pix ), 0 ).r;
+
+    float fog;
+    if( depth > MAX_RAY_LENGTH )
+    {
+        // Sky: there is no distance to fall off over, so the level's `skyfog`
+        // is the blend weight itself.
+        fog = 1.0 - skyBlend;
+    }
+    else
+    {
+        // Same falloff as the classic renderer: exp(-(density * distance)^2).
+        const float d = density * max( depth, 0.0 ) * getViewAxisFactor( pix );
+        fog = exp( -d * d );
+    }
+
+    return mix( globalUniform.levelFogColorDensity.rgb, color, fog );
+}
+
+
 vec3 processDebug( const ivec2 pix, const vec3 fallback );
 
 
@@ -313,6 +369,8 @@ void main()
 #if SHIPPING_HACK
     color += texelFetch( framebufAcidFog_Sampler, pix, 0 ).rgb;
 #endif
+
+    color = applyLevelFog( pix, color );
 
 
     if( globalUniform.debugShowFlags != 0 )
