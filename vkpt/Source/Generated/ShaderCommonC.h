@@ -318,6 +318,7 @@ struct ShGlobalUniform
     float giBounceRays[4];
     float fltEnable[4];
     float fixedAlbedo[4];
+    float sunBounce[4];
 };
 
 struct ShGeometryInstance

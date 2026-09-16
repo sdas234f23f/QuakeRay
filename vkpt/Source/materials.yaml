@@ -359,7 +359,7 @@ materials:
     is_light: true
   - name: textures/tlight07
     texture_emissive: textures/tlight07_luma.png
-    light_color: bfaf50
+    light_color: FFF08F
     light_brightness: 0.8
     is_light: true
   - name: textures/tlight08
@@ -371,7 +371,7 @@ materials:
     is_light: true
   - name: textures/tlight10
     texture_emissive: textures/tlight10_luma.png
-    light_color: fff31b
+    light_color: FFCB00
     light_brightness: 0.3
     is_light: true
   - name: textures/tlight11
@@ -587,7 +587,7 @@ materials:
     is_light: false
   - name: textures/z_exit
     texture_emissive: textures/z_exit_luma.png
-    light_brightness: 0.2
+    light_brightness: 0.3
     is_light: true
   - name: textures/+0planet
     texture_emissive: textures/+0planet_luma.png
@@ -639,6 +639,11 @@ materials:
     texture_emissive: textures/tele_top_luma.png
     light_color: ffe613
     light_brightness: 0.2
+    is_light: true
+  - name: textures/wkey02_2
+    texture_emissive: textures/wkey02_2_luma.png
+    light_color: b5b5ff
+    light_brightness: 0.3
     is_light: true
   - name: progs/armor.mdl:frame0
     texture_gloss: progs/armor/0_gloss.png
@@ -835,13 +840,13 @@ materials:
     is_light: false
   - name: progs/flame.mdl:frame0
     texture_emissive: mdl_skins/flame_skin0_luma.png
-    light_color: FFC274
+    light_color: FFA354
     light_upoffset: 2.0
     light_brightness: 0.6
     is_light: true
   - name: progs/flame2.mdl:frame0
     texture_emissive: mdl_skins/flame2_skin0_luma.png
-    light_color: FFC274
+    light_color: FFA354
     light_brightness: 0.8
     light_upoffset: 16.0
     is_light: true
@@ -932,9 +937,10 @@ materials:
   - name: progs/player.mdl:frame0
     is_light: false
   - name: progs/quaddama.mdl:frame0
+    force_rasterize: true
     light_color: B185EF
-    light_brightness: 0.5
-    is_light: false
+    light_brightness: 1.0
+    is_light: true
   - name: progs/s_light.mdl:frame0
     is_light: false
   - name: progs/shalrath.mdl:frame0
@@ -961,7 +967,3 @@ materials:
     is_light: false
   - name: progs/zombie.mdl:frame0
     is_light: false
-  - name: progs/quaddama.mdl:frame0
-    light_color:  3300ff
-    light_brightness: 0.2
-    is_light: true

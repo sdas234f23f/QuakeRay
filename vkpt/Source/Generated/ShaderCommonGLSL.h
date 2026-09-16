@@ -313,6 +313,7 @@ struct ShGlobalUniform
     vec4 giBounceRays;
     vec4 fltEnable;
     vec4 fixedAlbedo;
+    vec4 sunBounce;
 };
 
 struct ShGeometryInstance

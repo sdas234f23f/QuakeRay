@@ -31,11 +31,12 @@ layout (constant_id = 0) const uint maxAlbedoLayerCount = 0;
 
 #define Q2_INDIR_MAX_SPHERE_SOLID_ANGLE 0.02
 
-// Q2RTX pt_sun_bounce_range (2000 in game units): the sun contribution of a bounce fades
-// out with the distance the bounce ray travelled. Without it every bounce hit anywhere in
-// the map adds full sun energy and pays for its own sun shadow ray, which is where the
-// salt-like noise in dark areas came from.
-#define Q2_SUN_BOUNCE_RANGE 2000.0
+// Q2RTX pt_sun_bounce_range / sun_bounce: the sun contribution of a bounce fades out with
+// the distance the bounce ray travelled, and what is left is scaled by a straight
+// multiplier. Both come from the host through ShGlobalUniform.sunBounce (cvars
+// rt_sun_bounce_range, 2000 in game units, and rt_sun_bounce_scale, 1.0). Without the range
+// every bounce hit anywhere in the map adds full sun energy and pays for its own sun shadow
+// ray, which is where the salt-like noise in dark areas came from.
 
 // Indirect-light debug probes, driven by rt_debugflags bits 15..19. Those bits sit
 // above the RgDebugDrawFlagBits enum, so they reach the shader only through the
@@ -103,6 +104,9 @@ vec3 getDiffuseBounce(const uint seed, uint bounceIndex,
 // does for `is_specular_ray`; the diffuse second bounce uses the full range.
 float q2SunBounceAttenuation(float hitDistance, float sunBounceRange)
 {
+    // A zero range means "no indirect sun". The floor keeps the division finite so that a
+    // hit at distance zero cannot turn the whole term into a NaN.
+    sunBounceRange = max( sunBounceRange, 1e-4 );
     return square( clamp( 1.0 - square( square( hitDistance / sunBounceRange ) ), 0.0, 1.0 ) );
 }
 
@@ -144,7 +148,7 @@ vec3 processSecondDiffuseBounce(const uint seed, const Surface surf, const vec3 
     // `get_direct_illumination` call sits behind `spec_bounce_index == 0` and the light
     // list would otherwise be sampled twice for the same pixel.
     const float sunAttenuation = q2SunBounceAttenuation(
-        length( hitSurf.position - surf.position ), Q2_SUN_BOUNCE_RANGE );
+        length( hitSurf.position - surf.position ), globalUniform.sunBounce.x );
 
     vec3 directDiffuse = vec3( 0.0 );
 
@@ -167,7 +171,7 @@ vec3 processSecondDiffuseBounce(const uint seed, const Surface surf, const vec3 
 
             vec3 d, s;
             shade( hitSurf, sunLight, 1.0, d, s );
-            directDiffuse += d * sunVis * sunAttenuation;
+            directDiffuse += d * sunVis * sunAttenuation * globalUniform.sunBounce.y;
         }
     }
 
@@ -379,7 +383,7 @@ void main()
         // primary roughness the same way Q2RTX shortens it for is_specular_ray.
         const float sunAttenuation = q2SunBounceAttenuation(
             length( hitSurf.position - surf.position ),
-            Q2_SUN_BOUNCE_RANGE * ( 1.0 - sqrt( surf.roughness ) ) );
+            globalUniform.sunBounce.x * ( 1.0 - sqrt( surf.roughness ) ) );
 
         if ( globalUniform.directionalLightExists != 0 && sunAttenuation > 0.0 )
         {
@@ -400,7 +404,7 @@ void main()
 
                 vec3 d, s;
                 shade( hitSurf, sunLight, 1.0, d, s );
-                directDiffuse += d * sunVis * sunAttenuation;
+                directDiffuse += d * sunVis * sunAttenuation * globalUniform.sunBounce.y;
             }
         }
 

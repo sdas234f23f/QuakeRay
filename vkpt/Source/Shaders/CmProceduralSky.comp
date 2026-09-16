@@ -164,7 +164,7 @@ vec3 evaluateSky(vec3 rd, vec3 sunDir, vec3 sunColor, float tintStrength)
 
     inScatter *= RADIANCE_SCALE;
 
-    // tint the sky by the sky/sun color (rt_sky_light_*): a neutral/white tint
+    // tint the sky by the sky color (rt_sky_color): a neutral/white tint
     // keeps the physical blue atmosphere, while colored presets strongly re-tint
     // the sky (the physical blue would otherwise dominate and hide the preset).
     // tintStrength (rt_sky_tint) scales how strongly the tint is applied.
