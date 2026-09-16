@@ -3043,17 +3043,9 @@ SCREEN SHOTS
 ==============================================================================
 */
 
-static void SCR_ScreenShot_Usage (void)
-{
-	Con_Printf ("usage: screenshot <format> <quality>\n");
-	Con_Printf ("   format must be \"png\" or \"tga\" or \"jpg\"\n");
-	Con_Printf ("   quality must be 1-100\n");
-	return;
-}
-
 /*
 ==================
-SCR_ScreenShot_f -- johnfitz -- rewritten to use Image_WriteTGA
+SCR_ScreenShot_f -- not implemented, the game takes no screen grabs
 ==================
 */
 void SCR_ScreenShot_f (void)
