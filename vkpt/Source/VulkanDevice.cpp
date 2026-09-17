@@ -552,25 +552,6 @@ void VulkanDevice::FillUniform(ShGlobalUniform *gu, const RgDrawFrameInfo &drawI
         gu->worldUpVector[ 2 ] = drawInfo.worldUpVector.data[ 2 ];
     }
 
-    if( drawInfo.pLightmapParams != nullptr )
-    {
-        gu->lightmapEnable = !!drawInfo.pLightmapParams->enableLightmaps;
-
-        if( drawInfo.pLightmapParams->lightmapLayerIndex == 1 || drawInfo.pLightmapParams->lightmapLayerIndex == 2 )
-        {
-            gu->lightmapLayer = drawInfo.pLightmapParams->lightmapLayerIndex;
-        }
-        else
-        {
-            assert( 0 && "pLightMapLayerIndex must point to a value of 1 or 2. Others are invalidated" );
-        }
-    }
-    else
-    {
-        gu->lightmapEnable = false;
-        gu->lightmapLayer  = UINT8_MAX;
-    }
-
     gu->lensFlareCullingInputCount = rasterizer->GetLensFlareCullingInputCount();
     gu->applyViewProjToLensFlares  = !lensFlareVerticesInScreenSpace;
 
@@ -1615,6 +1596,16 @@ void VulkanDevice::UploadClusterLightLists(const RgClusterLightListsUploadInfo *
         pInfo->pOffsets,
         pInfo->pLightUniqueIds,
         pInfo->totalLightCount);
+}
+
+void VulkanDevice::UploadWorldLights(const RgWorldLightsUploadInfo *pInfo)
+{
+    if (pInfo == nullptr)
+    {
+        throw RgException(RG_WRONG_ARGUMENT, "Argument is null");
+    }
+
+    worldLights->Upload(*pInfo, userPrint.get());
 }
 
 void VulkanDevice::SetFogVolumes(uint32_t count, const RgFogVolume *pVolumes)

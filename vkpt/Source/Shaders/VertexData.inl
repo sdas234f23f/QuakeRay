@@ -242,13 +242,6 @@ ShTriangle makeTriangle(const ShVertex a, const ShVertex b, const ShVertex c)
     tr.layerTexCoord[2][1] = b.texCoordLayer2;
     tr.layerTexCoord[2][2] = c.texCoordLayer2;
 
-    if (globalUniform.lightmapEnable != 0)
-    {
-        tr.vertexColors[0] = a.packedColor;
-        tr.vertexColors[1] = b.packedColor;
-        tr.vertexColors[2] = c.packedColor;
-    }
-
     tr.cluster = a.cluster;
     tr.lightStyleIndices = a.lightStyles;
 

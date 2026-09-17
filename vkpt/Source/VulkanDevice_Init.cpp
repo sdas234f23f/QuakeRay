@@ -118,6 +118,8 @@ VulkanDevice::VulkanDevice( const RgInstanceCreateInfo* info )
         *info,
         libconfig);
 
+    worldLights         = std::make_shared<WorldLights>();
+
     shaderManager       = std::make_shared<ShaderManager>(
         device,
         info->pShaderFolderPath,

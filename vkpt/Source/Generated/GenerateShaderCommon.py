@@ -531,9 +531,14 @@ GLOBAL_UNIFORM_STRUCT = [
     (TYPE_FLOAT32,     44,      "volumeViewProjInv_Prev",       1),
 
     (TYPE_FLOAT32,      1,      "cellWorldSize",                1),
-    (TYPE_UINT32,       1,      "lightmapEnable",               1),
-    (TYPE_UINT32,       1,      "lightmapLayer",                1),
     (TYPE_FLOAT32,      1,      "renderWidth",                  1),
+
+    # std140 filler: the C mirror is dense (4-byte packed), so every vec4 member
+    # must already land on a 16-byte boundary here. skyColorDefault follows, and
+    # without these 8 bytes its C offset is 696 while std140 moves it to 704,
+    # silently shifting every later member by 8 bytes.
+    (TYPE_UINT32,       1,      "__pad0",                       1),
+    (TYPE_UINT32,       1,      "__pad1",                       1),
 
     (TYPE_FLOAT32,      1,      "renderHeight",                 1),
     (TYPE_UINT32,       1,      "frameId",                      1),

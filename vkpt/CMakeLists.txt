@@ -82,6 +82,7 @@ set(vkpt_SOURCES
     Source/Q2Denoiser.cpp
     Source/RayStats.cpp
     Source/PassTimings.cpp
+    Source/WorldLights.cpp
 )
 
 set(vkpt_KTX_FOLDER Source/KTX/lib)

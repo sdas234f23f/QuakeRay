@@ -603,29 +603,40 @@ void SCR_DrawRTStats (cb_context_t *cbx)
 
 	GL_SetCanvas (cbx, CANVAS_DEFAULT);
 
-	sprintf (st, "RAYS: %u", stats.raysTotal);
-	SCR_DrawRTStatsString (cbx, x, y, st, scale, &color_orange, &color_shadow);
-	y += step;
+	// Ray counters are accumulated by the shaders only while rt_stats is on, so with
+	// rt_pass_stats alone they would read as a permanent zero. Show the lines only when
+	// they are actually collected.
+	const qboolean rays = rt_stats.value != 0;
+
+	if (rays)
+	{
+		sprintf (st, "RAYS: %u", stats.raysTotal);
+		SCR_DrawRTStatsString (cbx, x, y, st, scale, &color_orange, &color_shadow);
+		y += step;
+	}
 
 	sprintf (st, "FPS: %u.%u", stats.fpsX10 / 10, stats.fpsX10 % 10);
 	SCR_DrawRTStatsString (cbx, x, y, st, scale, &color_orange, &color_shadow);
 	y += step;
 
-	sprintf (st, "PRIMARY: %u", stats.raysPerCategory[0]);
-	SCR_DrawRTStatsString (cbx, x, y, st, scale, &color_orange, &color_shadow);
-	y += step;
+	if (rays)
+	{
+		sprintf (st, "PRIMARY: %u", stats.raysPerCategory[0]);
+		SCR_DrawRTStatsString (cbx, x, y, st, scale, &color_orange, &color_shadow);
+		y += step;
 
-	sprintf (st, "REFL/REFR: %u", stats.raysPerCategory[1]);
-	SCR_DrawRTStatsString (cbx, x, y, st, scale, &color_orange, &color_shadow);
-	y += step;
+		sprintf (st, "REFL/REFR: %u", stats.raysPerCategory[1]);
+		SCR_DrawRTStatsString (cbx, x, y, st, scale, &color_orange, &color_shadow);
+		y += step;
 
-	sprintf (st, "INDIRECT: %u", stats.raysPerCategory[2]);
-	SCR_DrawRTStatsString (cbx, x, y, st, scale, &color_orange, &color_shadow);
-	y += step;
+		sprintf (st, "INDIRECT: %u", stats.raysPerCategory[2]);
+		SCR_DrawRTStatsString (cbx, x, y, st, scale, &color_orange, &color_shadow);
+		y += step;
 
-	sprintf (st, "SHADOW: %u", stats.raysPerCategory[3]);
-	SCR_DrawRTStatsString (cbx, x, y, st, scale, &color_orange, &color_shadow);
-	y += step;
+		sprintf (st, "SHADOW: %u", stats.raysPerCategory[3]);
+		SCR_DrawRTStatsString (cbx, x, y, st, scale, &color_orange, &color_shadow);
+		y += step;
+	}
 
 	if (!rt_pass_stats.value || !stats.gpuTimingValid)
 		return;

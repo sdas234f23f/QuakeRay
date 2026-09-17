@@ -727,6 +727,71 @@ RGAPI RgResult RGCONV rgUploadClusterLightLists(
     const RgClusterLightListsUploadInfo *pUploadInfo);
 
 
+// A face of the world (or of an inline brush model, such as a door) that the renderer
+// turns into light polygons. Corners of every face live in one shared array.
+typedef enum RgWorldLightFaceFlags
+{
+    // Only a part of the emission texture glows, so the polygon has to be clipped
+    // against the bounding box of the bright texels.
+    RG_WORLD_LIGHT_FACE_MASKED_BIT       = 1 << 0,
+    // The face belongs to an inline brush model, not to the world itself.
+    RG_WORLD_LIGHT_FACE_INLINE_MODEL_BIT = 1 << 1,
+} RgWorldLightFaceFlags;
+
+typedef struct RgWorldLightFace
+{
+    // Same id the face geometry is uploaded with, so a light keeps its identity.
+    uint64_t  uniqueID;
+    uint32_t  firstVertex;
+    uint32_t  numVertices;
+    // BSP leaf the face stands in, the same number RgVertex::cluster carries.
+    uint32_t  cluster;
+    // RgWorldLightFaceFlags
+    uint32_t  flags;
+    // Emission texture of the light. RG_NO_MATERIAL when the whole texture glows.
+    RgMaterial material;
+    RgFloat3D  color;
+    float      meanEmiss;
+    // 0 for faces the host still moves and re-uploads every frame.
+    uint32_t   isStatic;
+} RgWorldLightFace;
+
+typedef enum RgWorldLightsUploadFlags
+{
+    // Print what was accepted, so a manual test can compare the renderer's tables
+    // against the host's own. The host sets it from a cvar of its own.
+    RG_WORLD_LIGHTS_UPLOAD_PRINT_STATS_BIT = 1 << 0,
+} RgWorldLightsUploadFlags;
+
+typedef struct RgWorldLightsUploadInfo
+{
+    // RgWorldLightsUploadFlags
+    uint32_t flags;
+
+    // One entry per BSP leaf of the world.
+    uint32_t         numClusters;
+    const RgFloat3D *pClusterMins;
+    const RgFloat3D *pClusterMaxs;
+
+    // Emissive faces with their corners in world space, as raw Quake vertexes.
+    uint32_t                numFaces;
+    const RgWorldLightFace *pFaces;
+    uint32_t                numFaceVertices;
+    const RgVertex         *pFaceVertices;
+
+    // Compressed Quake PVS of the world: pVisOffsets[cluster] is a byte offset into
+    // pVisData, or -1 when that cluster has no row. Rows are pvsRowBytes long.
+    const uint8_t *pVisData;
+    uint32_t       visDataSize;
+    uint32_t       pvsRowBytes;
+    const int32_t *pVisOffsets;
+} RgWorldLightsUploadInfo;
+
+RGAPI RgResult RGCONV rgUploadWorldLights(
+    RgInstance                    rgInstance,
+    const RgWorldLightsUploadInfo *pUploadInfo);
+
+
 
 typedef enum RgSamplerAddressMode
 {
@@ -1324,16 +1389,6 @@ typedef struct RgDrawFrameLensFlareParams
     RgBlendFactor               lensFlareBlendFuncDst;
 } RgDrawFrameLensFlareParams;
 
-typedef struct RgDrawFrameLightmapParams
-{
-    // If true, use provided lightmaps instead of ray-traced lighting.
-    RgBool32                    enableLightmaps;
-    // Specifies layer index in RgLayeredMaterial that is interpreted as a lightmap.
-    // if enableLightmaps=false, layer with this index is ignored.
-    // Can be be 1 or 2.
-    uint32_t                    lightmapLayerIndex;
-} RgDrawFrameLightmapParams;
-
 typedef enum RgDrawFrameRayCullFlagBits
 {
     RG_DRAW_FRAME_RAY_CULL_WORLD_0_BIT  = 1,    // RG_GEOMETRY_VISIBILITY_TYPE_WORLD_0
@@ -1378,7 +1433,6 @@ typedef struct RgDrawFrameInfo
     const RgDrawFrameSkyParams                  *pSkyParams;
     const RgDrawFrameTexturesParams             *pTexturesParams;
     const RgDrawFrameLensFlareParams            *pLensFlareParams;
-    const RgDrawFrameLightmapParams             *pLightmapParams;
     const RgDrawFrameLevelFogParams             *pLevelFogParams;
     const RgDrawFrameDebugParams                *pDebugParams;
     RgDrawFramePostEffectsParams                postEffectParams;

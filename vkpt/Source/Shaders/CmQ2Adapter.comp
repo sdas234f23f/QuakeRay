@@ -94,7 +94,7 @@ void q2CompositeUnfiltered(const ivec2 pix)
 
     vec3 illuminated;
 
-    if (!isSkyPix(pix) && globalUniform.lightmapEnable == 0)
+    if (!isSkyPix(pix))
     {
         const vec2 mrFb = texelFetch(framebufMetallicRoughness_Sampler, pix, 0).xy;
         const vec3 normal = texelFetchNormal(pix);

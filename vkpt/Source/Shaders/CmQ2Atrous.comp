@@ -306,7 +306,7 @@ main()
 
         vec3 illuminated;
 
-        if(!isSkyPix(ipos) && globalUniform.lightmapEnable == 0)
+        if(!isSkyPix(ipos))
         {
             const vec2 mrFb = texelFetch(framebufMetallicRoughness_Sampler, ipos, 0).xy;
             const vec3 normal = texelFetchNormal(ipos);
