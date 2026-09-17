@@ -220,9 +220,9 @@ struct ShGlobalUniform
     float volumeViewProj_Prev[16];
     float volumeViewProjInv_Prev[16];
     float cellWorldSize;
-    uint32_t lightmapEnable;
-    uint32_t lightmapLayer;
     float renderWidth;
+    uint32_t __pad0;
+    uint32_t __pad1;
     float renderHeight;
     uint32_t frameId;
     float timeDelta;

@@ -36,7 +36,6 @@ extern cvar_t r_gpulightmapupdate;
 
 extern cvar_t rt_brush_metal;
 extern cvar_t rt_brush_rough;
-extern cvar_t rt_classic_render;
 extern cvar_t rt_enable_pvs;
 extern cvar_t rt_reflrefr_depth;
 extern cvar_t rt_teleport_portals;
@@ -46,6 +45,8 @@ extern cvar_t rt_light_styles;
 extern cvar_t rt_light_styles_reach;
 extern cvar_t rt_debugemissive;
 extern cvar_t rt_light_report_filter;
+extern cvar_t rt_worldcensus;
+extern cvar_t rt_worldlights_stats;
 
 cvar_t r_parallelmark = {"r_parallelmark", "1", CVAR_NONE};
 
@@ -477,10 +478,6 @@ void R_MarkVisSurfacesSIMD (qboolean *use_tasks)
 			surf = &cl.worldmodel->surfaces[i + j];
 			++brushpolys;
 			R_ChainSurface (surf, chain_world);
-			if (!r_gpulightmapupdate.value)
-				R_RenderDynamicLightmaps (surf);
-			else if (surf->lightmaptexturenum >= 0)
-				Atomic_StoreUInt32 (&lightmaps[surf->lightmaptexturenum].modified, true);
 			if (surf->texinfo->texture->warpimage)
 				Atomic_StoreUInt32 (&surf->texinfo->texture->update_warp, true);
 		}
@@ -689,10 +686,6 @@ void R_MarkVisSurfaces (qboolean *use_tasks)
 
                 ++brushpolys;
                 R_ChainSurface (surf, chain_world);
-                if (!r_gpulightmapupdate.value)
-                    R_RenderDynamicLightmaps (surf);
-                else if (surf->lightmaptexturenum >= 0)
-                    Atomic_StoreUInt32 (&lightmaps[surf->lightmaptexturenum].modified, true);
                 if (surf->texinfo->texture->warpimage)
                     Atomic_StoreUInt32 (&surf->texinfo->texture->update_warp, true);
             }
@@ -1029,14 +1022,9 @@ static void RT_FlushBatch (cb_context_t *cbx, const rt_uploadsurf_state_t *s, ui
 #endif
 
 	gltexture_t *diffuse_tex = r_lightmap_cheatsafe ? NULL : s->diffuse_tex;
-	gltexture_t *lightmap_tex = r_fullbright_cheatsafe ? NULL : s->lightmap_tex;
-	if (!CVAR_TO_BOOL (rt_classic_render))
-	{
-		lightmap_tex = NULL;
-	}
 
 	const qboolean is_teleport_portal =
-		s->is_teleport && !CVAR_TO_BOOL (rt_classic_render) && CVAR_TO_BOOL (rt_teleport_portals);
+		s->is_teleport && CVAR_TO_BOOL (rt_teleport_portals);
 
 	if (is_teleport_portal && CVAR_TO_INT32 (rt_reflrefr_depth) > 0)
 	{
@@ -1100,7 +1088,6 @@ static void RT_FlushBatch (cb_context_t *cbx, const rt_uploadsurf_state_t *s, ui
                 RG_GEOMETRY_UPLOAD_GENERATE_NORMALS_BIT,
 			.geomType = is_static_geom ? RG_GEOMETRY_TYPE_STATIC : RG_GEOMETRY_TYPE_DYNAMIC,
 			.passThroughType = 
-			    (s->is_teleport && CVAR_TO_BOOL (rt_classic_render)) ? RG_GEOMETRY_PASS_THROUGH_TYPE_OPAQUE :
 			    is_mirror ? RG_GEOMETRY_PASS_THROUGH_TYPE_MIRROR :
 			    s->is_water ? RG_GEOMETRY_PASS_THROUGH_TYPE_WATER_REFLECT_REFRACT :
 			    s->is_acid ? RG_GEOMETRY_PASS_THROUGH_TYPE_ACID_REFLECT_REFRACT :
@@ -1114,17 +1101,14 @@ static void RT_FlushBatch (cb_context_t *cbx, const rt_uploadsurf_state_t *s, ui
 			.layerColors =
 				{
 					RT_COLOR_WHITE,
-					RT_COLOR_WHITE,
 				},
 			.layerBlendingTypes =
 				{
 					RG_GEOMETRY_MATERIAL_BLEND_TYPE_OPAQUE,
-					lightmap_tex ? RG_GEOMETRY_MATERIAL_BLEND_TYPE_SHADE : 0,
 				},
 			.geomMaterial =
 				{
 					diffuse_tex ? diffuse_tex->rtmaterial : greytexture->rtmaterial,
-					lightmap_tex ? lightmap_tex->rtmaterial : RG_NO_MATERIAL,
 				},
 			.defaultRoughness = CVAR_TO_FLOAT (rt_brush_rough),
 			.defaultMetallicity = CVAR_TO_FLOAT (rt_brush_metal),
@@ -2046,8 +2030,6 @@ void R_DrawTextureChains (cb_context_t *cbx, qmodel_t *model, entity_t *ent, tex
 	else
 		entalpha = 1;
 
-	if (!r_gpulightmapupdate.value)
-		R_UploadLightmaps ();
 	R_DrawTextureChains_Multitexture (cbx, model, ent, chain, entalpha, 0, model->numtextures, entuniqueid);
 }
 
@@ -2070,8 +2052,6 @@ void R_DrawWorld (cb_context_t *cbx)
 		return;
 
 	R_BeginDebugUtilsLabel (cbx, "World");
-	if (!r_gpulightmapupdate.value)
-		R_UploadLightmaps ();
 	R_DrawTextureChains_Multitexture (cbx, cl.worldmodel, NULL, chain_world, 1, 0, cl.worldmodel->numtextures, ENT_UNIQUEID_WORLD);
 
 	R_EndDebugUtilsLabel (cbx);
@@ -2511,6 +2491,315 @@ void RT_UploadAllTeleports ()
 	}
 }
 
+
+/*
+=================
+RT_EmissiveLightTex
+
+The texture that makes a surface emissive, or NULL. Mirrors the gate inside
+RT_CollectWorldEmissiveLights. The out parameters are optional.
+=================
+*/
+static gltexture_t *RT_EmissiveLightTex (msurface_t *surf, RgMaterial *material, float *meanEmiss, vec3_t color)
+{
+	if (!surf || !surf->texinfo || (surf->flags & (SURF_DRAWSKY | SURF_NOTEXTURE)))
+		return NULL;
+
+	texture_t *t = surf->texinfo->texture;
+
+	if (!t || !t->gltexture)
+		return NULL;
+
+	gltexture_t *light_tex = RT_AnimatedLightTexAnyFrame (t);
+
+	RgMaterial mat;
+	float      mean;
+	vec3_t     col;
+
+	if (!light_tex || !RT_EmissiveLightParamsForTex (light_tex, &mat, &mean, col))
+		return NULL;
+
+	if (material)
+		*material = mat;
+	if (meanEmiss)
+		*meanEmiss = mean;
+	if (color)
+		VectorCopy (col, color);
+
+	return light_tex;
+}
+
+static qboolean RT_SurfaceOwnedBySubmodel (const qmodel_t *model, int surfindex)
+{
+	for (int j = 1; j < model->numsubmodels; j++)
+	{
+		const dmodel_t *sm = &model->submodels[j];
+
+		if (surfindex >= sm->firstface && surfindex < sm->firstface + sm->numfaces)
+			return true;
+	}
+
+	return false;
+}
+
+/*
+=================
+RT_WorldCensus
+
+Reports the BSP tables the renderer has to own once the light polygons (and later the
+cluster light lists) move into it, so the payload of rgUploadWorldLights can be sized
+before any of it is written. Read only: nothing is uploaded and nothing is built.
+Enable with rt_worldcensus 1 and reload the map.
+=================
+*/
+void RT_WorldCensus (void)
+{
+	qmodel_t *model = cl.worldmodel;
+
+	if (!CVAR_TO_BOOL (rt_worldcensus) || !model)
+		return;
+
+	// Mod_DecompressVis uses the same row size, so this is the number S4 has to match.
+	const int pvs_rowbytes = (model->numleafs + 31) / 8;
+
+	int leaves_pvs = 0, leaves_no_pvs = 0, pvs_last_byte = 0;
+
+	for (int i = 0; i < model->numleafs; i++)
+	{
+		const byte *row = model->leafs[i].compressed_vis;
+		if (!row)
+		{
+			leaves_no_pvs++;
+			continue;
+		}
+
+		leaves_pvs++;
+
+		const int end = (int)(row - model->visdata) + pvs_rowbytes;
+
+		if (end > pvs_last_byte)
+			pvs_last_byte = end;
+	}
+
+	int all_verts = 0, all_light_faces = 0, masked_light_faces = 0;
+	int inline_models = 0, inline_faces = 0, inline_verts = 0, inline_light_faces = 0;
+	int world_only_faces = 0, world_only_light_faces = 0;
+
+	for (int i = 0; i < model->numsurfaces; i++)
+	{
+		msurface_t  *surf      = &model->surfaces[i];
+		gltexture_t *light_tex = RT_EmissiveLightTex (surf, NULL, NULL, NULL);
+
+		all_verts += surf->numedges;
+
+		if (light_tex)
+		{
+			all_light_faces++;
+
+			if (light_tex->rtemissivetex && light_tex->rtemissivemean > 0.0f)
+				masked_light_faces++;
+		}
+
+		const qboolean owned_by_submodel = RT_SurfaceOwnedBySubmodel (model, i);
+
+		if (owned_by_submodel)
+		{
+			inline_faces++;
+			inline_verts += surf->numedges;
+
+			if (light_tex)
+				inline_light_faces++;
+		}
+		else
+		{
+			world_only_faces++;
+
+			if (light_tex)
+				world_only_light_faces++;
+		}
+	}
+
+	for (int i = 1; i < MAX_MODELS; i++)
+	{
+		const qmodel_t *m = cl.model_precache[i];
+
+		if (m && m->name[0] == '*' && m->type == mod_brush)
+			inline_models++;
+	}
+
+	Con_Printf ("world census: %s\n", model->name);
+	Con_Printf ("  bsp: %i leafs (clusters), %i submodels, %i surfaces, %i edges, %i vertexes\n",
+		model->numleafs, model->numsubmodels, model->numsurfaces, model->numedges, model->numvertexes);
+	Con_Printf ("  faces: %i stand in the world, %i belong to %i inline models; %i RgVertex for all of them\n",
+		world_only_faces, inline_faces, inline_models, all_verts);
+	Con_Printf ("  emissive faces: %i world + %i inline = %i total, %i of them carry a mask (%i inline vertexes)\n",
+		world_only_light_faces, inline_light_faces, all_light_faces, masked_light_faces, inline_verts);
+	Con_Printf ("  pvs: %i bytes per row (%i leafs), %i leafs have a row, %i have none; visdata spans %i bytes (%.1f MB)\n",
+		pvs_rowbytes, model->numleafs, leaves_pvs, leaves_no_pvs, pvs_last_byte, (float)pvs_last_byte / 1048576.0f);
+	Con_Printf ("  light budget: %i static polygons against a cap of %i in the engine, %i free\n",
+		all_light_faces, MAX_WORLDLIGHTS_COUNT, MAX_WORLDLIGHTS_COUNT - all_light_faces);
+}
+
+/*
+=================
+RT_UploadWorldLights
+
+Builds the world tables once per map load and hands them to the renderer: the clusters
+(BSP leafs) with their bounds, the compressed PVS and every emissive face with its
+corners. The face gate is the same one RT_WorldCensus counts and RT_CollectWorldEmissiveLights
+collects, so the renderer can grow light polygons out of these faces.
+Nothing in the renderer reads the tables yet, so the picture stays the same.
+=================
+*/
+typedef struct
+{
+	RgFloat3D        *cluster_mins;
+	RgFloat3D        *cluster_maxs;
+	int32_t          *vis_offsets;
+	RgWorldLightFace *faces;
+	RgVertex         *face_vertices;
+
+	int num_clusters;
+	int num_faces;
+	int num_face_vertices;
+	int vis_data_size;
+} rt_worldlights_t;
+
+static rt_worldlights_t rt_worldlights;
+
+static void RT_FreeWorldLights (void)
+{
+	Mem_Free (rt_worldlights.cluster_mins);
+	Mem_Free (rt_worldlights.cluster_maxs);
+	Mem_Free (rt_worldlights.vis_offsets);
+	Mem_Free (rt_worldlights.faces);
+	Mem_Free (rt_worldlights.face_vertices);
+
+	memset (&rt_worldlights, 0, sizeof (rt_worldlights));
+}
+
+void RT_UploadWorldLights (void)
+{
+	qmodel_t *model = cl.worldmodel;
+
+	RT_FreeWorldLights ();
+
+	if (!model || !model->leafs || !model->surfaces || model->numleafs < 2 || !vulkan_globals.instance)
+		return;
+
+	// Same row size as Mod_DecompressVis, which the renderer has to reproduce.
+	const int pvs_rowbytes = (model->numleafs + 31) / 8;
+
+	// First pass: how many faces and corners there are, so the tables can be sized once.
+	for (int i = 0; i < model->numsurfaces; i++)
+	{
+		msurface_t *surf = &model->surfaces[i];
+
+		if (!RT_EmissiveLightTex (surf, NULL, NULL, NULL) || !surf->polys || surf->numedges < 3)
+			continue;
+
+		rt_worldlights.num_faces++;
+		rt_worldlights.num_face_vertices += surf->numedges;
+	}
+
+	rt_worldlights.num_clusters = model->numleafs;
+	rt_worldlights.cluster_mins = (RgFloat3D *)Mem_Alloc (sizeof (RgFloat3D) * model->numleafs);
+	rt_worldlights.cluster_maxs = (RgFloat3D *)Mem_Alloc (sizeof (RgFloat3D) * model->numleafs);
+	rt_worldlights.vis_offsets  = (int32_t *)Mem_Alloc (sizeof (int32_t) * model->numleafs);
+
+	if (rt_worldlights.num_faces > 0)
+	{
+		rt_worldlights.faces = (RgWorldLightFace *)Mem_Alloc (sizeof (RgWorldLightFace) * rt_worldlights.num_faces);
+		rt_worldlights.face_vertices = (RgVertex *)Mem_Alloc (sizeof (RgVertex) * rt_worldlights.num_face_vertices);
+	}
+
+	for (int i = 0; i < model->numleafs; i++)
+	{
+		const mleaf_t *leaf = &model->leafs[i];
+
+		VectorCopy (leaf->minmaxs, rt_worldlights.cluster_mins[i].data);
+		VectorCopy (leaf->minmaxs + 3, rt_worldlights.cluster_maxs[i].data);
+
+		int32_t offset = -1;
+
+		if (leaf->compressed_vis)
+		{
+			offset = (int32_t)(leaf->compressed_vis - model->visdata);
+
+			if ((int)offset + pvs_rowbytes > rt_worldlights.vis_data_size)
+				rt_worldlights.vis_data_size = (int)offset + pvs_rowbytes;
+		}
+
+		rt_worldlights.vis_offsets[i] = offset;
+	}
+
+	// Second pass: the faces themselves, with their corners in world space.
+	int face_index = 0, vertex_index = 0;
+
+	for (int i = 0; i < model->numsurfaces; i++)
+	{
+		msurface_t *surf = &model->surfaces[i];
+		RgMaterial  material;
+		float       meanEmiss;
+		vec3_t      color;
+
+		if (!RT_EmissiveLightTex (surf, &material, &meanEmiss, color) || !surf->polys || surf->numedges < 3)
+			continue;
+
+		RgWorldLightFace *face = &rt_worldlights.faces[face_index++];
+		const qboolean    owned_by_submodel = RT_SurfaceOwnedBySubmodel (model, i);
+
+		face->uniqueID    = RT_GetBrushSurfUniqueId (ENT_UNIQUEID_WORLD, model, surf, 0);
+		face->firstVertex = (uint32_t)vertex_index;
+		face->numVertices = (uint32_t)surf->numedges;
+		face->cluster     = (uint32_t)RT_GetSurfaceCluster (model, surf);
+		// has_mask of RT_EmissiveLightParamsForTex: only a part of the texture glows.
+		face->flags     = (material != RG_NO_MATERIAL) ? RG_WORLD_LIGHT_FACE_MASKED_BIT : 0;
+		face->material  = material;
+		face->meanEmiss = meanEmiss;
+		// Inline models (doors, platforms) still move, so the host keeps their corners
+		// up to date and the renderer must not bake them as static.
+		face->isStatic = owned_by_submodel ? 0 : 1;
+
+		if (owned_by_submodel)
+			face->flags |= RG_WORLD_LIGHT_FACE_INLINE_MODEL_BIT;
+
+		VectorCopy (color, face->color.data);
+
+		for (int v = 0; v < surf->numedges; v++)
+		{
+			const float *srcv = surf->polys->verts[v];
+			RgVertex    *dstv = &rt_worldlights.face_vertices[vertex_index++];
+
+			dstv->position[0] = srcv[0];
+			dstv->position[1] = srcv[1];
+			dstv->position[2] = srcv[2];
+			dstv->texCoord[0] = srcv[3];
+			dstv->texCoord[1] = srcv[4];
+			dstv->packedColor = RT_PACKED_COLOR_WHITE;
+			dstv->cluster     = face->cluster;
+		}
+	}
+
+	RgWorldLightsUploadInfo info =
+	{
+		.flags           = CVAR_TO_BOOL (rt_worldlights_stats) ? RG_WORLD_LIGHTS_UPLOAD_PRINT_STATS_BIT : 0,
+		.numClusters     = (uint32_t)rt_worldlights.num_clusters,
+		.pClusterMins    = rt_worldlights.cluster_mins,
+		.pClusterMaxs    = rt_worldlights.cluster_maxs,
+		.numFaces        = (uint32_t)rt_worldlights.num_faces,
+		.pFaces          = rt_worldlights.faces,
+		.numFaceVertices = (uint32_t)rt_worldlights.num_face_vertices,
+		.pFaceVertices   = rt_worldlights.face_vertices,
+		.pVisData        = model->visdata,
+		.visDataSize     = (uint32_t)rt_worldlights.vis_data_size,
+		.pvsRowBytes     = (uint32_t)pvs_rowbytes,
+		.pVisOffsets     = rt_worldlights.vis_offsets,
+	};
+
+	RgResult r = rgUploadWorldLights (vulkan_globals.instance, &info);
+	RG_CHECK (r);
+}
 
 void RT_PrintEmissiveStats (void)
 {

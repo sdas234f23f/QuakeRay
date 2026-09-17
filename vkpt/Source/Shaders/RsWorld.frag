@@ -52,25 +52,22 @@ void main()
     vec4 albedoAlpha = getTextureSample( rasterizerFragInfo.textureIndex, vertTexCoord );
     outColor         = rasterizerFragInfo.color * vertColor * albedoAlpha;
 
-    if( globalUniform.lightmapEnable == 0 )
-    {
 #if ILLUMINATION_VOLUME
-        vec4 ndc = vec4( gl_FragCoord.xyz, 1.0 );
-        ndc.xy   /= vec2( globalUniform.renderWidth, globalUniform.renderHeight );
-        ndc.xy = ndc.xy * 2.0 - 1.0;
+    vec4 ndc = vec4( gl_FragCoord.xyz, 1.0 );
+    ndc.xy   /= vec2( globalUniform.renderWidth, globalUniform.renderHeight );
+    ndc.xy = ndc.xy * 2.0 - 1.0;
 
-        vec4 worldpos = globalUniform.invView * globalUniform.invProjection * ndc;
-        worldpos.xyz /= worldpos.w;
+    vec4 worldpos = globalUniform.invView * globalUniform.invProjection * ndc;
+    worldpos.xyz /= worldpos.w;
 
-        vec3 sp = volume_toSamplePosition_T(
-            worldpos.xyz, globalUniform.volumeViewProj, globalUniform.cameraPosition.xyz );
-        vec3 illum = textureLod( g_illuminationVolume_Sampler, sp, 0.0 ).rgb;
+    vec3 sp = volume_toSamplePosition_T(
+        worldpos.xyz, globalUniform.volumeViewProj, globalUniform.cameraPosition.xyz );
+    vec3 illum = textureLod( g_illuminationVolume_Sampler, sp, 0.0 ).rgb;
 
-        outColor.rgb *= illum;
+    outColor.rgb *= illum;
 #else
-        outColor.rgb *= ev100ToLuminousExposure( getCurrentEV100() );
+    outColor.rgb *= ev100ToLuminousExposure( getCurrentEV100() );
 #endif
-    }
 
     float emis = 0.0;
     if( rasterizerFragInfo.emissionTextureIndex != MATERIAL_NO_TEXTURE )

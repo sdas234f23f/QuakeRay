@@ -42,14 +42,6 @@ vec3 processAlbedo(uint geometryInstanceFlags, const vec2 texCoords[3], const uv
 
     for (int i = 0; i < MATERIAL_MAX_ALBEDO_LAYERS; i++)
     {
-        if (globalUniform.lightmapEnable == 0)
-        {
-            if (i == globalUniform.lightmapLayer)
-            {
-                continue;
-            }
-        }
-
         if (materials[i][MATERIAL_ALBEDO_ALPHA_INDEX] != MATERIAL_NO_TEXTURE)
         {
             const vec4 src = materialColors[i] *
@@ -438,15 +430,6 @@ ShHitInfo getHitInfoBounce(
 #endif // HITINFO_INL_INDIR
     {
         h.normal = h.normalGeom;
-    }
-
-    if (globalUniform.lightmapEnable != 0)
-    {
-        h.albedo *= (
-            unpackLittleEndianUintColor(tr.vertexColors[0]).rgb * baryCoords[0] +
-            unpackLittleEndianUintColor(tr.vertexColors[1]).rgb * baryCoords[1] +
-            unpackLittleEndianUintColor(tr.vertexColors[2]).rgb * baryCoords[2] 
-        );
     }
 
     h.instCustomIndex = instCustomIndex;

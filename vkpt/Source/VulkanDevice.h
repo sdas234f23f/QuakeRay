@@ -58,6 +58,7 @@
 #include "PortalList.h"
 #include "Volumetric.h"
 #include "ShadowMap.h"
+#include "WorldLights.h"
 #include "GodRays.h"
 #include "RayStats.h"
 #include "PassTimings.h"
@@ -98,6 +99,8 @@ public:
     void UploadTexturedAreaLight(const RgTexturedAreaLightUploadInfo *pLightInfo);
 
     void UploadClusterLightLists(const RgClusterLightListsUploadInfo *pInfo);
+
+    void UploadWorldLights(const RgWorldLightsUploadInfo *pInfo);
 
     // Q2RTX-style fog volumes (used by the new Q2RTX core path)
     void SetFogVolumes(uint32_t count, const RgFogVolume *pVolumes);
@@ -208,6 +211,9 @@ private:
     std::shared_ptr<BlueNoise>              blueNoise;
     std::shared_ptr<TextureManager>         textureManager;
     std::shared_ptr<CubemapManager>         cubemapManager;
+
+    // World tables of the current map (clusters, PVS, emissive faces), built by the host.
+    std::shared_ptr<WorldLights>            worldLights;
 
     LibraryConfig::Config                   libconfig;
     VkDebugUtilsMessengerEXT                debugMessenger;

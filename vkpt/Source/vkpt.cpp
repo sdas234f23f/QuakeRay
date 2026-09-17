@@ -231,6 +231,11 @@ RgResult rgUploadClusterLightLists(RgInstance rgInstance, const RgClusterLightLi
     return Call(rgInstance, &VulkanDevice::UploadClusterLightLists, pUploadInfo);
 }
 
+RgResult rgUploadWorldLights(RgInstance rgInstance, const RgWorldLightsUploadInfo *pUploadInfo)
+{
+    return Call(rgInstance, &VulkanDevice::UploadWorldLights, pUploadInfo);
+}
+
 RgResult rgCreateMaterial(RgInstance rgInstance, const RgMaterialCreateInfo *pCreateInfo, RgMaterial *pResult)
 {
     *pResult = RG_NO_MATERIAL;

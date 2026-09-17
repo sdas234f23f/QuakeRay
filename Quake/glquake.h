@@ -381,11 +381,12 @@ void RT_BrushClusterCacheReset (void);
 void RT_ClusterLightReport_f (void);
 void RT_LightReport_f (void);
 void RT_PrintEmissiveStats (void);
+void RT_WorldCensus (void);
+void RT_UploadWorldLights (void);
+int RT_GetSurfaceCluster (const qmodel_t *m, const msurface_t *s);
 
 void GL_SubdivideSurface (msurface_t *fa);
 void R_BuildLightMap (msurface_t *surf, byte *dest, int stride);
-void R_RenderDynamicLightmaps (msurface_t *fa);
-void R_UploadLightmaps (void);
 
 void R_DrawWorld_ShowTris (cb_context_t *cbx);
 void R_DrawBrushModel_ShowTris (cb_context_t *cbx, entity_t *e);

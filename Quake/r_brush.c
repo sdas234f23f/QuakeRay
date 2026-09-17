@@ -51,13 +51,11 @@ unsigned blocklights[LMBLOCK_WIDTH * LMBLOCK_HEIGHT * 3 + 1]; // johnfitz -- was
 extern cvar_t r_showtris;
 extern cvar_t r_simd;
 
-extern cvar_t rt_classic_render;
-
 RgVertex *rtallbrushvertices;
 
 static int *rt_surfcluster;
 
-static int RT_GetSurfaceCluster (const qmodel_t *m, const msurface_t *s)
+int RT_GetSurfaceCluster (const qmodel_t *m, const msurface_t *s)
 {
 	if (m == cl.worldmodel && rt_surfcluster)
 	{
@@ -348,10 +346,6 @@ void R_DrawBrushModel (cb_context_t *cbx, entity_t *e, int chain, int entuniquei
 		}
 
         R_ChainSurface (psurf, chain);
-        if (!r_gpulightmapupdate.value)
-            R_RenderDynamicLightmaps (psurf);
-        else if (psurf->lightmaptexturenum >= 0)
-            Atomic_StoreUInt32(&lightmaps[psurf->lightmaptexturenum].modified, true);
         Atomic_IncrementUInt32 (&rs_brushpolys);
     }
 
@@ -422,66 +416,6 @@ void R_DrawBrushModel_ShowTris (cb_context_t *cbx, entity_t *e)
 
 =============================================================
 */
-
-/*
-================
-R_RenderDynamicLightmaps
-called during rendering
-================
-*/
-void R_RenderDynamicLightmaps (msurface_t *fa)
-{
-	if (!CVAR_TO_BOOL (rt_classic_render))
-	{
-		return;
-	}
-
-	byte     *base;
-	int       maps;
-	glRect_t *theRect;
-	int       smax, tmax;
-
-	if (fa->flags & SURF_DRAWTILED) // johnfitz -- not a lightmapped surface
-		return;
-
-	// check for lightmap modification
-	for (maps = 0; maps < MAXLIGHTMAPS && fa->styles[maps] != 255; maps++)
-		if (d_lightstylevalue[fa->styles[maps]] != fa->cached_light[maps])
-			goto dynamic;
-
-	if ((fa->dlightframe >= r_framecount - 1 && fa->dlightframe <= r_framecount + 1) // dynamic this frame
-	    || fa->cached_dlight)           // dynamic previously
-	{
-	dynamic:
-		if (r_dynamic.value)
-		{
-			struct lightmap_s *lm = &lightmaps[fa->lightmaptexturenum];
-			Atomic_StoreUInt32(&lm->modified, true);
-			theRect = &lm->rectchange;
-			if (fa->light_t < theRect->t)
-			{
-				if (theRect->h)
-					theRect->h += theRect->t - fa->light_t;
-				theRect->t = fa->light_t;
-			}
-			if (fa->light_s < theRect->l)
-			{
-				if (theRect->w)
-					theRect->w += theRect->l - fa->light_s;
-				theRect->l = fa->light_s;
-			}
-			smax = (fa->extents[0] >> 4) + 1;
-			tmax = (fa->extents[1] >> 4) + 1;
-			if ((theRect->w + theRect->l) < (fa->light_s + smax))
-				theRect->w = (fa->light_s - theRect->l) + smax;
-			if ((theRect->h + theRect->t) < (fa->light_t + tmax))
-				theRect->h = (fa->light_t - theRect->t) + tmax;
-			base = lm->data;
-			base += fa->light_t * LMBLOCK_WIDTH * LIGHTMAP_BYTES + fa->light_s * LIGHTMAP_BYTES;
-			R_BuildLightMap (fa, base, LMBLOCK_WIDTH * LIGHTMAP_BYTES);
-		}
-	}
-}
 
 /*
 ========================
@@ -1189,51 +1123,6 @@ void R_BuildLightMap (msurface_t *surf, byte *dest, int stride)
 }
 
 /*
-===============
-R_UploadLightmap -- johnfitz -- uploads the modified lightmap to opengl if necessary
-
-assumes lightmap texture is already bound
-===============
-*/
-static void R_UploadLightmap (int lmap)
-{
-	struct lightmap_s *lm = &lightmaps[lmap];
-	if (!Atomic_LoadUInt32(&lm->modified))
-		return;
-
-	Atomic_StoreUInt32(&lm->modified, false);
-
-	if (lm->texture->rtmaterial == RG_NO_MATERIAL)
-	{
-		assert (0);
-		return;
-	}
-
-	// const int staging_size = LMBLOCK_WIDTH * lm->rectchange.h * 4;
-	// byte *data = lm->data + lm->rectchange.t * LMBLOCK_WIDTH * LIGHTMAP_BYTES;
-
-	RgMaterialUpdateInfo info = 
-	{
-		.target = lm->texture->rtmaterial,
-		.textures =
-			{
-				.pDataAlbedoAlpha = lm->data,
-			},
-	};
-
-	RgResult r = rgUpdateMaterialContents (vulkan_globals.instance, &info);
-	RG_CHECK (r);
-
-	lm->rectchange.l = LMBLOCK_WIDTH;
-	lm->rectchange.t = LMBLOCK_HEIGHT;
-	lm->rectchange.h = 0;
-	lm->rectchange.w = 0;
-
-	Atomic_IncrementUInt32 (&rs_dynamiclightmaps);
-}
-
-
-/*
 =============
 R_UpdateLightmaps
 =============
@@ -1244,23 +1133,5 @@ void R_UpdateLightmaps (void *unused)
 	{
 		assert (false);
 		Con_Warning ("Updating lightmaps using GPU is not implemented");
-	}
-}
-
-void R_UploadLightmaps (void)
-{
-	if (!CVAR_TO_BOOL(rt_classic_render))
-	{
-		return;
-	}
-
-    int lmap;
-
-	for (lmap = 0; lmap < lightmap_count; lmap++)
-	{
-		if (!Atomic_LoadUInt32(&lightmaps[lmap].modified))
-			continue;
-
-		R_UploadLightmap (lmap);
 	}
 }

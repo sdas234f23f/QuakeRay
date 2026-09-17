@@ -101,7 +101,6 @@ task_handle_t prev_end_rendering_task = INVALID_TASK_HANDLE;
 // RT
 #define CVAR_DEF_LIST( CVAR_DEF_T ) \
 	\
-	CVAR_DEF_T (rt_classic_render, "0") \
 	CVAR_DEF_T (rt_enable_pvs, "0") \
 	CVAR_DEF_T (rt_shadowrays, "2") \
 	CVAR_DEF_T (rt_indir2bounces, "0") \
@@ -252,6 +251,8 @@ task_handle_t prev_end_rendering_task = INVALID_TASK_HANDLE;
 	CVAR_DEF_T (rt_stats, "0") \
 	CVAR_DEF_T (rt_pass_stats, "0") \
 	CVAR_DEF_T (rt_prof, "0") \
+	CVAR_DEF_T (rt_worldcensus, "0") \
+	CVAR_DEF_T (rt_worldlights_stats, "0") \
 	\
 	CVAR_DEF_T (_rt_firsttime, "1")
 
@@ -748,14 +749,6 @@ static void RT_ReloadShaders (void)
 	request_shaders_reload = true;
 }
 
-static void RT_SwitchRenderer (void)
-{
-	int newval = !CVAR_TO_BOOL (rt_classic_render);
-	Cvar_SetValueQuick (&rt_classic_render, newval);
-
-	R_NewMap ();
-}
-
 static vec3_t rt_water_color = {171 / 255.0f, 193 / 255.0f, 210 / 255.0f};
 static void RT_WaterColor(void)
 {
@@ -1038,7 +1031,6 @@ static void GL_InitInstance (void)
 	RT_MAT_Init ();
 
 	Cmd_AddCommand ("rt_pfnreloadshaders", RT_ReloadShaders);
-	Cmd_AddCommand ("rt_pfnswitch", RT_SwitchRenderer);
 	Cmd_AddCommand ("rt_water_color", RT_WaterColor);
 	Cmd_AddCommand ("rt_water_acidcolor", RT_AcidColor);
 	Cmd_AddCommand ("rt_light_report", RT_LightReport_f);
@@ -1455,7 +1447,7 @@ static void GL_EndRenderingTask (end_rendering_parms_t *parms)
 	};
 
 	RgDrawFrameBloomParams bloom_params = {
-		.bloomIntensity = (CVAR_TO_BOOL (rt_classic_render) || !CVAR_TO_BOOL (rt_bloom)) ? 0 : CVAR_TO_FLOAT (rt_bloom_intensity),
+		.bloomIntensity = !CVAR_TO_BOOL (rt_bloom) ? 0 : CVAR_TO_FLOAT (rt_bloom_intensity),
 		.inputThreshold = 0.0f,
 		.bloomEmissionMultiplier = CVAR_TO_FLOAT (rt_bloom_emis_mult),
 	};
@@ -1575,7 +1567,7 @@ static void GL_EndRenderingTask (end_rendering_parms_t *parms)
 
 	RgDrawFrameVolumetricParams volumetric_params = {
 		.enable = !materials_only && CVAR_TO_UINT32 (rt_volume_type) != 0,
-		.useSimpleDepthBased = CVAR_TO_UINT32 (rt_volume_type) == 1 || CVAR_TO_BOOL (rt_classic_render),
+		.useSimpleDepthBased = CVAR_TO_UINT32 (rt_volume_type) == 1,
 		.volumetricFar = CVAR_TO_FLOAT (rt_volume_far),
 		.ambientColor = RT_VEC3 (volume_ambient_color),
 		.scaterring = materials_only ? 0.0f : CVAR_TO_FLOAT (rt_volume_scatter),
@@ -1602,11 +1594,6 @@ static void GL_EndRenderingTask (end_rendering_parms_t *parms)
 	RgDrawFrameLensFlareParams lens_flare_params = {
 		.lensFlareBlendFuncSrc = RG_BLEND_FACTOR_SRC_ALPHA,
 		.lensFlareBlendFuncDst = RG_BLEND_FACTOR_ONE,
-	};
-
-	RgDrawFrameLightmapParams lightmap_params = {
-		.enableLightmaps = CVAR_TO_BOOL (rt_classic_render),
-		.lightmapLayerIndex = 1,
 	};
 
 	// Classic level fog: the worldspawn "fog" key and the `fog` console
@@ -1747,7 +1734,6 @@ static void GL_EndRenderingTask (end_rendering_parms_t *parms)
 		.pSkyParams = &sky_params,
 		.pTexturesParams = &texture_params,
 		.pLensFlareParams = &lens_flare_params,
-		.pLightmapParams = &lightmap_params,
 		.pLevelFogParams = &level_fog_params,
 		.postEffectParams =
 			{
@@ -1955,6 +1941,19 @@ static void RT_LightStylesChanged_f (cvar_t *var)
 	Atomic_StoreUInt32 (&rt_require_static_submit, true);
 }
 
+// Both diagnostics run on the current map, so they do not wait for a map reload.
+static void RT_WorldCensusChanged_f (cvar_t *var)
+{
+	(void)var;
+	RT_WorldCensus ();
+}
+
+static void RT_WorldLightsStatsChanged_f (cvar_t *var)
+{
+	(void)var;
+	RT_UploadWorldLights ();
+}
+
 static RgFogVolume rt_fog_volumes[RG_MAX_FOG_VOLUMES];
 
 static void RT_Fog_ParsePoint (const char *s, float *out)
@@ -2144,6 +2143,8 @@ void VID_Init (void)
 	Cvar_SetCallback (&rt_sun_preset, RT_SunPreset_f);
 	Cvar_SetCallback (&rt_light_styles, RT_LightStylesChanged_f);
 	Cvar_SetCallback (&rt_light_styles_reach, RT_LightStylesChanged_f);
+	Cvar_SetCallback (&rt_worldcensus, RT_WorldCensusChanged_f);
+	Cvar_SetCallback (&rt_worldlights_stats, RT_WorldLightsStatsChanged_f);
 
 	Cmd_AddCommand ("vid_unlock", VID_Unlock);     // johnfitz
 	Cmd_AddCommand ("vid_restart", VID_Restart_f); // johnfitz
@@ -2455,7 +2456,6 @@ enum
 	VID_OPT_APPLY,
 
 
-	VID_OPT_RENDERER,
 	VID_OPT_BLOOM,
 	VID_OPT_EXPOSURE_BIAS,
 	VID_OPT_CONTRAST,
@@ -2957,9 +2957,6 @@ static void VID_MenuKey (int key)
 			VID_Menu_ChooseNextMaxFPS (-1);
 			Cvar_SetValueQuick (&host_maxfps, menu_settings.host_maxfps);
 			break;
-		case VID_OPT_RENDERER:
-			RT_SwitchRenderer ();
-			break;
 		case VID_OPT_BLOOM:
 			Cvar_SetValueQuick (&rt_bloom, !CVAR_TO_BOOL (rt_bloom));
 			break;
@@ -3046,9 +3043,6 @@ static void VID_MenuKey (int key)
 		case VID_OPT_MAX_FPS:
 			VID_Menu_ChooseNextMaxFPS (1);
 			Cvar_SetValueQuick (&host_maxfps, menu_settings.host_maxfps);
-			break;
-		case VID_OPT_RENDERER:
-			RT_SwitchRenderer ();
 			break;
 		case VID_OPT_BLOOM:
 			Cvar_SetValueQuick (&rt_bloom, !CVAR_TO_BOOL (rt_bloom));
@@ -3138,9 +3132,6 @@ static void VID_MenuKey (int key)
 		case VID_OPT_APPLY:
 			Cbuf_AddText ("vid_restart\n");
 			break;
-		case VID_OPT_RENDERER:
-			RT_SwitchRenderer ();
-			break;
 		case VID_OPT_BLOOM:
 			Cvar_SetValueQuick (&rt_bloom, !CVAR_TO_BOOL (rt_bloom));
 			break;
@@ -3223,12 +3214,6 @@ static void VID_MenuDraw (cb_context_t *cbx)
 			break;
 
 
-		case VID_OPT_RENDERER:
-			y += 8; // separate
-
-			M_Print (cbx, 16, y, "          Renderer");
-			M_Print (cbx, 184, y, CVAR_TO_BOOL (rt_classic_render) ? "Classic" : "Ray Traced");
-			break;
 		case VID_OPT_BLOOM:
 			M_Print (cbx, 16, y, "             Bloom");
 			M_DrawCheckbox (cbx, 184, y, CVAR_TO_BOOL (rt_bloom));

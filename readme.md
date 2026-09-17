@@ -62,9 +62,8 @@ QuakeRay is based on the [vkQuake](https://github.com/Novum/vkQuake) — a port 
 * Audio: SDL2 output, CD music, and MP3/Ogg Vorbis/FLAC/Opus/WAV/XMP/UMX music files
 * Input: keyboard, mouse and SDL2 game controllers (with `gamecontrollerdb.txt` loaded from the base dir)
 * Windowed and fullscreen video modes with resolution and display selection
-* The classic (non-RT) raster renderer stays available as a fallback (`rt_classic_render 1`)
 
-The classic (non-RT) engine lighting is fully disabled in the ray-traced renderer — the ray tracer produces all the lighting (Q2RTX model).
+The ray tracer is the only renderer — there is no classic (non-RT) fallback and no renderer switch. The engine's own lighting (lightmaps and dynamic-light marking) no longer runs: the ray tracer produces all the lighting, the Q2RTX way.
 
 ## Changelog
 
@@ -125,7 +124,6 @@ Steps:
 
 Everything is exposed as console variables; run `cvarlist rt_` in the console for the full list. The ones that change the look most are:
 
-* `rt_classic_render 0` — `1` falls back to the classic (non-ray-traced) raster renderer
 * `rt_brightness 1.0` — overall brightness of the ray-traced image
 * `rt_exposure_bias -2.8` — exposure in EV, a power-of-two factor applied inside the tone curve (Q2RTX's exposure bias). The ray-traced image is rendered bright and pulled down here, which is what makes the noise in dark areas fade out instead of turning into visible grain
 * `rt_contrast 0.6` — mixes the fixed tone curve with the auto-exposure adapted one (`0` keeps the fixed curve, `1` is the adapted curve alone)

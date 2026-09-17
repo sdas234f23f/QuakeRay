@@ -30,7 +30,6 @@ extern cvar_t scr_fov;
 
 extern cvar_t rt_model_rough, rt_model_metal, rt_enable_pvs;
 extern cvar_t rt_viewm_fovscale, rt_viewm_wide;
-extern cvar_t rt_classic_render;
 extern cvar_t rt_dlight_intensity, rt_dlight_radius;
 
 // up to 16 color translated skins
@@ -114,9 +113,7 @@ GetPoseVertices(const qmodel_t* m, const aliashdr_t* hdr, int pose1, int pose2, 
     const RgVertex* v_pose2 = GetModelVerticesForPose(m, hdr, pose2);
 
     // we don't care about per-vertex colors with RT
-    const qboolean need_vertex_lighting = CVAR_TO_BOOL(rt_classic_render);
-
-    if (blend < FLT_EPSILON && !need_vertex_lighting && cluster <= 0)
+    if (blend < FLT_EPSILON && cluster <= 0)
     {
         return v_pose1;
     }
@@ -143,17 +140,6 @@ GetPoseVertices(const qmodel_t* m, const aliashdr_t* hdr, int pose1, int pose2, 
 
         if (cluster > 0)
             dst->cluster = (uint32_t)cluster;
-
-        if (need_vertex_lighting)
-        {
-            float dot1 = r_avertexnormal_dot(src1->normal, shadevector);
-            float dot2 = r_avertexnormal_dot(src2->normal, shadevector);
-
-            vec3_t vertcolor;
-            VectorScale(lightcolor, Lerp(dot1, dot2, blend), vertcolor);
-
-            dst->packedColor = RT_PackColorToUint32_FromFloat01(vertcolor[0], vertcolor[1], vertcolor[2], 1.0f);
-        }
     }
 
     return tempstorage;

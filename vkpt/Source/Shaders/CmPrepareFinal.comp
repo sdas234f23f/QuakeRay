@@ -114,51 +114,44 @@ vec3 blendEmissionLayer( const vec3 hdr, const vec3 layer, const uint mode )
 // Applies the noise-aware tone curve + auto-exposure + knee to the HDR image.
 vec3 finalizeColor( const vec3 hdr, const vec3 screenEmis )
 {
-    if( globalUniform.lightmapEnable == 0 )
-    {
-        const float strength = clamp( globalUniform.emissionBlendStrength, 0.0, 1.0 );
-        const vec3  layer    = screenEmis * globalUniform.emissionMaxScreenColor * strength;
+    const float strength = clamp( globalUniform.emissionBlendStrength, 0.0, 1.0 );
+    const vec3  layer    = screenEmis * globalUniform.emissionMaxScreenColor * strength;
 
-        vec3 input_color = blendEmissionLayer( hdr, layer, globalUniform.emissionBlendMode );
+    vec3 input_color = blendEmissionLayer( hdr, layer, globalUniform.emissionBlendMode );
 
-        const float lum = max( getLuminance( input_color ), exp2( min_log_luminance ) );
+    const float lum = max( getLuminance( input_color ), exp2( min_log_luminance ) );
 
-        // Interpolate the tone curve; binning must match CmLuminanceHistogram.comp.
-        const float biased_log_luminance = log2( lum ) * log_luminance_scale + log_luminance_bias;
-        const float histogram_bin = clamp( biased_log_luminance * HISTOGRAM_BINS, 0.0, float( HISTOGRAM_BINS - 1 ) );
-        const uint  left_bin       = uint( histogram_bin );
-        const uint  right_bin      = min( left_bin + 1, uint( HISTOGRAM_BINS - 1 ) );
-        const float right_weight_F = fract( histogram_bin );
-        const float left_weight_F  = 1.0 - right_weight_F;
+    // Interpolate the tone curve; binning must match CmLuminanceHistogram.comp.
+    const float biased_log_luminance = log2( lum ) * log_luminance_scale + log_luminance_bias;
+    const float histogram_bin = clamp( biased_log_luminance * HISTOGRAM_BINS, 0.0, float( HISTOGRAM_BINS - 1 ) );
+    const uint  left_bin       = uint( histogram_bin );
+    const uint  right_bin      = min( left_bin + 1, uint( HISTOGRAM_BINS - 1 ) );
+    const float right_weight_F = fract( histogram_bin );
+    const float left_weight_F  = 1.0 - right_weight_F;
 
-        const float out_log_luminance = left_weight_F * tonemapping.curve[left_bin] +
-                                        right_weight_F * tonemapping.curve[right_bin];
-        const float out_luminance = exp2( out_log_luminance + tonemapping.tmExposureBias );
+    const float out_log_luminance = left_weight_F * tonemapping.curve[left_bin] +
+                                    right_weight_F * tonemapping.curve[right_bin];
+    const float out_luminance = exp2( out_log_luminance + tonemapping.tmExposureBias );
 
-        vec3 mapped_color = input_color * out_luminance / lum;
+    vec3 mapped_color = input_color * out_luminance / lum;
 
-        // Knee: bring values that are still above 1 back into range.
-        const vec3 step_value = step( tonemapping.tmKneeStart, mapped_color );
-        mapped_color = mix( mapped_color,
-                            ( tonemapping.kneeW * mapped_color + tonemapping.kneeA ) / max( vec3( 1e-6 ), mapped_color + tonemapping.kneeB ),
-                            step_value );
+    // Knee: bring values that are still above 1 back into range.
+    const vec3 step_value = step( tonemapping.tmKneeStart, mapped_color );
+    mapped_color = mix( mapped_color,
+                        ( tonemapping.kneeW * mapped_color + tonemapping.kneeA ) / max( vec3( 1e-6 ), mapped_color + tonemapping.kneeB ),
+                        step_value );
 
-        // Auto-exposure Reinhard blend.
-        const float adapted_luminance    = tonemapping.adaptedLuminance;
-        const float scaled_luminance     = exp2( tonemapping.tmExposureBias - 2.0 ) * lum / adapted_luminance;
-        const float white_point          = tonemapping.tmWhitePoint;
-        const float white_point_squared  = white_point * white_point;
-        const float mapped_luminance     = ( scaled_luminance * ( 1.0 + scaled_luminance / white_point_squared ) ) / ( 1.0 + scaled_luminance );
-        const vec3  ae_mapped_color      = input_color * mapped_luminance / lum;
+    // Auto-exposure Reinhard blend.
+    const float adapted_luminance    = tonemapping.adaptedLuminance;
+    const float scaled_luminance     = exp2( tonemapping.tmExposureBias - 2.0 ) * lum / adapted_luminance;
+    const float white_point          = tonemapping.tmWhitePoint;
+    const float white_point_squared  = white_point * white_point;
+    const float mapped_luminance     = ( scaled_luminance * ( 1.0 + scaled_luminance / white_point_squared ) ) / ( 1.0 + scaled_luminance );
+    const vec3  ae_mapped_color      = input_color * mapped_luminance / lum;
 
-        mapped_color = mix( mapped_color, ae_mapped_color, tonemapping.tmReinhard );
+    mapped_color = mix( mapped_color, ae_mapped_color, tonemapping.tmReinhard );
 
-        return clamp( mapped_color, vec3( 0 ), vec3( 1 ) );
-    }
-    else
-    {
-        return uncharted2Tonemap(hdr, 1.0);
-    }
+    return clamp( mapped_color, vec3( 0 ), vec3( 1 ) );
 }
 
 

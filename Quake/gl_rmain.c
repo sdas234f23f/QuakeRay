@@ -113,7 +113,6 @@ extern cvar_t rt_dlight_radius;
 extern cvar_t rt_flashlight;
 extern cvar_t rt_sun;
 extern cvar_t rt_sun_pitch;
-extern cvar_t rt_classic_render;
 extern cvar_t rt_sun_yaw;
 extern cvar_t rt_materials_only;
 
@@ -373,7 +372,7 @@ static void RT_UploadAllDlights ()
 			continue;
 		}
 
-		if (!CVAR_TO_BOOL (rt_classic_render) && l->key > 0 && l->key < cl.num_entities)
+		if (l->key > 0 && l->key < cl.num_entities)
 		{
 			entity_t *src = &cl.entities[l->key];
 			if (src->model && (src->model->flags & MF_RT_LUMA))
@@ -468,8 +467,6 @@ void R_SetupViewBeforeMark (void *unused)
 {
 	double prof_start = RT_Prof_Begin ();
 
-	if (CVAR_TO_BOOL (rt_classic_render) && !r_gpulightmapupdate.value)
-		R_PushDlights ();
 	R_AnimateLight ();
 
 	// build the transformation matrix for the given view angles
