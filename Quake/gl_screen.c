@@ -673,7 +673,8 @@ void SCR_DrawRTProf (cb_context_t *cbx)
 		const char *label;
 	} right[] = {
 		{ RT_PROF_ELIGHTS, "elights" }, { RT_PROF_WMODEL_LIGHTS, "wmodel lights" }, { RT_PROF_TELEPORTS, "teleports" },
-		{ RT_PROF_CLUSTERS, "clusters" }, { RT_PROF_CLUSTERS1, "clust pvs" }, { RT_PROF_CLUSTERS2, "clust rest" },
+		{ RT_PROF_CLUSTERS, "clusters" }, { RT_PROF_CLUSTERS1, "clust pvs" }, { RT_PROF_CLUSTERS2, "clust topup" },
+		{ RT_PROF_CLUSTERS_FILL, "clust fill" }, { RT_PROF_CLUSTERS_UPLOAD, "clust upload" },
 	};
 
 	const rt_prof_report_t *rep = &rt_prof_report;
@@ -730,6 +731,15 @@ void SCR_DrawRTProf (cb_context_t *cbx)
 		ms10 = (unsigned)(rep->ms[right[i].slot] * 10.0f + 0.5f);
 		sprintf (st, "%-12s %4u.%u ms", right[i].label, ms10 / 10, ms10 % 10);
 		SCR_DrawRTStatsString (cbx, x + 360, y + i * pass_step, st, pass_scale, &color_detail, &color_shadow);
+	}
+
+	// Slots hold the longest sample of the window, so the passes keep showing their rebuild cost
+	// even when almost every frame reused the cache. The ratio below is what tells the two apart.
+	const int cacheFrames = rep->clusterCacheHits + rep->clusterCacheMisses;
+	if (cacheFrames > 0)
+	{
+		sprintf (st, "clust cache  %3i%% of %i", (100 * rep->clusterCacheHits) / cacheFrames, cacheFrames);
+		SCR_DrawRTStatsString (cbx, x + 360, y + (int)countof (right) * pass_step, st, pass_scale, &color_detail, &color_shadow);
 	}
 }
 

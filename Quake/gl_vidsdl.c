@@ -341,6 +341,8 @@ void RT_Prof_Update (void)
 		rt_prof_report.valid = false;
 		memset (rt_prof_ms, 0, sizeof (rt_prof_ms));
 		rt_prof_frames = 0;
+		rt_cluster_cache_hits = 0;
+		rt_cluster_cache_misses = 0;
 		return;
 	}
 
@@ -353,6 +355,8 @@ void RT_Prof_Update (void)
 		rt_prof_report.valid = false;
 		rt_prof_window_start = now;
 		rt_prof_frames = 0;
+		rt_cluster_cache_hits = 0;
+		rt_cluster_cache_misses = 0;
 		return;
 	}
 
@@ -374,8 +378,12 @@ void RT_Prof_Update (void)
 	for (int i = 0; i < RT_PROF_COUNT; ++i)
 		rt_prof_report.ms[i] = (float)rt_prof_ms[i];
 
+	rt_prof_report.clusterCacheHits = rt_cluster_cache_hits;
+	rt_prof_report.clusterCacheMisses = rt_cluster_cache_misses;
 	rt_prof_report.valid = true;
 
+	rt_cluster_cache_hits = 0;
+	rt_cluster_cache_misses = 0;
 	memset (rt_prof_ms, 0, sizeof (rt_prof_ms));
 	rt_prof_frames = 0;
 }
