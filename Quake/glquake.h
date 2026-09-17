@@ -371,6 +371,11 @@ qboolean RT_AllowFakeLights (void);
 void RT_ClusterLightListsReset (void);
 void RT_ClusterLightAdd (uint64_t uniqueID, const vec3_t origin);
 void RT_ClusterLightListsUpload (void);
+
+// Frames that reused the cached cluster light lists and frames that rebuilt them. The profiler
+// reads and clears them once per reporting window, so the panel can show a hit rate.
+extern int rt_cluster_cache_hits;
+extern int rt_cluster_cache_misses;
 int RT_ResolvePointCluster (const vec3_t p);
 void RT_BrushClusterCacheReset (void);
 void RT_ClusterLightReport_f (void);
@@ -561,6 +566,8 @@ enum
 	RT_PROF_CLUSTERS,
 	RT_PROF_CLUSTERS1,
 	RT_PROF_CLUSTERS2,
+	RT_PROF_CLUSTERS_FILL,
+	RT_PROF_CLUSTERS_UPLOAD,
 	RT_PROF_DRAWFRAME,
 	RT_PROF_WAIT,
 	RT_PROF_FRAME,
@@ -576,6 +583,8 @@ typedef struct
 	float    frameMs; // longest whole-frame time in the window
 	float    waitMs;  // longest wait for the task graph
 	float    ms[RT_PROF_COUNT];
+	int      clusterCacheHits;   // frames of the window that reused the cached cluster light lists
+	int      clusterCacheMisses; // frames that had to rebuild them
 } rt_prof_report_t;
 
 extern cvar_t           rt_prof;
