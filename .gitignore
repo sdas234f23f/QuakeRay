@@ -10,6 +10,9 @@ build-cmake/
 history.txt
 vkpt.txt
 
+# third-party reference checkouts (nested clones, kept out of the tree)
+references/
+
 # local build/analysis leftovers (untracked by design)
 crash.log
 *.ilk
