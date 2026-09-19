@@ -536,6 +536,10 @@ void Q2Denoiser::Denoise(
                         FI::FB_IMAGE_INDEX_Q2_ATROUS_PING_H_F,
                         FI::FB_IMAGE_INDEX_Q2_ATROUS_PING_SPEC,
                         FI::FB_IMAGE_INDEX_Q2_ATROUS_PING_MOMENTS,
+                        // The a-trous filter reads the HF history length from the
+                        // moments the temporal pass just wrote; that write must be
+                        // visible before the first a-trous iteration samples it.
+                        FI::FB_IMAGE_INDEX_Q2_HIST_MOMENTS_H_F,
                     };
                     framebuffers->BarrierMultiple(cmd, frameIndex, fs);
                     break;
