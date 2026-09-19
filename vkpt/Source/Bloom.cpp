@@ -84,7 +84,7 @@ void vkpt::Bloom::Prepare(VkCommandBuffer cmd, uint32_t frameIndex,
     {
         framebuffers->GetDescSet(frameIndex),
         uniform->GetDescSet(frameIndex),
-        tonemapping->GetDescSet()
+        tonemapping->GetDescSet(frameIndex)
     };
 
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,

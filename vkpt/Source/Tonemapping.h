@@ -52,7 +52,7 @@ public:
         float exposureBias, float contrast);
 
     VkDescriptorSetLayout GetDescSetLayout() const;
-    VkDescriptorSet GetDescSet() const;
+    VkDescriptorSet GetDescSet(uint32_t frameIndex) const;
     
     void OnShaderReload(const ShaderManager *shaderManager) override;
 
@@ -69,14 +69,18 @@ private:
 
     std::shared_ptr<Framebuffers> framebuffers;
 
-    Buffer tmBuffer;
+    // One buffer per frame in flight: the host rewrites the params prefix each
+    // frame, while the GPU owns the histogram/curve/adaptedLuminance state that
+    // lives past it. The temporal state is naturally double-buffered as well,
+    // which is harmless for eye adaptation (slow convergence).
+    Buffer tmBuffer[MAX_FRAMES_IN_FLIGHT];
     VkDescriptorSetLayout tmDescSetLayout;
     VkDescriptorPool tmDescPool;
-    VkDescriptorSet tmDescSet;
+    VkDescriptorSet tmDescSet[MAX_FRAMES_IN_FLIGHT] = {};
 
-    // host-mapped view of tmBuffer (HOST_VISIBLE) for writing tone mapper params
-    void *mappedTmBuffer = nullptr;
-    bool  resetRequired = true;
+    // host-mapped views of tmBuffer (HOST_VISIBLE) for writing tone mapper params
+    void *mappedTmBuffer[MAX_FRAMES_IN_FLIGHT] = {};
+    bool  resetRequired[MAX_FRAMES_IN_FLIGHT] = {};
 
     VkPipelineLayout pipelineLayout;
 

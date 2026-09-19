@@ -40,11 +40,16 @@ vkpt::Tonemapping::Tonemapping(
 {
     CreateTonemappingBuffer(_allocator);
 
-    // map once; host only writes the params region, GPU owns the rest of the struct
-    mappedTmBuffer = tmBuffer.Map();
-    if (mappedTmBuffer)
+    // map once per frame slot; host only writes the params region, GPU owns the
+    // rest of the struct (histogram/curve/adaptedLuminance)
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
     {
-        memset(mappedTmBuffer, 0, sizeof(ShTonemapping));
+        mappedTmBuffer[i] = tmBuffer[i].Map();
+        if (mappedTmBuffer[i])
+        {
+            memset(mappedTmBuffer[i], 0, sizeof(ShTonemapping));
+        }
+        resetRequired[i] = true;
     }
 
     CreateTonemappingDescriptors();
@@ -62,12 +67,14 @@ vkpt::Tonemapping::Tonemapping(
 
 vkpt::Tonemapping::~Tonemapping()
 {
-    if (tmBuffer.IsMapped())
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
     {
-        tmBuffer.TryUnmap();
+        if (tmBuffer[i].IsMapped())
+        {
+            tmBuffer[i].TryUnmap();
+        }
+        tmBuffer[i].Destroy();
     }
-
-    tmBuffer.Destroy();
 
     vkDestroyDescriptorPool(device, tmDescPool, nullptr);
     vkDestroyDescriptorSetLayout(device, tmDescSetLayout, nullptr);
@@ -83,10 +90,11 @@ void vkpt::Tonemapping::CalculateExposure(VkCommandBuffer cmd, uint32_t frameInd
 
     // Write tone mapper params from the host. Only the params prefix of the
     // buffer is touched here; the histogram/curve state lives past it and is
-    // owned by the GPU.
-    if (mappedTmBuffer)
+    // owned by the GPU. Each frame slot has its own copy so the host never
+    // overwrites params that an in-flight frame's GPU still reads.
+    if (mappedTmBuffer[frameIndex])
     {
-        ShTonemapping *tm = static_cast<ShTonemapping *>(mappedTmBuffer);
+        ShTonemapping *tm = static_cast<ShTonemapping *>(mappedTmBuffer[frameIndex]);
 
         tm->tmExposureBias     = exposureBias;
         tm->tmExposureSpeedDown = 1.0f;
@@ -103,7 +111,7 @@ void vkpt::Tonemapping::CalculateExposure(VkCommandBuffer cmd, uint32_t frameInd
         tm->tmWhitePoint        = 10.0f;
         tm->tmSlopeBlurSigma    = 12.0f;
         tm->frameTime           = uniform->GetData()->timeDelta;
-        tm->resetCurve          = resetRequired ? 1u : 0u;
+        tm->resetCurve          = resetRequired[frameIndex] ? 1u : 0u;
 
         // Piecewise knee (tone_mapping.c): y(x) = (w*x+a)/(x+b) with
         //   y(kneeStart)=kneeStart, dy/dx(kneeStart)=1, y(kneeWhitePoint)=whitePoint
@@ -116,7 +124,7 @@ void vkpt::Tonemapping::CalculateExposure(VkCommandBuffer cmd, uint32_t frameInd
         tm->kneeA = kneeA;
         tm->kneeB = kneeB;
 
-        resetRequired = false;
+        resetRequired[frameIndex] = false;
     }
 
     // sync access to histogram buffer
@@ -127,7 +135,7 @@ void vkpt::Tonemapping::CalculateExposure(VkCommandBuffer cmd, uint32_t frameInd
             .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
             .dstStageMask  = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
             .dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT,
-            .buffer        = tmBuffer.GetBuffer(),
+            .buffer        = tmBuffer[frameIndex].GetBuffer(),
             .offset        = 0,
             .size          = VK_WHOLE_SIZE,
         };
@@ -150,7 +158,7 @@ void vkpt::Tonemapping::CalculateExposure(VkCommandBuffer cmd, uint32_t frameInd
     {
         framebuffers->GetDescSet(frameIndex),
         uniform->GetDescSet(frameIndex),
-        tmDescSet
+        tmDescSet[frameIndex]
     };
     const uint32_t setCount = sizeof(sets) / sizeof(VkDescriptorSet);
 
@@ -179,7 +187,7 @@ void vkpt::Tonemapping::CalculateExposure(VkCommandBuffer cmd, uint32_t frameInd
             .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
             .dstStageMask  = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
             .dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT,
-            .buffer        = tmBuffer.GetBuffer(),
+            .buffer        = tmBuffer[frameIndex].GetBuffer(),
             .offset        = 0,
             .size          = VK_WHOLE_SIZE,
         };
@@ -209,7 +217,7 @@ void vkpt::Tonemapping::CalculateExposure(VkCommandBuffer cmd, uint32_t frameInd
             .dstStageMask =
                 VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT,
             .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
-            .buffer        = tmBuffer.GetBuffer(),
+            .buffer        = tmBuffer[frameIndex].GetBuffer(),
             .offset        = 0,
             .size          = VK_WHOLE_SIZE,
         };
@@ -229,9 +237,9 @@ VkDescriptorSetLayout vkpt::Tonemapping::GetDescSetLayout() const
     return tmDescSetLayout;
 }
 
-VkDescriptorSet vkpt::Tonemapping::GetDescSet() const
+VkDescriptorSet vkpt::Tonemapping::GetDescSet(uint32_t frameIndex) const
 {
-    return tmDescSet;
+    return tmDescSet[frameIndex];
 }
 
 void vkpt::Tonemapping::OnShaderReload(const ShaderManager *shaderManager)
@@ -242,12 +250,15 @@ void vkpt::Tonemapping::OnShaderReload(const ShaderManager *shaderManager)
 
 void vkpt::Tonemapping::CreateTonemappingBuffer(const std::shared_ptr<MemoryAllocator> &allocator)
 {
-    tmBuffer.Init(
-        allocator,
-        sizeof(ShTonemapping),
-        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-        "Tonemapping buffer");
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+    {
+        tmBuffer[i].Init(
+            allocator,
+            sizeof(ShTonemapping),
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+            "Tonemapping buffer");
+    }
 }
 
 void vkpt::Tonemapping::CreateTonemappingDescriptors()
@@ -272,11 +283,11 @@ void vkpt::Tonemapping::CreateTonemappingDescriptors()
 
     VkDescriptorPoolSize poolSize = {};
     poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    poolSize.descriptorCount = 1;
+    poolSize.descriptorCount = MAX_FRAMES_IN_FLIGHT;
 
     VkDescriptorPoolCreateInfo poolInfo = {};
     poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    poolInfo.maxSets = 1;
+    poolInfo.maxSets = MAX_FRAMES_IN_FLIGHT;
     poolInfo.poolSizeCount = 1;
     poolInfo.pPoolSizes = &poolSize;
 
@@ -285,32 +296,41 @@ void vkpt::Tonemapping::CreateTonemappingDescriptors()
 
     SET_DEBUG_NAME(device, tmDescPool, VK_OBJECT_TYPE_DESCRIPTOR_POOL, "Tonemapping Desc pool");
 
+    VkDescriptorSetLayout layouts[MAX_FRAMES_IN_FLIGHT];
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+    {
+        layouts[i] = tmDescSetLayout;
+    }
+
     VkDescriptorSetAllocateInfo allocInfo = {};
     allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
     allocInfo.descriptorPool = tmDescPool;
-    allocInfo.descriptorSetCount = 1;
-    allocInfo.pSetLayouts = &tmDescSetLayout;
+    allocInfo.descriptorSetCount = MAX_FRAMES_IN_FLIGHT;
+    allocInfo.pSetLayouts = layouts;
 
-    r = vkAllocateDescriptorSets(device, &allocInfo, &tmDescSet);
+    r = vkAllocateDescriptorSets(device, &allocInfo, tmDescSet);
     VK_CHECKERROR(r);
 
-    SET_DEBUG_NAME(device, tmDescSet, VK_OBJECT_TYPE_DESCRIPTOR_SET, "Tonemapping Desc set");
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+    {
+        SET_DEBUG_NAME(device, tmDescSet[i], VK_OBJECT_TYPE_DESCRIPTOR_SET, "Tonemapping Desc set");
 
-    VkDescriptorBufferInfo bfInfo = {};
-    bfInfo.buffer = tmBuffer.GetBuffer();
-    bfInfo.offset = 0;
-    bfInfo.range = VK_WHOLE_SIZE;
+        VkDescriptorBufferInfo bfInfo = {};
+        bfInfo.buffer = tmBuffer[i].GetBuffer();
+        bfInfo.offset = 0;
+        bfInfo.range = VK_WHOLE_SIZE;
 
-    VkWriteDescriptorSet wrt = {};
-    wrt.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    wrt.dstSet = tmDescSet;
-    wrt.dstBinding = BINDING_LUM_HISTOGRAM;
-    wrt.dstArrayElement = 0;
-    wrt.descriptorCount = 1;
-    wrt.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    wrt.pBufferInfo = &bfInfo;
+        VkWriteDescriptorSet wrt = {};
+        wrt.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        wrt.dstSet = tmDescSet[i];
+        wrt.dstBinding = BINDING_LUM_HISTOGRAM;
+        wrt.dstArrayElement = 0;
+        wrt.descriptorCount = 1;
+        wrt.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        wrt.pBufferInfo = &bfInfo;
 
-    vkUpdateDescriptorSets(device, 1, &wrt, 0, nullptr);
+        vkUpdateDescriptorSets(device, 1, &wrt, 0, nullptr);
+    }
 }
 
 void vkpt::Tonemapping::CreatePipelineLayout(VkDescriptorSetLayout *pSetLayouts, uint32_t setLayoutCount)
