@@ -68,11 +68,9 @@ float GetShadow(vec3 worldPos)
 
     float depthOpaque = textureLod(texShadowMap, uvz.xy, 0).x;
 
-    // Q2RTX comparison (god_rays.comp GetShadow): depthOpaque > uvz.z.
-    // The ortho projection maps the world box to clip z in [0,1] and the
-    // shadow map stores that same [0,1] depth, so this is an exact comparison
-    // (no built-in bias). The anti-acne offset is applied by the caller via
-    // the shadowBias sample offset.
+    // Q2RTX comparison (god_rays.comp GetShadow): depthOpaque > uvz.z, no bias
+    // here. The anti-leak offset is applied by the caller, which shifts the
+    // sample position along -sunDirection before projecting it.
     return depthOpaque > uvz.z ? 1.0 : 0.0;
 }
 
@@ -287,28 +285,24 @@ void main()
         density = getDensity(currentPos);
         float stepLength = getStep(offset, density);
 
-        // Clamp the final step so the march ends exactly at the surface instead
-        // of stopping up to stepLength short of it (which left a dark band at
-        // the end of each ray).
-        stepLength = min(stepLength, rayDistance - offset);
         offset += stepLength;
+
+        if (offset >= rayDistance)
+            break;
 
         currentPos = originalPos + direction * offset;
 
-        // Move the sample slightly TOWARD the sun. Q2RTX used -sunDirection*20
-        // (away from the sun), which pushed samples near the surface behind it
-        // and left a dark gap between the god rays and the floor/walls. A small
-        // toward-sun offset keeps those samples in front of the surface (no gap)
-        // while still avoiding self-shadowing acne.
-        const vec3 shadowBias = godRaysParams.sunDirection.xyz * 1.0;
+        // Q2RTX: shift the sample 20 world units away from the sun (deeper into
+        // the shadow map) so occluders are effectively thickened and the shafts
+        // don't leak through thin walls or at grazing angles. The final step
+        // before the surface is not sampled (Q2RTX breaks here), which keeps
+        // the surface-facing samples from being pushed behind the geometry.
+        const vec3 shadowBias = -godRaysParams.sunDirection.xyz * 20.0;
         const float shadow = GetShadow(currentPos + shadowBias);
 
         const vec3 differentialInscatter = (shadow * phase * stepLength * density) * through;
         inscatter += differentialInscatter;
         through *= exp(-(stepLength * density) * extinctionFactors);
-
-        if (offset >= rayDistance)
-            break;
     }
 
     vec3 inscatterColor = inscatter * godRaysParams.sunColor.rgb * godRaysParams.godRaysIntensity * 0.0001;
