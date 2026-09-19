@@ -373,7 +373,8 @@ vkpt::FramebufferImageIndex vkpt::FidelityFX::FSR::Apply(
     const RenderResolutionHelper& renderResolution,
     RgFloat2D jitterOffset,
     float timeDelta,
-    float nearPlane, float farPlane, float fovVerticalRad)
+    float nearPlane, float farPlane, float fovVerticalRad,
+    bool resetAccumulation)
 {
     if (!m_context)
     {
@@ -417,9 +418,9 @@ vkpt::FramebufferImageIndex vkpt::FidelityFX::FSR::Apply(
     info.upscaleSize.height = m_displayHeight;
     info.enableSharpening  = false;
     info.sharpness         = 0.0f;
-    info.frameTimeDelta    = timeDelta;
+    info.frameTimeDelta    = timeDelta * 1000.0f; //ms
     info.preExposure       = 1.0f;
-    info.reset             = false;
+    info.reset             = resetAccumulation;
     info.cameraNear        = nearPlane;
     info.cameraFar         = farPlane;
     info.cameraFovAngleVertical = fovVerticalRad;

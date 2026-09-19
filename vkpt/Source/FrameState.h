@@ -34,6 +34,11 @@ private:
     uint32_t            frameIndex;
     VkCommandBuffer     frameCmd;
     VkSemaphore         semaphoreToWait;
+    // Pipeline stage at which the main frame cmd waits on 'semaphoreToWait'.
+    // Different semaphores gate different resources: the swapchain image is only
+    // consumed by the final blit (transfer), while an out-of-frame preFrame cmd
+    // uploads materials that the main frame reads much earlier.
+    VkPipelineStageFlags semaphoreWaitStage;
     // This cmd buffer is used for materials that 
     // are uploaded out of rgStartFrame - rgDrawFrame when
     // 'frameCmd' doesn't exist
@@ -44,6 +49,7 @@ public:
         frameIndex(MAX_FRAMES_IN_FLIGHT - 1), 
         frameCmd(VK_NULL_HANDLE), 
         semaphoreToWait(VK_NULL_HANDLE),
+        semaphoreWaitStage(VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT),
         preFrameCmd(VK_NULL_HANDLE)
     {}
    
@@ -122,16 +128,19 @@ public:
         return frameCmd != nullptr;
     }
 
-    void SetSemaphore(VkSemaphore s)
+    void SetSemaphore(VkSemaphore s, VkPipelineStageFlags waitStage)
     {
         semaphoreToWait = s;
+        semaphoreWaitStage = waitStage;
     }
 
-    VkSemaphore GetSemaphoreForWaitAndRemove()
+    VkSemaphore GetSemaphoreForWaitAndRemove(VkPipelineStageFlags *outWaitStage)
     {
         VkSemaphore s = semaphoreToWait;
 
         semaphoreToWait = VK_NULL_HANDLE;
+        *outWaitStage = semaphoreWaitStage;
+
         return s;
     }
 };

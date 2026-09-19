@@ -61,13 +61,16 @@ void main()
         return;
     }
 
+    // Color (PreFinal) is already resolved from checkerboard by CmQ2Interleave;
+    // resolving it again here would double-blur split surfaces.
     vec3 hdr  = texelFetch( framebufPreFinal_Sampler, pix, 0 ).rgb;
     vec3 emis = texelFetch( framebufScreenEmisRT_Sampler, pix, 0 ).rgb;
     vec3 fog  = texelFetch( framebufAcidFogRT_Sampler, pix, 0 ).rgb;
 
     if( needResolveCheckerboard( checkerboardPix ) )
     {
-        hdr  = resolveCheckerboard( framebufPreFinal_Sampler, pix, checkerboardPix, hdr );
+        // Emission and fog are written per-split-field in regular layout by the
+        // ray gen; blend them across the split here.
         emis = resolveCheckerboard( framebufScreenEmisRT_Sampler, pix, checkerboardPix, emis );
         fog  = resolveCheckerboard( framebufAcidFogRT_Sampler, pix, checkerboardPix, fog );
     }

@@ -51,6 +51,9 @@ VkCommandBuffer VulkanDevice::BeginFrame(const RgStartFrameInfo &startInfo)
     swapchain->AcquireImage(imageAvailableSemaphores[frameIndex]);
 
     VkSemaphore semaphoreToWaitOnSubmit = imageAvailableSemaphores[frameIndex];
+    // The swapchain image is only consumed by the final present blit (transfer),
+    // so the offscreen render can run before the image is acquired back.
+    VkPipelineStageFlags semaphoreWaitStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
 
 
     // if out-of-frame cmd exist, submit it
@@ -69,6 +72,10 @@ VkCommandBuffer VulkanDevice::BeginFrame(const RgStartFrameInfo &startInfo)
 
             // should wait other semaphore in this case
             semaphoreToWaitOnSubmit = inFrameSemaphores[frameIndex];
+            // Now waiting on the preFrame completion, which gates material
+            // uploads the frame reads immediately (compute/graphics), so the
+            // main cmd must block at the earliest stage.
+            semaphoreWaitStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
 
             waitForOutOfFrameFence = true;
         }
@@ -77,7 +84,7 @@ VkCommandBuffer VulkanDevice::BeginFrame(const RgStartFrameInfo &startInfo)
             waitForOutOfFrameFence = false;
         }
     }
-    currentFrameState.SetSemaphore(semaphoreToWaitOnSubmit);
+    currentFrameState.SetSemaphore(semaphoreToWaitOnSubmit, semaphoreWaitStage);
 
 
     if (startInfo.requestShaderReload)
@@ -1065,6 +1072,17 @@ void VulkanDevice::Render(VkCommandBuffer cmd, const RgDrawFrameInfo &drawInfo)
         }
         else if (renderResolution.IsAmdFsr2Enabled() || renderResolution.IsAmdFsr3Enabled())
         {
+            // Reset FSR temporal history on a camera cut (teleport / respawn /
+            // level change): motion vectors for that frame are invalid, so the
+            // upscaler must not reproject from the previous frame.
+            const float *cur  = uniform->GetData()->cameraPosition;
+            const float *prev = uniform->GetData()->cameraPositionPrev;
+            const float  dx   = cur[0] - prev[0];
+            const float  dy   = cur[1] - prev[1];
+            const float  dz   = cur[2] - prev[2];
+            constexpr float kTeleportDist = 100.0f; // same heuristic as CL_LerpEntity
+            const bool reset = (dx * dx + dy * dy + dz * dz) > (kTeleportDist * kTeleportDist);
+
             accum = amdFsr->Apply(cmd, frameIndex,
                                                 framebuffers,
                                                 renderResolution,
@@ -1072,7 +1090,8 @@ void VulkanDevice::Render(VkCommandBuffer cmd, const RgDrawFrameInfo &drawInfo)
                                                 uniform->GetData()->timeDelta,
                                                 drawInfo.cameraNear,
                                                 drawInfo.cameraFar,
-                                                drawInfo.fovYRadians );
+                                                drawInfo.fovYRadians,
+                                                reset );
         }
         else
         {
@@ -1179,13 +1198,14 @@ void VulkanDevice::Render(VkCommandBuffer cmd, const RgDrawFrameInfo &drawInfo)
 void VulkanDevice::EndFrame(VkCommandBuffer cmd)
 {
     uint32_t frameIndex = currentFrameState.GetFrameIndex();
-    VkSemaphore semaphoreToWait = currentFrameState.GetSemaphoreForWaitAndRemove();
+    VkPipelineStageFlags semaphoreWaitStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+    VkSemaphore semaphoreToWait = currentFrameState.GetSemaphoreForWaitAndRemove(&semaphoreWaitStage);
 
     // submit command buffer, but wait until presentation engine has completed using image
     cmdManager->Submit(
         cmd,
         semaphoreToWait,
-        VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+        semaphoreWaitStage,
         renderFinishedSemaphores[frameIndex],
         frameFences[frameIndex]);
 
