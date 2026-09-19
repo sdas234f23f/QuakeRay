@@ -405,6 +405,19 @@ float traceSunVisibility(const Surface surf, const LightSample sunLight, out boo
         return 0.0;
     }
 
+    /* The host proved for each cluster whether any sun ray can still leave it through the
+       sky (Q2RTX's sky_visibility gate); where it cannot, the shadow ray always misses
+       the sky, so the cluster keeps its darkness without paying for the ray. Clusters the
+       host never classified keep tracing. This is the bit test of q2ClusterSeesSky from
+       Q2LightLists.h, inlined because this header is compiled before that one. */
+    const uint sunCluster = surf.cluster;
+    if (sunCluster < uint(Q2_MAX_CLUSTERS) &&
+        (q2ClusterSkyVis[sunCluster >> 5] & (1u << (sunCluster & 31u))) == 0u)
+    {
+        traced = false;
+        return 0.0;
+    }
+
     return traceVisibility(surf, sunLight.position, LIGHT_ARRAY_DIRECTIONAL_LIGHT_OFFSET);
 }
 
@@ -452,6 +465,26 @@ void shade(const Surface surf, const LightSample light, float oneOverPdf, out ve
 
     diffuse  *= oneOverPdf;
     specular *= oneOverPdf;
+}
+
+// Diffuse-only variant of shade() for bounce paths that discard the specular output.
+// Produces exactly the same `diffuse` value as shade(), minus the GGX evaluation.
+void shadeDiffuse(const Surface surf, const LightSample light, float oneOverPdf, out vec3 diffuse)
+{
+    vec3 l = safeNormalize(light.position - surf.position);
+    float nl = dot(surf.normal, l);
+    float ngl = dot(surf.normalGeom, l);
+
+    if (nl <= 0 || ngl <= 0)
+    {
+        diffuse = vec3(0);
+        return;
+    }
+
+    const vec3 color = boostChroma(light.color);
+    diffuse = light.dw * nl * color * evalBRDFLambertian(1.0);
+
+    diffuse *= oneOverPdf;
 }
 
 

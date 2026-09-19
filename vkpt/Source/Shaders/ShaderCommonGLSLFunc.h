@@ -204,6 +204,11 @@ layout(set = DESC_SET_LIGHT_SOURCES, binding = BINDING_LIGHT_SOURCES_TAL_CDF) re
 {
     uint talCdf[];
 };
+
+layout(set = DESC_SET_LIGHT_SOURCES, binding = BINDING_LIGHT_SOURCES_Q2_CLUSTER_SKY_VIS) readonly buffer Q2ClusterSkyVis_BT
+{
+    uint q2ClusterSkyVis[];
+};
 #endif
 
 

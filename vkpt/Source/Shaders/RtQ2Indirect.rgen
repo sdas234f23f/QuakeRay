@@ -194,8 +194,8 @@ vec3 processSecondDiffuseBounce(const uint seed, const Surface surf, const vec3 
                 rayStatsAdd( RAY_STATS_CATEGORY_SHADOW_INDIRECT, 1 );
             }
 
-            vec3 d, s;
-            shade( hitSurf, sunLight, 1.0, d, s );
+            vec3 d;
+            shadeDiffuse( hitSurf, sunLight, 1.0, d );
             directDiffuse += d * sunVis * sunAttenuation * globalUniform.sunBounce.y;
         }
     }
@@ -245,6 +245,13 @@ float q2SkyNeeBsdfWeight( const Surface surf, const vec3 direction )
 vec3 q2SkyNee( const Surface surf, const uint seed )
 {
     if ( globalUniform.skyNee == 0.0 )
+    {
+        return vec3( 0.0 );
+    }
+
+    /* A cluster the host proved cannot see the sky never hits the dome: skip the ray the
+       same way traceSunVisibility skips the sun shadow ray (q2ClusterSeesSky). */
+    if ( !q2ClusterSeesSky( surf.cluster ) )
     {
         return vec3( 0.0 );
     }
@@ -397,8 +404,8 @@ void main()
                         q2AccumulateLightStats( cluster, lightSlot, hitSurf.normal, vis, 0u );
                     }
 
-                    vec3 d, s;
-                    shade( hitSurf, light, 1.0 / lightPdf, d, s );
+                    vec3 d;
+                    shadeDiffuse( hitSurf, light, 1.0 / lightPdf, d );
                     directDiffuse += d * vis;
                 }
             }
@@ -427,8 +434,8 @@ void main()
                     rayStatsAdd( RAY_STATS_CATEGORY_SHADOW_INDIRECT, 1 );
                 }
 
-                vec3 d, s;
-                shade( hitSurf, sunLight, 1.0, d, s );
+                vec3 d;
+                shadeDiffuse( hitSurf, sunLight, 1.0, d );
                 directDiffuse += d * sunVis * sunAttenuation * globalUniform.sunBounce.y;
             }
         }

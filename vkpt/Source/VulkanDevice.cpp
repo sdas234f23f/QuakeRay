@@ -22,8 +22,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <cstring>
-#include <stdexcept>
 
 #include "HaltonSequence.h"
 #include "Matrix.h"
@@ -1674,6 +1672,11 @@ void VulkanDevice::UploadWorldLights(const RgWorldLightsUploadInfo *pInfo)
     }
 
     worldLights->Upload(*pInfo, userPrint.get());
+
+    // The sky visibility of the new tables replaces the one the light manager gates the sun
+    // shadow rays with; a map that sent none keeps every cluster tracing.
+    scene->GetLightManager()->SetClusterSkyVisibility(worldLights->GetClusterSkyVisibility(),
+                                                      worldLights->GetClusterCount());
 }
 
 void VulkanDevice::SetFogVolumes(uint32_t count, const RgFogVolume *pVolumes)

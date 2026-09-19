@@ -765,6 +765,49 @@ static void RT_StatsDump_f (void)
 }
 
 
+#define RT_LIGHT_REPORT_FILE "qlightreport.log"
+
+// Writes the same emissive stats + cluster report as rt_light_report to qlightreport.log
+// in the game directory, so the verdict of every light can be read back from a file.
+// Takes the same arguments as rt_light_report (line count / texture filter).
+void RT_LightReportDump_f (void)
+{
+	char       path[MAX_OSPATH];
+	char       stamp[32];
+	time_t     now;
+	struct tm *local;
+	FILE      *f;
+
+	q_snprintf (path, sizeof (path), "%s/" RT_LIGHT_REPORT_FILE, com_gamedir);
+	f = fopen (path, "a");
+
+	if (!f)
+	{
+		Con_Printf ("rt_light_report_dump: could not open %s\n", path);
+		return;
+	}
+
+	now = time (NULL);
+	local = localtime (&now);
+	if (local)
+		strftime (stamp, sizeof (stamp), "%Y-%m-%d %H:%M:%S", local);
+	else
+		stamp[0] = 0;
+
+	fprintf (f, "# rt_light_report_dump %s\n", stamp);
+
+	// Mirror every report line into the file in addition to the console.
+	rt_light_report_file = f;
+	RT_LightReport_f ();
+	rt_light_report_file = NULL;
+
+	fputc ('\n', f);
+	fclose (f);
+
+	Con_Printf ("rt_light_report_dump: appended the report to %s\n", path);
+}
+
+
 static qboolean request_shaders_reload = false;
 
 /*
@@ -1428,6 +1471,7 @@ static void GL_InitInstance (void)
 	Cmd_AddCommand ("rt_water_color", RT_WaterColor);
 	Cmd_AddCommand ("rt_water_acidcolor", RT_AcidColor);
 	Cmd_AddCommand ("rt_light_report", RT_LightReport_f);
+	Cmd_AddCommand ("rt_light_report_dump", RT_LightReportDump_f);
 	Cmd_AddCommand ("fog", RT_Fog_Cmd);
 	Cmd_AddCommand ("rt_stats", RT_Stats_f);
 	Cmd_AddCommand ("rt_stats_dump", RT_StatsDump_f);

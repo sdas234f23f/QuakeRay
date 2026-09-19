@@ -371,13 +371,18 @@ qboolean RT_AllowFakeLights (void);
 void RT_ClusterLightListsReset (void);
 // Registers a light for the per-cluster lists of this frame. reach is a distance in Quake units
 // up to which the light belongs in a list, and it is what keeps a light of a moving entity from
-// reaching every cluster of the map; zero means the light states no reach of its own and the
-// lists give it whatever the leaf it stands in sees. A light that is registered twice in one
-// frame with the same uniqueID keeps the last origin and reach it was given.
+// reaching every cluster of the map; zero means the light states no reach of its own, which holds
+// it to nothing but the PVS row of the leaf it stands in, and no light of the renderer asks for
+// that. A light that is registered twice in one frame with the same uniqueID keeps the last
+// origin and reach it was given.
 void RT_ClusterLightAdd (uint64_t uniqueID, const vec3_t origin, float reach);
 // Reach of a light of a moving entity, from rt_light_reach_max: the distance the host promises
-// such a light does not reach past. The lights of the map itself pass zero instead.
+// such a light does not reach past. The lights of the map itself pass the reach of
+// RT_ClusterLightReachStatic instead.
 float RT_ClusterLightReach (void);
+// Reach of a light of the map itself, from rt_light_reach: the distance such a light is heard
+// from where it stands. A setting of zero falls back to the cap of RT_ClusterLightReach.
+float RT_ClusterLightReachStatic (void);
 void RT_ClusterLightListsUpload (void);
 
 // Frames that reused the cached cluster light lists and frames that rebuilt them. The profiler
@@ -413,6 +418,11 @@ void RT_BrushClusterCacheReset (void);
 void RT_ClusterLightReport_f (void);
 void RT_LightReport_f (void);
 void RT_PrintEmissiveStats (void);
+void RT_LightReportDump_f (void);
+// Non-NULL while rt_light_report_dump is writing; RT_LightReportPrint mirrors every
+// report line into this file in addition to the console so the dump and the readout match.
+extern FILE *rt_light_report_file;
+void RT_LightReportPrint (const char *fmt, ...) FUNC_PRINTF (1, 2);
 void RT_WorldCensus (void);
 void RT_UploadWorldLights (void);
 int RT_GetSurfaceCluster (const qmodel_t *m, const msurface_t *s);

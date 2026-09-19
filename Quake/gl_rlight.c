@@ -1008,12 +1008,25 @@ void RT_ClusterLightListsReset (void)
 
 /* The reach a light of a moving entity is registered with, from rt_light_reach_max: the distance
    the host promises such a light does not reach past, in Quake units. A light that moves is what
-   makes the lists rebuild, so this is what keeps one entity from reaching every list of the map.
-   A light of the map itself is registered with zero instead, and reaches wherever its own leaf
-   sees, which is right for it: it stands where it stands every frame. */
+   makes the lists rebuild, so this is what keeps one entity from reaching every list of the map. */
 float RT_ClusterLightReach (void)
 {
 	return METRIC_TO_QUAKEUNIT (CVAR_TO_FLOAT (rt_light_reach_max));
+}
+
+/* The reach a light of the map itself is registered with, from rt_light_reach: how far a light
+   that stands where it stands is heard, in Quake units. The leaf it resolved into is where its
+   list starts, but the PVS of that leaf is what the doorways of the map make wide, and a light
+   held to the PVS alone fills the lists of every area it merely sees into, where the lights that
+   do stand there are the ones pushed out of them. It also has to be the reach the incremental
+   pass gates with, so that a light's list comes out the same whether it was composed or moved.
+   A setting of zero turns the top-up pass off and is no reach at all, so it falls back to the cap
+   the moving lights are held to instead of handing the light the whole row. */
+float RT_ClusterLightReachStatic (void)
+{
+	const float reach = CVAR_TO_FLOAT (rt_light_reach);
+
+	return METRIC_TO_QUAKEUNIT ((reach > 0.0f) ? reach : CVAR_TO_FLOAT (rt_light_reach_max));
 }
 
 void RT_ClusterLightAdd (uint64_t uniqueID, const vec3_t origin, float reach)
@@ -1320,17 +1333,37 @@ static float RT_LightDiagDist (const rt_light_diag_t *d)
 #define RT_CLUSTER_REPORT_SLOTS 128
 
 
+// While a light-report dump is being written this points at the open log file; every
+// report line is mirrored there so the dump and the console readout are identical.
+FILE *rt_light_report_file = NULL;
+
+void RT_LightReportPrint (const char *fmt, ...)
+{
+	va_list argptr;
+	char    msg[2048];
+
+	va_start (argptr, fmt);
+	q_vsnprintf (msg, sizeof (msg), fmt, argptr);
+	va_end (argptr);
+
+	Con_Printf ("%s", msg);
+
+	if (rt_light_report_file)
+		fputs (msg, rt_light_report_file);
+}
+
 void RT_ClusterLightReport_f (void)
 {
-	const int maxLines = (Cmd_Argc () > 1) ? atoi (Cmd_Argv (1)) : 64;
+	const int maxLines = (rt_light_report_file != NULL) ? RT_CLUSTER_MAX_LIGHTS
+		: (Cmd_Argc () > 1) ? atoi (Cmd_Argv (1)) : 64;
 
 	if (rt_light_diag_count <= 0)
 	{
-		Con_Printf ("RT lights: no cluster light state yet - load a map and look at the world first.\n");
+		RT_LightReportPrint ("RT lights: no cluster light state yet - load a map and look at the world first.\n");
 		return;
 	}
 
-	Con_Printf ("RT lights: %i registered, %i dropped (no open leaf), %i cluster slots granted, %i denied\n",
+	RT_LightReportPrint ("RT lights: %i registered, %i dropped (no open leaf), %i cluster slots granted, %i denied\n",
 		rt_cluster_light_count, rt_light_diag_unresolved, rt_light_diag_granted, rt_light_diag_denied);
 
 	int      viewCluster = -1;
@@ -1358,15 +1391,15 @@ void RT_ClusterLightReport_f (void)
 
 	if (viewCluster < 0)
 	{
-		Con_Printf ("camera cluster: unavailable (camera is not in the world)\n");
+		RT_LightReportPrint ("camera cluster: unavailable (camera is not in the world)\n");
 	}
 	else
 	{
-		Con_Printf ("camera cluster %i: %i lights sampled%s\n", viewCluster, viewFill,
+		RT_LightReportPrint ("camera cluster %i: %i lights sampled%s\n", viewCluster, viewFill,
 			(viewFill >= RT_CLUSTER_REPORT_SLOTS) ? "  *** the read stopped at the slot count above ***" : "");
 	}
 
-	Con_Printf ("%-3s %5s %5s %8s  %-34s %s\n", "cls", "pvs", "no!", "dist", "light", "verdict");
+	RT_LightReportPrint ("%-3s %5s %5s %8s  %-34s %s\n", "cls", "pvs", "no!", "dist", "light", "verdict");
 
 	int shown = 0;
 
@@ -1402,9 +1435,9 @@ void RT_ClusterLightReport_f (void)
 
 	if (filter[0])
 	{
-		Con_Printf ("filter \"%s\": %i of %i registered lights match\n", filter, order_num, rt_light_diag_count);
+		RT_LightReportPrint ("filter \"%s\": %i of %i registered lights match\n", filter, order_num, rt_light_diag_count);
 		if (order_num == 0)
-			Con_Printf ("  (this texture registered no light at all - see the emissive pass above)\n");
+			RT_LightReportPrint ("  (this texture registered no light at all - see the emissive pass above)\n");
 	}
 
 	for (int oi = 0; oi < order_num; oi++)
@@ -1441,10 +1474,10 @@ void RT_ClusterLightReport_f (void)
 
 		char id[64];
 		RT_FormatLightId (id, sizeof (id), d->uniqueID);
-		Con_Printf ("%-3s %5i %5i %8.0f  %-34s %s\n", inView ? "yes" : "-", d->granted, d->denied, dist, id, verdict);
+		RT_LightReportPrint ("%-3s %5i %5i %8.0f  %-34s %s\n", inView ? "yes" : "-", d->granted, d->denied, dist, id, verdict);
 	}
 
 	if (shown < order_num)
-		Con_Printf ("... %i more matches (rt_light_report <line count>%s to print more)\n",
+		RT_LightReportPrint ("... %i more matches (rt_light_report <line count>%s to print more)\n",
 			order_num - shown, filter[0] ? " <texture>" : "");
 }

@@ -2646,8 +2646,11 @@ void R_DrawWorld_ShowTris (cb_context_t *cbx)
 =============
 RT_RegisterWorldModelLight
 
-A light of the map itself: it stands where it stands every frame, and the leaf it resolved
-into is the reach that is right for it, so it is registered without one.
+A light of the map itself: it stands where it stands every frame, so it is held to the reach of
+rt_light_reach rather than to the cap the moving lights are registered with. The leaf it resolved
+into is where its list starts, not how far the light is heard: the PVS of that leaf is as wide as
+the doorways of the map make it, and a light given the whole of it fills the lists of areas it
+only sees into, where the lights standing there are then the ones the pass has to drop.
 =============
 */
 static void RT_RegisterWorldModelLight (const RgTexturedAreaLightUploadInfo *lt, vec3_t center)
@@ -2658,7 +2661,7 @@ static void RT_RegisterWorldModelLight (const RgTexturedAreaLightUploadInfo *lt,
 	center[1] += nudge * lt->normal.data[1];
 	center[2] += nudge * lt->normal.data[2];
 
-	RT_ClusterLightAdd (lt->uniqueID, center, 0.0f);
+	RT_ClusterLightAdd (lt->uniqueID, center, RT_ClusterLightReachStatic ());
 
 	if (CVAR_TO_BOOL (rt_debugemissive))
 	{
@@ -3256,6 +3259,9 @@ typedef struct
 	uint8_t *vis_data;
 	int      vis_data_size;
 
+	// Bit c of byte c/8 is 1 when a sun ray from cluster c can still reach the sky.
+	uint8_t *sky_vis;
+
 	float grid_mins[3];
 	float grid_cell_size[3];
 	float grid_inv_cell[3];
@@ -3281,6 +3287,7 @@ void RT_FreeWorldClusters (void)
 	Mem_Free (rt_worldclusters.cluster_flags);
 	Mem_Free (rt_worldclusters.vis_offsets);
 	Mem_Free (rt_worldclusters.vis_data);
+	Mem_Free (rt_worldclusters.sky_vis);
 
 	memset (&rt_worldclusters, 0, sizeof (rt_worldclusters));
 }
@@ -3731,6 +3738,186 @@ void RT_BuildWorldClusters (void)
 
 /*
 =================
+RT_BuildClusterSkyVisibility
+
+The per-cluster sky visibility of Q2RTX's compute_sky_visibility: a cluster keeps tracing its
+sun ray only when the sky can be seen from it at all. The sun direction is a runtime cvar here,
+so no direction is tested; instead the map's own PVS row of every leaf whose cluster holds a sky
+surface is unioned, which marks exactly the clusters the sky is visible from - PVS is symmetric,
+so "C sees K" is the same bit as "K sees C", and a sun ray from C that leaves through the sky of
+K needs exactly that. A row of the map names a leaf by its index, as Mod_DecompressVis expands
+it, and the cluster table names that leaf, so the union lands in the cluster the renderer asks
+about (surf.cluster) in both tables. The rows of the grid table are projected instead and carry
+the renderer's own +1 offset, so they are deliberately not read here. Every doubt (sky that
+resolved into no cluster, a leaf with no row of its own, no row data at all, a row that decodes
+short) marks everything, so a cluster only stops tracing when the sky is provably out of its
+reach.
+=================
+*/
+static void RT_BuildClusterSkyVisibility (void)
+{
+	qmodel_t *model = rt_worldclusters.model;
+	const int num_clusters = rt_worldclusters.num_clusters;
+	const int num_leafs = rt_worldclusters.num_leafs;
+	// The rows the map carries: Mod_DecompressVis gives a row this many bytes in every table.
+	const int leaf_row_bytes = (num_leafs + 31) / 8;
+	const int num_bytes = (num_clusters + 7) / 8;
+	uint8_t *has_sky;
+	qboolean any_sky = false, any_cluster = false, everything = false;
+
+	if (!model || num_clusters <= 0 || num_leafs <= 0 || !rt_worldclusters.leaf_cluster)
+		return;
+
+	rt_worldclusters.sky_vis = (uint8_t *)Mem_Alloc (num_bytes);
+	memset (rt_worldclusters.sky_vis, 0, num_bytes);
+	// Cluster 0 is where geometry with no leaf of its own lands; it keeps tracing, as Q2RTX
+	// keeps tracing for an invalid cluster.
+	rt_worldclusters.sky_vis[0] |= 1;
+
+	has_sky = (uint8_t *)Mem_Alloc (num_bytes);
+	memset (has_sky, 0, num_bytes);
+
+	for (int i = 0; i < model->numsurfaces; i++)
+	{
+		msurface_t *surf = &model->surfaces[i];
+		int         c;
+
+		if (!(surf->flags & SURF_DRAWSKY))
+			continue;
+
+		any_sky = true;
+		c = RT_MapWorldCluster (RT_GetSurfaceCluster (model, surf));
+
+		if (c <= 0 || c >= num_clusters)
+			continue;
+
+		has_sky[c >> 3] |= (uint8_t)(1u << (c & 7));
+		any_cluster = true;
+	}
+
+	// A map with no sky surface at all, or sky that resolved into no cluster, says nothing
+	// about where the sky is seen from: every cluster keeps tracing.
+	if (!any_sky || !any_cluster)
+		everything = true;
+
+	if (any_cluster && !everything)
+	{
+		uint8_t *row = (uint8_t *)Mem_Alloc (leaf_row_bytes);
+
+		if (!model->visdata || model->visdatasize <= 0)
+		{
+			// Without rows of its own the map is one the tables say sees everything.
+			everything = true;
+		}
+
+		for (int leaf = 1; !everything && leaf < num_leafs; leaf++)
+		{
+			const int      c = rt_worldclusters.leaf_cluster[leaf];
+			const uint8_t *prow;
+			int            offset, in, in_limit, b;
+
+			// Only the leaves of a cluster that holds sky hand out the sky.
+			if (c <= 0 || c >= num_clusters || !(has_sky[c >> 3] & (1u << (c & 7))))
+				continue;
+
+			prow = model->leafs[leaf].compressed_vis;
+
+			if (prow == NULL)
+			{
+				everything = true;
+				break;
+			}
+
+			/* The RLE of Mod_DecompressVis, followed the way Mod_DecompressVis follows it: a
+			   nonzero byte is eight bits, a zero byte a run count that covers the byte it
+			   starts at, and a byte of the row never costs more than two of the data. */
+			offset = (int)(prow - model->visdata);
+			in_limit = leaf_row_bytes * 2;
+
+			if (offset < 0 || offset >= model->visdatasize)
+			{
+				everything = true;
+				break;
+			}
+
+			if (in_limit > model->visdatasize - offset)
+				in_limit = model->visdatasize - offset;
+
+			memset (row, 0, leaf_row_bytes);
+
+			for (in = 0, b = 0; b < leaf_row_bytes && in < in_limit; )
+			{
+				const uint8_t bits = prow[in++];
+
+				if (bits != 0)
+				{
+					row[b++] = bits;
+					continue;
+				}
+
+				if (in >= in_limit)
+					break;
+
+				{
+					int run = prow[in++];
+
+					if (run > leaf_row_bytes - b)
+						run = leaf_row_bytes - b;
+
+					b += run;
+				}
+			}
+
+			// A row that decodes short of its length is corrupt; trust nothing.
+			if (b < leaf_row_bytes)
+			{
+				everything = true;
+				break;
+			}
+
+			// Bit b of the row is leaf b of the map, and the cluster table names that leaf.
+			for (b = 0; b < leaf_row_bytes * 8 && b < num_leafs; b++)
+			{
+				int target;
+
+				if (!(row[b >> 3] & (1u << (b & 7))))
+					continue;
+
+				target = rt_worldclusters.leaf_cluster[b];
+
+				if (target > 0 && target < num_clusters)
+					rt_worldclusters.sky_vis[target >> 3] |= (uint8_t)(1u << (target & 7));
+			}
+		}
+
+		Mem_Free (row);
+	}
+
+	if (everything)
+		memset (rt_worldclusters.sky_vis, 0xFF, num_bytes);
+
+	if (CVAR_TO_BOOL (rt_worldlights_stats))
+	{
+		int traced = 0, sky_clusters = 0;
+
+		for (int i = 0; i < num_clusters; i++)
+		{
+			if (rt_worldclusters.sky_vis[i >> 3] & (1u << (i & 7)))
+				traced++;
+
+			if (has_sky[i >> 3] & (1u << (i & 7)))
+				sky_clusters++;
+		}
+
+		Con_Printf ("sky visibility: %i of %i clusters trace the sun (%i clusters hold sky%s)\n",
+			traced, num_clusters, sky_clusters, everything ? ", every cluster traces" : "");
+	}
+
+	Mem_Free (has_sky);
+}
+
+/*
+=================
 RT_UploadWorldLights
 
 Builds the world tables once per map load and hands them to the renderer: the clusters with
@@ -3772,6 +3959,10 @@ void RT_UploadWorldLights (void)
 
 	// The cluster tables are what turns a leaf index into the index the renderer indexes with.
 	RT_BuildWorldClusters ();
+
+	// Which of those clusters can see the sky at all: the renderer skips the sun shadow ray
+	// of the ones that cannot (Q2RTX's sky_visibility).
+	RT_BuildClusterSkyVisibility ();
 
 	// First pass: how many faces and corners there are, so the tables can be sized once.
 	for (int i = 0; i < model->numsurfaces; i++)
@@ -3864,6 +4055,7 @@ void RT_UploadWorldLights (void)
 		.visDataSize     = vis_data_size,
 		.pvsRowBytes     = rt_worldclusters.pvs_row_bytes,
 		.pVisOffsets     = rt_worldclusters.vis_offsets,
+		.pClusterSkyVisibility = rt_worldclusters.sky_vis,
 	};
 
 	RgResult r = rgUploadWorldLights (vulkan_globals.instance, &info);
@@ -3872,51 +4064,51 @@ void RT_UploadWorldLights (void)
 
 void RT_PrintEmissiveStats (void)
 {
-	Con_Printf ("emissive pass: %i surfaces considered -> %i static world lights baked (whole map), %i entity lights uploaded (all passes)\n",
+	RT_LightReportPrint ("emissive pass: %i surfaces considered -> %i static world lights baked (whole map), %i entity lights uploaded (all passes)\n",
 		rt_emis_stats.surfaces, rt_emis_stats.static_queued, rt_emis_stats.dynamic);
-	Con_Printf ("rejected: %i no light material, %i no light color, %i lightstyle off, %i degenerate\n",
+	RT_LightReportPrint ("rejected: %i no light material, %i no light color, %i lightstyle off, %i degenerate\n",
 		rt_emis_stats.no_material, rt_emis_stats.no_color, rt_emis_stats.style_off, rt_emis_stats.degenerate);
 
 	if (rt_emis_stats.glow_lights || rt_emis_stats.glow_fallback)
-		Con_Printf ("partial-glow textures: %i faces built %i polygon lights, %i faces fell back to the whole surface\n",
+		RT_LightReportPrint ("partial-glow textures: %i faces built %i polygon lights, %i faces fell back to the whole surface\n",
 			rt_emis_stats.glow_faces, rt_emis_stats.glow_lights, rt_emis_stats.glow_fallback);
 
 	if (rt_emis_stats.static_dropped || rt_wldlights_emissive_count >= MAX_WORLDLIGHTS_COUNT)
-		Con_Printf ("WARNING: the static world-light list is full (%i/%i), %i dropped - "
+		RT_LightReportPrint ("WARNING: the static world-light list is full (%i/%i), %i dropped - "
 			"raise MAX_WORLDLIGHTS_COUNT or reduce emissive surfaces\n",
 			rt_wldlights_emissive_count, MAX_WORLDLIGHTS_COUNT, rt_emis_stats.static_dropped);
 
 	for (int i = 0; i < rt_emis_skip_num; i++)
-		Con_Printf ("  skipped %-16s x%-5i (%s)\n", rt_emis_skip_texture[i], rt_emis_skip_count[i], rt_emis_skip_reason[i]);
+		RT_LightReportPrint ("  skipped %-16s x%-5i (%s)\n", rt_emis_skip_texture[i], rt_emis_skip_count[i], rt_emis_skip_reason[i]);
 
 	if (rt_emis_skip_num >= RT_EMIS_SKIP_NAMES)
-		Con_Printf ("  ... more rejected textures not listed\n");
+		RT_LightReportPrint ("  ... more rejected textures not listed\n");
 
 	for (int i = 0; i < rt_emis_watch_num; i++)
 	{
 		const rt_emis_watch_t *w = &rt_emis_watch[i];
-		Con_Printf ("  <%s> visible %i -> lights %i (rejected %i no material, %i no color, %i style off, %i degenerate)\n",
+		RT_LightReportPrint ("  <%s> visible %i -> lights %i (rejected %i no material, %i no color, %i style off, %i degenerate)\n",
 			w->name, w->surfaces, w->lights, w->no_material, w->no_color, w->style_off, w->degenerate);
 
 		if (w->hist_frames > 0)
-			Con_Printf ("       since the filter was set: %i frames visible, lit %i, dark %i, %i with a lightstyle reject, lights %i..%i%s\n",
+			RT_LightReportPrint ("       since the filter was set: %i frames visible, lit %i, dark %i, %i with a lightstyle reject, lights %i..%i%s\n",
 				w->hist_frames, w->hist_lit, w->hist_dark, w->hist_style_off,
 				(w->hist_min_lights > w->hist_max_lights) ? 0 : w->hist_min_lights, w->hist_max_lights,
 				(w->hist_lit > 0 && w->hist_dark > 0) ? "   <-- INTERMITTENT" : "");
 
 		if (w->style_count > 0 || w->min_style_scale < 1.0f)
 		{
-			Con_Printf ("       lightstyle: scale %.2f on styles", w->min_style_scale);
+			RT_LightReportPrint ("       lightstyle: scale %.2f on styles", w->min_style_scale);
 			for (int j = 0; j < w->style_count; j++)
-				Con_Printf (" %i(value %i)", w->styles[j], d_lightstylevalue[w->styles[j]]);
+				RT_LightReportPrint (" %i(value %i)", w->styles[j], d_lightstylevalue[w->styles[j]]);
 			if (w->style_count == 0)
-				Con_Printf (" (none: surface is unlit by style)");
-			Con_Printf ("%s\n", (w->min_style_scale <= 0.0f) ? "  <-- LIGHT DROPPED WHILE THE STYLE IS DARK" : "");
+				RT_LightReportPrint (" (none: surface is unlit by style)");
+			RT_LightReportPrint ("%s\n", (w->min_style_scale <= 0.0f) ? "  <-- LIGHT DROPPED WHILE THE STYLE IS DARK" : "");
 		}
 	}
 
 	if (rt_light_report_filter.string[0] && rt_emis_watch_num == 0)
-		Con_Printf ("  (no visible surface matched \"%s\" this frame)\n", rt_light_report_filter.string);
+		RT_LightReportPrint ("  (no visible surface matched \"%s\" this frame)\n", rt_light_report_filter.string);
 }
 
 void RT_LightReport_f (void)
@@ -3940,6 +4132,6 @@ void RT_LightReport_f (void)
 	Cvar_Set ("rt_light_report_filter", filter);
 
 	RT_PrintEmissiveStats ();
-	Con_Printf ("\n");
+	RT_LightReportPrint ("\n");
 	RT_ClusterLightReport_f ();
 }
