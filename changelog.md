@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.10.0
 
 ### Added
 - **Classic level fog in the ray-traced renderer** — the map's `fog` key and the `fog <density> <r> <g> <b>` console command (how Arcane Dimensions' `globalfog.qc` changes the fog at runtime, 46 of its 284 maps carry the worldspawn key) now tint the frame instead of doing nothing. The falloff is the original one — `f = exp(-(density * distance)²)`, `mix(fogColor, color, f)`, with the density scaled by `1/64` as `Fog_SetupFrame` scaled it and the distance being the fog coordinate the classic renderer used, the perpendicular view depth. The blend runs in `CmPrepareFinal.comp` after the rasterized geometry and after the classic acid fog, so sprites, `rtforcerasterize` models and the viewmodel are covered together with the world, and it never touches the bloom buffer. Because the frame buffer stores the ray length rather than the view depth, the ray is corrected by its own view-forward cosine, which keeps the fog from thickening toward the edges of the screen. The sky keeps the classic `skyfog` blend (`sky * (1 - skyfog) + fogColor * skyfog`) rather than the exponential, and `rt_level_fog 0` turns the level's fog off without discarding it.
