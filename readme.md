@@ -50,7 +50,7 @@ QuakeRay is based on the [vkQuake](https://github.com/Novum/vkQuake) — a port 
 * Render scale, sharpening (none / naive / AMD CAS), texture filtering (smooth / classic), particle style (none / circle / classic)
 * A minimal ray-traced HUD with configurable padding, and separate viewmodel FOV/width scaling
 * Field of view, vertical sync, max FPS, on-screen FPS
-* On-screen diagnostics: ray statistics (`rt_stats`), per-pass GPU timings (`rt_pass_stats`), and the debug views above
+* On-screen diagnostics: one `rt_stats` command with three panels (ray counters, per-pass GPU timings, CPU frame profile), plus the debug views above
 
 ### Engine
 
@@ -127,7 +127,7 @@ Everything is exposed as console variables; run `cvarlist rt_` in the console fo
 * `rt_brightness 1.0` — overall brightness of the ray-traced image
 * `rt_exposure_bias -2.8` — exposure in EV, a power-of-two factor applied inside the tone curve (Q2RTX's exposure bias). The ray-traced image is rendered bright and pulled down here, which is what makes the noise in dark areas fade out instead of turning into visible grain
 * `rt_contrast 0.6` — mixes the fixed tone curve with the auto-exposure adapted one (`0` keeps the fixed curve, `1` is the adapted curve alone)
-* `rt_sun 1` with `rt_sun_pitch 140` / `rt_sun_yaw 120` — the sun's intensity and its direction. The sun is coloured by the sky (`rt_sky_color`) and goes through the same radiometric fixup as the dlights and the world lights, at a tenth of its strength (a sun emits from no area and lights the whole sky, where those lights have an area to pay for), so `1` is a usable daylight, larger values overdrive it and `0` turns it off; the indirect sun (`rt_sun_bounce_range` / `rt_sun_bounce_scale`) and the god rays both scale with it
+* `rt_sun 1` with `rt_sun_pitch 140` / `rt_sun_yaw 120` — the sun's intensity and its direction. The sun is coloured by the sky (`rt_sky_color`) and goes through the same radiometric fixup as the dlights and the world lights, at a hundredth of its strength (a sun emits from no area and lights the whole sky, where those lights have an area to pay for), so `1` is a usable daylight, larger values overdrive it and `0` turns it off; the indirect sun (`rt_sun_bounce_range` / `rt_sun_bounce_scale`) and the god rays both scale with it, so `rt_sun 10` is the daylight this setting produced before the fraction was cut a tenth further
 * `gr_intensity 1` with `rt_godrays 1` — strength of the volumetric sun shafts and their on/off switch: `2` doubles the shafts, `0` takes them out of the frame along with the shadow map they are marched through (as in Q2RTX). The name is Q2RTX's `gr_intensity` and means the same, but the two are not interchangeable: upstream scales its accumulated sun-disc radiance with it, this one scales the directional light colour
 * `rt_sky 1`, `rt_sky_brightness 1.0`, `rt_physical_sky 1` — sky intensity and sky model
 * `rt_sky_color 32 0 64` — colour of the sky as `<r> <g> <b>` in `0-255`; it tints the drawn sky (the sun disc drawn in it included) and colours the light the sky casts (sun, sky ambient, god rays). It is a command rather than a cvar, so `cvarlist` does not list it, and running it without arguments prints the current value; the value it stores is archived, so it survives a restart. `rt_sky_color "32 0 64"` and `rt_sky_color 32,0,64` work as well
@@ -147,8 +147,8 @@ Everything is exposed as console variables; run `cvarlist rt_` in the console fo
 * `rt_light_styles 1` with `rt_light_styles_reach 48` — animated light entities make their own fixture flicker; the reach (Quake units, measured from the surface centre to the light) keeps the flicker on the fixture instead of every surface that light happens to illuminate, `-1` removes the limit
 * `rt_turb_warp 1` — amplitude of the classic texture warp on lava and teleport surfaces (`0` freezes them; water and slime use the RT water waves instead)
 * `rt_teleport_portals 0` — the RT portal effect on teleport surfaces is off, so they render as ordinary surfaces; `1` re-enables the mirrored destination
-* `rt_stats 0` — on-screen ray statistics (rays per second, per-category ray counts)
-* `rt_pass_stats 0` — on-screen GPU timing per render pass, next to the ray statistics
+* `rt_stats 1,2,3` — the on-screen readout, one panel per number: `1` ray statistics (rays per second, per-category counts), `2` GPU timing per render pass, `3` CPU frame profile. The panels stack in one block at one font, each after a blank line; `rt_stats 1 2` and `rt_stats 1 2 3` work the same, `rt_stats 0` hides the readout, and a bare `rt_stats` prints which panels are on. The setting is archived, so the choice survives a restart
+* `rt_stats_dump` — writes every number of the current frame into `qperfdump.log` in the game directory, one `section name value` line per number so runs can be diffed. The file is appended to, not overwritten, and the write happens on a separate thread, so taking a dump does not disturb the frame rate it measures
 * `rt_debugflags 0` — diagnostic views (raw direct/indirect/specular, gradients, ...)
 
 ## Game data

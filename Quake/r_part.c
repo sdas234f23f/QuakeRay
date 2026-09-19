@@ -859,7 +859,7 @@ static void R_DrawParticlesFaces (cb_context_t *cbx)
 {
 	particle_t   *p;
 	float         scale, texcoord_scale;
-	vec3_t        up, right, up_right, p_up, p_right, p_up_right;
+	vec3_t        up, right, up_right, p_up_right;
 	float         texturescalefactor;
 	extern cvar_t r_particles; // johnfitz
 
@@ -912,22 +912,23 @@ static void R_DrawParticlesFaces (cb_context_t *cbx)
 		scale *= texturescalefactor; // johnfitz -- compensate for apparent size of different particle textures
 
 		byte *c = (byte *)&d_8to24table[(int)p->color];
+		// All vertices of one particle carry the same colour, so it is packed once per particle.
+		const uint32_t packed_color = RT_PackColorToUint32 (c[0], c[1], c[2], 255);
 
 		vertices[current_vertex].position[0] = p->org[0];
 		vertices[current_vertex].position[1] = p->org[1];
 		vertices[current_vertex].position[2] = p->org[2];
 		vertices[current_vertex].texCoord[0] = 0.0f;
 		vertices[current_vertex].texCoord[1] = 0.0f;
-		vertices[current_vertex].packedColor = RT_PackColorToUint32 (c[0], c[1], c[2], 255);
+		vertices[current_vertex].packedColor = packed_color;
 		current_vertex++;
 
-		VectorMA (p->org, scale, up, p_up);
-		vertices[current_vertex].position[0] = p_up[0];
-		vertices[current_vertex].position[1] = p_up[1];
-		vertices[current_vertex].position[2] = p_up[2];
+		vertices[current_vertex].position[0] = p->org[0] + scale * up[0];
+		vertices[current_vertex].position[1] = p->org[1] + scale * up[1];
+		vertices[current_vertex].position[2] = p->org[2] + scale * up[2];
 		vertices[current_vertex].texCoord[0] = texcoord_scale;
 		vertices[current_vertex].texCoord[1] = 0.0f;
-		vertices[current_vertex].packedColor = RT_PackColorToUint32 (c[0], c[1], c[2], 255);
+		vertices[current_vertex].packedColor = packed_color;
 		current_vertex++;
 
 		if (QUAD_PARTICLES)
@@ -938,21 +939,21 @@ static void R_DrawParticlesFaces (cb_context_t *cbx)
 			vertices[current_vertex].position[2] = p_up_right[2];
 			vertices[current_vertex].texCoord[0] = texcoord_scale;
 			vertices[current_vertex].texCoord[1] = texcoord_scale;
-			vertices[current_vertex].packedColor = RT_PackColorToUint32 (c[0], c[1], c[2], 255);
+			vertices[current_vertex].packedColor = packed_color;
 			current_vertex++;
 		}
 
-		VectorMA (p->org, scale, right, p_right);
-		vertices[current_vertex].position[0] = p_right[0];
-		vertices[current_vertex].position[1] = p_right[1];
-		vertices[current_vertex].position[2] = p_right[2];
+		vertices[current_vertex].position[0] = p->org[0] + scale * right[0];
+		vertices[current_vertex].position[1] = p->org[1] + scale * right[1];
+		vertices[current_vertex].position[2] = p->org[2] + scale * right[2];
 		vertices[current_vertex].texCoord[0] = 0.0f;
 		vertices[current_vertex].texCoord[1] = texcoord_scale;
-		vertices[current_vertex].packedColor = RT_PackColorToUint32 (c[0], c[1], c[2], 255);
+		vertices[current_vertex].packedColor = packed_color;
 		current_vertex++;
-
-		Atomic_IncrementUInt32 (&rs_particles);
 	}
+
+	// One add for the whole batch: nothing reads the counter while the particles are emitted.
+	Atomic_AddUInt32 (&rs_particles, num_particles);
 
 	RgRasterizedGeometryUploadInfo info = {
 		.renderType = RG_RASTERIZED_GEOMETRY_RENDER_TYPE_DEFAULT,

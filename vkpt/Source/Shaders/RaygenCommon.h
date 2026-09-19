@@ -455,11 +455,13 @@ void shade(const Surface surf, const LightSample light, float oneOverPdf, out ve
 }
 
 
-
 #define RAY_STATS_CATEGORY_PRIMARY            0
 #define RAY_STATS_CATEGORY_REFLECTION_REFRACTION 1
 #define RAY_STATS_CATEGORY_INDIRECT           2
-#define RAY_STATS_CATEGORY_SHADOW             3
+// NEE visibility rays are counted per casting pass, because the two passes that
+// trace them are timed separately (GPU_PASS_DIRECT and GPU_PASS_INDIRECT).
+#define RAY_STATS_CATEGORY_SHADOW_DIRECT      3
+#define RAY_STATS_CATEGORY_SHADOW_INDIRECT    4
 
 layout(set = DESC_SET_RAY_STATS, binding = 0) buffer RtRayStats
 {

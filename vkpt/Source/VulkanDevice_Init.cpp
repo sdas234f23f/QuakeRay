@@ -119,6 +119,7 @@ VulkanDevice::VulkanDevice( const RgInstanceCreateInfo* info )
         libconfig);
 
     worldLights         = std::make_shared<WorldLights>();
+    clusterLightLists   = std::make_shared<ClusterLightLists>();
 
     shaderManager       = std::make_shared<ShaderManager>(
         device,

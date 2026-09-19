@@ -31,7 +31,7 @@ namespace
         "setup",
         "lights",
         "primary",
-        "shadow",
+        "godrays",
         "reflrefr",
         "reflgodr",
         "gradient",
@@ -41,8 +41,11 @@ namespace
         "exposure",
         "composite",
         "upscale",
+        "upsblit",
+        "sharpen",
         "post",
         "present",
+        "swapblit",
     };
 
     constexpr float SMOOTH_FACTOR = 0.9f;

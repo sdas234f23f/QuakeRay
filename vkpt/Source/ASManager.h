@@ -115,6 +115,12 @@ public:
     const std::shared_ptr<VertexCollector> &GetDynamicCollector(uint32_t frameIndex) const;
 
 private:
+    // amount of possible VertexCollectorFilterTypeFlags_GetID values
+    static constexpr uint32_t MAX_FILTER_TYPE_COUNT =
+        (sizeof(VertexCollectorFilterGroup_ChangeFrequency) / sizeof(VertexCollectorFilterGroup_ChangeFrequency[0])) *
+        (sizeof(VertexCollectorFilterGroup_PassThrough) / sizeof(VertexCollectorFilterGroup_PassThrough[0])) *
+        (sizeof(VertexCollectorFilterGroup_PrimaryVisibility) / sizeof(VertexCollectorFilterGroup_PrimaryVisibility[0]));
+
     void CreateDescriptors();
     void UpdateBufferDescriptors(uint32_t frameIndex);
     void UpdateASDescriptors(uint32_t frameIndex);
@@ -159,6 +165,20 @@ private:
     std::vector<std::unique_ptr<BLASComponent>> allStaticBlas;
     std::vector<std::unique_ptr<BLASComponent>> allDynamicBlas[MAX_FRAMES_IN_FLIGHT];
 
+    // A dynamic BLAS is rebuilt only if the input that it was built from changed. The
+    // state is per frame slot: the AS that a slot reuses is the one that was built for
+    // the same slot MAX_FRAMES_IN_FLIGHT frames ago, and each slot owns its own
+    // dynamic BLAS objects. dynBuildHash is the hash of the current frame's geometry,
+    // dynBlasKey is the hash that the slot's BLAS was built from.
+    uint64_t dynBuildHash[MAX_FRAMES_IN_FLIGHT][MAX_FILTER_TYPE_COUNT] = {};
+    uint64_t dynBlasKey[MAX_FRAMES_IN_FLIGHT][MAX_FILTER_TYPE_COUNT] = {};
+    bool dynBlasKeyValid[MAX_FRAMES_IN_FLIGHT][MAX_FILTER_TYPE_COUNT] = {};
+
+    // TLAS build sizes depend only on the instance count
+    VkAccelerationStructureBuildSizesInfoKHR tlasBuildSizes[MAX_FRAMES_IN_FLIGHT] = {};
+    uint32_t tlasBuildSizesInstanceCount[MAX_FRAMES_IN_FLIGHT] = {};
+    bool tlasBuildSizesValid[MAX_FRAMES_IN_FLIGHT] = {};
+
     // top level AS
     std::unique_ptr<AutoBuffer> instanceBuffer;
     std::unique_ptr<TLASComponent> tlas[MAX_FRAMES_IN_FLIGHT];
@@ -171,6 +191,8 @@ private:
 
     VkDescriptorSetLayout asDescSetLayout;
     VkDescriptorSet asDescSets[MAX_FRAMES_IN_FLIGHT];
+    // AS handle that asDescSets[i] was written with
+    VkAccelerationStructureKHR asDescHandles[MAX_FRAMES_IN_FLIGHT] = {};
 };
 
 }

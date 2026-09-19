@@ -1070,6 +1070,13 @@ static void TexMgr_LoadImage32 (gltexture_t *glt, unsigned *data)
 	SDL_UnlockMutex (texmgr_mutex);
 }
 
+/* A texel is part of the glow extents above this emission; below it the mask is noise. The
+   extents are computed once per texture, at load, so this cannot be a live cvar. */
+#define RT_EMIS_GLOW_THRESHOLD 0.02f
+/* Below this area fraction the extents are a proper part of the texture and the light is built
+   as polygons over them; at or above it the whole surface glows and stays a single light. */
+#define RT_EMIS_GLOW_FULL 0.999f
+
 static qboolean TexMgr_ApplyMaterialFromMat (gltexture_t *glt, unsigned *albedoFallback, byte *fullbrightOverride)
 {
 	rt_material_t *mat = RT_MAT_Find (glt->name);
@@ -1173,10 +1180,18 @@ static qboolean TexMgr_ApplyMaterialFromMat (gltexture_t *glt, unsigned *albedoF
 	glt->rtemissivecolor[2] = 0.0f;
 	glt->rtemissivemean = 0.0f;
 	glt->rtemissivemeanbase = 0.0f;
+	glt->rtemisuvmin[0] = 0.0f;
+	glt->rtemisuvmin[1] = 0.0f;
+	glt->rtemisuvmax[0] = 1.0f;
+	glt->rtemisuvmax[1] = 1.0f;
+	glt->rtemissiveglow = 0.0f;
+	glt->rtemisglowfrac = 1.0f;
+	glt->rtemissiveglowtex = false;
 	glt->rtislight = false;
 	float emissR = 0.0f, emissG = 0.0f, emissB = 0.0f;
 	double emissMean = 0.0;
 	double emissMeanBase = 0.0;
+	int    glowminx = tw, glowminy = th, glowmaxx = -1, glowmaxy = -1;
 
 	for (int i = 0; i < npix; i++)
 	{
@@ -1257,6 +1272,17 @@ static qboolean TexMgr_ApplyMaterialFromMat (gltexture_t *glt, unsigned *albedoF
 			emissOut = 1.0f;
 		emissMean += emissOut;
 
+		if (emissOut > RT_EMIS_GLOW_THRESHOLD)
+		{
+			const int px = i % tw;
+			const int py = i / tw;
+
+			if (px < glowminx) glowminx = px;
+			if (px > glowmaxx) glowmaxx = px;
+			if (py < glowminy) glowminy = py;
+			if (py > glowmaxy) glowmaxy = py;
+		}
+
 		rme[i * 4 + 0] = CLAMP (0, (int)(rough * 255), 255);
 		rme[i * 4 + 1] = CLAMP (0, (int)(metal * 255), 255);
 		rme[i * 4 + 2] = CLAMP (0, (int)(emissOut * 255), 255);
@@ -1292,6 +1318,20 @@ static qboolean TexMgr_ApplyMaterialFromMat (gltexture_t *glt, unsigned *albedoF
 		glt->rtemissivecolor[2] = emissB / (npix * 255.0f);
 		glt->rtemissivemean = (float)(emissMean / npix);
 		glt->rtemissivemeanbase = (float)(emissMeanBase / npix);
+
+		if (glowmaxx >= glowminx && glowmaxy >= glowminy && npix > 0)
+		{
+			const float glowarea = (float)(glowmaxx - glowminx + 1) * (float)(glowmaxy - glowminy + 1);
+			const float glowfrac = glowarea / (float)npix;
+
+			glt->rtemisuvmin[0] = (float)glowminx / (float)tw;
+			glt->rtemisuvmin[1] = (float)glowminy / (float)th;
+			glt->rtemisuvmax[0] = (float)(glowmaxx + 1) / (float)tw;
+			glt->rtemisuvmax[1] = (float)(glowmaxy + 1) / (float)th;
+			glt->rtemisglowfrac = glowfrac;
+			glt->rtemissiveglowtex = (glowfrac < RT_EMIS_GLOW_FULL) ? true : false;
+			glt->rtemissiveglow = (glowfrac > 1e-6f) ? glt->rtemissivemean / glowfrac : glt->rtemissivemean;
+		}
 
 		if (use_color_emissive)
 			glt->rtemissivetex = true;
@@ -1342,6 +1382,11 @@ static qboolean TexMgr_ApplyMaterialFromMat (gltexture_t *glt, unsigned *albedoF
 		            glt->rtemissivecolor[0], glt->rtemissivecolor[1], glt->rtemissivecolor[2],
 		            glt->rtemissivemean,
 		            glt->rtemissivemeanbase);
+		Con_Printf ("RT:   glow uv=(%.3f, %.3f)-(%.3f, %.3f) areaFrac=%.3f density=%.4f wholeTexture=%d\n",
+		            glt->rtemisuvmin[0], glt->rtemisuvmin[1],
+		            glt->rtemisuvmax[0], glt->rtemisuvmax[1],
+		            glt->rtemisglowfrac, glt->rtemissiveglow,
+		            glt->rtemissiveglowtex ? 1 : 0);
 	}
 
 	RgMaterialCreateInfo info = {
@@ -1527,6 +1572,11 @@ gltexture_t *TexMgr_LoadImage (
 	glt->rtemissivecolor[0] = glt->rtemissivecolor[1] = glt->rtemissivecolor[2] = 0.0f;
 	glt->rtemissivemean = 0.0f;
 	glt->rtemissivemeanbase = 0.0f;
+	glt->rtemisuvmin[0] = glt->rtemisuvmin[1] = 0.0f;
+	glt->rtemisuvmax[0] = glt->rtemisuvmax[1] = 1.0f;
+	glt->rtemissiveglow = 0.0f;
+	glt->rtemisglowfrac = 1.0f;
+	glt->rtemissiveglowtex = false;
 	glt->rtemissivetex = false;
 	glt->rtislight = false;
 	glt->rtlightstyles = true;

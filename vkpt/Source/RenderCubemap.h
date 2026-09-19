@@ -38,7 +38,7 @@ public:
     struct ProceduralSkyParams
     {
         float faceBasis[18][4]; // 6 faces * (right, up, forward)
-        float sunDirection[4];
+        float sunDirection[4];  // xyz = direction toward the sun, w = how much sun the sky shows (0 = no sun)
         float sunColor[4];      // xyz color, w = sun angular radius (rad)
         float skyParams[4];     // x = multiplier, y = tint strength, z = sun disc intensity, w = sun disc radius
         float cloudColor[4];    // xyz = cloud color, w = cloud time (s)

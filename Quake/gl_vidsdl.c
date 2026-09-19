@@ -31,6 +31,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "rt_material.h"
 #include "SDL.h"
 #include "SDL_syswm.h"
+#include <time.h> // for the timestamp of the frame rt_stats_dump appends
 
 #define MAX_MODE_LIST  600 // johnfitz -- was 30
 #define MAX_BPPS_LIST  5
@@ -132,10 +133,28 @@ task_handle_t prev_end_rendering_task = INVALID_TASK_HANDLE;
     CVAR_DEF_T (rt_elight_radius, "0.01") \
     \
 	CVAR_DEF_T (rt_light_reach, "25") \
+	/* Reach of a light of a moving entity, in metres: the distance it is promised not to reach
+	   past, and so the reason a torch or a flame reaches a few rooms instead of every list of
+	   the map. The lights of the map itself state no reach and keep the one their leaf gives
+	   them. */ \
+	CVAR_DEF_T (rt_light_reach_max, "10") \
+	CVAR_DEF_T (rt_cluster_dlights, "1") \
+	/* 0 keeps the cluster lists all or nothing: a light that moves takes every list of the \
+	   scene with it, which is what a lava ball was measured to cost. */ \
+	CVAR_DEF_T (rt_cluster_incremental, "0") \
 	CVAR_DEF_T (rt_truelight, "1") \
 	CVAR_DEF_T (rt_materials_only, "0") \
 	CVAR_DEF_T (rt_light_styles, "1") \
 	CVAR_DEF_T (rt_light_styles_reach, "48") \
+	/* 1 splits a water or animated chain of one world texture only when something the upload \
+	   of a batch actually reads differs (entity, model, materials, alpha, alpha test, zbias, \
+	   warp/water/acid/animated), so the surfaces of that texture share one uploaded geometry; \
+	   the lightmap page is not a reason to split, because the ray traced upload never reads it \
+	   -- it names a texture of the rasterizer's lightmap pass. 0 keeps the historical test, \
+	   whose alpha comparison has its sign inverted and which reads no other state. */ \
+	CVAR_DEF_T (rt_world_batch_merge, "1") \
+	/* 0 uploads the map's lights one call at a time, for measuring the batched path. */ \
+	CVAR_DEF_T (rt_wmodel_lights_batch, "1") \
 	\
 	CVAR_DEF_T (rt_poi_distthresh, "2") \
 	CVAR_DEF_T (rt_poi_distthresh_super, "3") \
@@ -197,8 +216,6 @@ task_handle_t prev_end_rendering_task = INVALID_TASK_HANDLE;
 	CVAR_DEF_T (rt_volume_ambient, "2.0") \
 	CVAR_DEF_T (rt_volume_lintensity, "250") \
 	CVAR_DEF_T (rt_volume_lassymetry, "0.0") \
-	CVAR_DEF_T (rt_volume_lpitch, "70") \
-	CVAR_DEF_T (rt_volume_lyaw, "-40") \
 	CVAR_DEF_T (rt_level_fog, "1") \
     \
 	CVAR_DEF_T (rt_water_aciddensity, "25") \
@@ -248,11 +265,10 @@ task_handle_t prev_end_rendering_task = INVALID_TASK_HANDLE;
 	CVAR_DEF_T (rt_q2_lightstats, "1") \
 	CVAR_DEF_T (rt_reflrefr_earlyout, "1") \
 	CVAR_DEF_T (rt_nee_samples, "1") \
-	CVAR_DEF_T (rt_stats, "0") \
-	CVAR_DEF_T (rt_pass_stats, "0") \
-	CVAR_DEF_T (rt_prof, "0") \
+	CVAR_DEF_T (rt_stats_panels, "0") \
 	CVAR_DEF_T (rt_worldcensus, "0") \
 	CVAR_DEF_T (rt_worldlights_stats, "0") \
+	CVAR_DEF_T (rt_worldclusters_grid, "1") \
 	\
 	CVAR_DEF_T (_rt_firsttime, "1")
 
@@ -279,12 +295,12 @@ enum
 
 /*
 ================
-RT frame profiler -- rt_prof 1
+RT frame profiler -- rt_stats 3
 
-Times the CPU side of the frame, which the GPU timestamps of rt_pass_stats do
-not cover: the geometry marking chain, the per-pass scene submission and the
-main thread's wait for the task graph. The results are drawn on screen once a
-second by SCR_DrawRTProf, next to the rt_stats panel.
+Times the CPU side of the frame, which the GPU timestamps of panel 2 do not
+cover: the geometry marking chain, the per-pass scene submission and the main
+thread's wait for the task graph. The results are drawn on screen once a second
+by SCR_DrawRTStats, and rt_stats_dump writes one snapshot to qperfdump.log.
 
 The slots are written from worker threads without synchronization, so taking the
 report and the reset that follows it can race a running task; for a diagnostic
@@ -301,7 +317,7 @@ static qboolean rt_prof_active;
 
 double RT_Prof_Begin (void)
 {
-	return rt_prof.value ? Sys_DoubleTime () : 0.0;
+	return RT_StatsPanel (RT_STATS_PROFILE) ? Sys_DoubleTime () : 0.0;
 }
 
 void RT_Prof_End (int slot, double start)
@@ -314,9 +330,15 @@ void RT_Prof_End (int slot, double start)
 		rt_prof_ms[slot] = ms;
 }
 
+void RT_Prof_Sample (int slot, double ms)
+{
+	if (ms > rt_prof_ms[slot])
+		rt_prof_ms[slot] = ms;
+}
+
 void RT_Prof_FrameStart (void)
 {
-	if (!rt_prof.value)
+	if (!RT_StatsPanel (RT_STATS_PROFILE))
 		return;
 
 	rt_prof_frame_start = Sys_DoubleTime ();
@@ -325,7 +347,7 @@ void RT_Prof_FrameStart (void)
 
 void RT_Prof_FrameEnd (void)
 {
-	if (!rt_prof.value)
+	if (!RT_StatsPanel (RT_STATS_PROFILE))
 		return;
 
 	RT_Prof_End (RT_PROF_FRAME, rt_prof_frame_start);
@@ -333,7 +355,7 @@ void RT_Prof_FrameEnd (void)
 
 void RT_Prof_Update (void)
 {
-	if (!rt_prof.value)
+	if (!RT_StatsPanel (RT_STATS_PROFILE))
 	{
 		if (!rt_prof_active)
 			return;
@@ -344,6 +366,9 @@ void RT_Prof_Update (void)
 		rt_prof_frames = 0;
 		rt_cluster_cache_hits = 0;
 		rt_cluster_cache_misses = 0;
+		rt_cluster_miss_set = 0;
+		rt_cluster_miss_leaf = 0;
+		rt_cluster_miss_geom = 0;
 		return;
 	}
 
@@ -358,6 +383,9 @@ void RT_Prof_Update (void)
 		rt_prof_frames = 0;
 		rt_cluster_cache_hits = 0;
 		rt_cluster_cache_misses = 0;
+		rt_cluster_miss_set = 0;
+		rt_cluster_miss_leaf = 0;
+		rt_cluster_miss_geom = 0;
 		return;
 	}
 
@@ -381,12 +409,357 @@ void RT_Prof_Update (void)
 
 	rt_prof_report.clusterCacheHits = rt_cluster_cache_hits;
 	rt_prof_report.clusterCacheMisses = rt_cluster_cache_misses;
+	rt_prof_report.clusterMissSet = rt_cluster_miss_set;
+	rt_prof_report.clusterMissLeaf = rt_cluster_miss_leaf;
+	rt_prof_report.clusterMissGeom = rt_cluster_miss_geom;
+	rt_prof_report.clusterGrants = rt_cluster_last_grants;
+	rt_prof_report.clusterDenied = rt_cluster_last_denied;
+	rt_prof_report.clusterGated = rt_cluster_last_gated;
+	rt_prof_report.clusterLights = rt_cluster_last_lights;
+	rt_prof_report.clusterAttempts = rt_cluster_last_attempts;
+	rt_prof_report.clusterDropped = rt_cluster_last_dropped;
 	rt_prof_report.valid = true;
 
 	rt_cluster_cache_hits = 0;
 	rt_cluster_cache_misses = 0;
+	rt_cluster_miss_set = 0;
+	rt_cluster_miss_leaf = 0;
+	rt_cluster_miss_geom = 0;
 	memset (rt_prof_ms, 0, sizeof (rt_prof_ms));
 	rt_prof_frames = 0;
+}
+
+
+/*
+================
+RT_StatsPanel
+
+One bit per panel number, so the readouts share a single switch and a single
+line in the config file. The command is the only writer of the cvar, which is
+why the value can be read straight from here.
+================
+*/
+qboolean RT_StatsPanel (int panel)
+{
+	if (panel < RT_STATS_RAYS || panel > RT_STATS_PROFILE)
+		return false;
+
+	return (CVAR_TO_UINT32 (rt_stats_panels) & (1u << (panel - 1))) != 0;
+}
+
+/*
+================
+RT_ProfSlotName
+
+Labels of the profile slots, shared by the on-screen panel and the dump so both
+spell the same measurement the same way.
+================
+*/
+const char *RT_ProfSlotName (int slot)
+{
+	static const struct
+	{
+		int         slot;
+		const char *name;
+	} names[] = {
+		{ RT_PROF_SETUP, "setup" },
+		{ RT_PROF_MARK, "mark" },
+		{ RT_PROF_EFRAGS, "efrags" },
+		{ RT_PROF_CULL, "cull" },
+		{ RT_PROF_CHAIN, "chain" },
+		{ RT_PROF_WORLD, "world" },
+		{ RT_PROF_SKY, "sky" },
+		{ RT_PROF_ENTS, "ents" },
+		{ RT_PROF_ALPHA, "alpha" },
+		{ RT_PROF_PARTICLES, "particles" },
+		{ RT_PROF_VIEWMODEL, "viewmodel" },
+		{ RT_PROF_VIEWMODEL_DRAW, "vm draw" },
+		{ RT_PROF_ELIGHTS, "elights" },
+		{ RT_PROF_WMODEL_LIGHTS, "wmodel lights" },
+		{ RT_PROF_TELEPORTS, "teleports" },
+		{ RT_PROF_CLUSTERS, "clusters" },
+		{ RT_PROF_CLUSTERS1, "clust pvs" },
+		{ RT_PROF_CLUSTERS_RESOLVE, "clust resolve" },
+		{ RT_PROF_CLUSTERS_VIS, "clust vis" },
+		{ RT_PROF_CLUSTERS_WALK, "clust walk" },
+		{ RT_PROF_CLUSTERS2, "clust topup" },
+		{ RT_PROF_CLUSTERS_FILL, "clust fill" },
+		{ RT_PROF_CLUSTERS_UPLOAD, "clust upload" },
+		{ RT_PROF_DRAWFRAME, "rgDrawFrame" },
+		{ RT_PROF_WAIT, "wait" },
+		{ RT_PROF_FRAME, "frame" },
+	};
+
+	int i;
+
+	for (i = 0; i < (int)countof (names); i++)
+		if (names[i].slot == slot)
+			return names[i].name;
+
+	return "?";
+}
+
+/*
+================
+RT_StatsCapture
+
+Reads both sources of the readout in one go, so that the panel and the dump
+report the same frame instead of being a pass apart.
+================
+*/
+void RT_StatsCapture (rt_stats_snapshot_t *snap)
+{
+	memset (snap, 0, sizeof (*snap));
+	snap->panels = CVAR_TO_UINT32 (rt_stats_panels);
+
+	if (vulkan_globals.instance != NULL)
+		snap->haveGpu = (rgGetFrameStatsEx (vulkan_globals.instance, &snap->gpu) == RG_SUCCESS);
+
+	if (rt_prof_report.valid)
+	{
+		snap->profile = rt_prof_report;
+		snap->haveProfile = true;
+	}
+}
+
+
+/*
+================
+RT_StatsPrintPanels -- state line shared by rt_stats and its old spellings
+================
+*/
+static void RT_StatsPrintPanels (const char *prefix)
+{
+	char on[8];
+	int  i, n = 0;
+
+	for (i = RT_STATS_RAYS; i <= RT_STATS_PROFILE; i++)
+		if (RT_StatsPanel (i))
+			on[n++] = (char)('0' + i);
+	on[n] = 0;
+
+	Con_Printf ("%s showing %s   (1 = ray counters, 2 = GPU pass timings, 3 = CPU profile)\n",
+	            prefix, n ? on : "nothing");
+}
+
+/*
+================
+RT_Stats_f -- rt_stats 1,2,3
+
+Replaces the three readouts that used to be switched one by one: the argument
+lists the panels to show, so "rt_stats 1,2,3" shows all of them, "rt_stats 2"
+only the GPU timings and "rt_stats 0" hides the readout. Without an argument the
+current selection is printed.
+================
+*/
+static void RT_Stats_f (void)
+{
+	unsigned int mask = 0;
+	qboolean     invalid = false;
+	int          i;
+
+	if (Cmd_Argc () < 2)
+	{
+		RT_StatsPrintPanels ("rt_stats is");
+		return;
+	}
+
+	for (i = 1; i < Cmd_Argc (); i++)
+	{
+		const char *arg = Cmd_Argv (i);
+
+		for (; *arg; arg++)
+		{
+			const int panel = *arg - '0';
+
+			if (panel < 0 || panel > RT_STATS_PROFILE)
+				invalid = true;
+			else if (panel > 0)
+				mask |= 1u << (panel - 1);
+		}
+	}
+
+	if (invalid)
+	{
+		Con_Printf ("rt_stats: expected the panels 1, 2 and 3, like \"rt_stats 1,2,3\"\n");
+		return;
+	}
+
+	Cvar_SetValueQuick (&rt_stats_panels, (float)mask);
+	RT_StatsPrintPanels ("rt_stats is");
+}
+
+/*
+================
+rt_stats_dump
+
+The panel on screen is meant to be read at a glance, which is exactly what makes
+it hard to compare runs: the numbers change while you look at them. This writes
+one frame of the same readout into qperfdump.log in the game directory, with one
+"section name value" line per number so the files can be diffed.
+
+The snapshot is taken on the calling thread, since it is a copy of two small
+structs, and everything else -- formatting and the write itself -- happens on a
+detached thread. A dump therefore cannot show up in the frame it measures.
+================
+*/
+#define RT_STATS_DUMP_FILE "qperfdump.log"
+
+typedef struct
+{
+	rt_stats_snapshot_t snap;
+	char                path[MAX_OSPATH];
+	char                stamp[32];
+} rt_stats_dump_job_t;
+
+static SDL_mutex         *rt_stats_dump_mutex;
+static rt_stats_dump_job_t rt_stats_dump_job;
+static qboolean           rt_stats_dump_busy;
+
+static void RT_StatsDumpWrite (FILE *f, const rt_stats_dump_job_t *job)
+{
+	const rt_stats_snapshot_t *snap = &job->snap;
+	int i;
+
+	fprintf (f, "# rt_stats_dump %s panels %u\n", job->stamp, snap->panels);
+
+	if (snap->haveGpu)
+	{
+		fprintf (f, "%-11s %-17s %.2f\n", "gpu.frame", "ms", snap->gpu.gpuFrameMs);
+
+		if (snap->gpu.gpuTimingValid)
+			for (i = 0; i < RG_GPU_PASS_COUNT; i++)
+				fprintf (f, "%-11s %-17s %.2f\n", "gpu.pass", rgGetGpuPassName (i), snap->gpu.gpuPassMs[i]);
+		else
+			fprintf (f, "%-11s %-17s %s\n", "gpu.pass", "timings", "not collected, rt_stats 2 was off");
+
+		fprintf (f, "%-11s %-17s %u\n", "gpu.rays", "total", snap->gpu.raysTotal);
+		fprintf (f, "%-11s %-17s %u\n", "gpu.rays", "primary", snap->gpu.raysPerCategory[0]);
+		fprintf (f, "%-11s %-17s %u\n", "gpu.rays", "refl refr", snap->gpu.raysPerCategory[1]);
+		fprintf (f, "%-11s %-17s %u\n", "gpu.rays", "indirect", snap->gpu.raysPerCategory[2]);
+		fprintf (f, "%-11s %-17s %u\n", "gpu.rays", "shadow dir", snap->gpu.raysPerCategory[3]);
+		fprintf (f, "%-11s %-17s %u\n", "gpu.rays", "shadow ind", snap->gpu.raysPerCategory[4]);
+		fprintf (f, "%-11s %-17s %u\n", "gpu.calls", "rg entry points", snap->gpu.apiCalls);
+	}
+	else
+	{
+		fprintf (f, "%-11s %-17s %s\n", "gpu", "unavailable", "the backend returned no frame stats");
+	}
+
+	fputc ('\n', f);
+
+	if (snap->haveProfile)
+	{
+		fprintf (f, "%-11s %-17s %.2f\n", "cpu.frame", "ms", snap->profile.frameMs);
+		fprintf (f, "%-11s %-17s %.2f\n", "cpu.main", "ms", snap->profile.frameMs - snap->profile.waitMs);
+		fprintf (f, "%-11s %-17s %.2f\n", "cpu.wait", "ms", snap->profile.waitMs);
+		fprintf (f, "%-11s %-17s %.1f\n", "fps", "-", snap->profile.fps);
+
+		for (i = 0; i < RT_PROF_COUNT; i++)
+			fprintf (f, "%-11s %-17s %.2f\n", "cpu.slot", RT_ProfSlotName (i), snap->profile.ms[i]);
+
+		fprintf (f, "%-11s %-17s %i\n", "cpu.cluster", "cache hits", snap->profile.clusterCacheHits);
+		fprintf (f, "%-11s %-17s %i\n", "cpu.cluster", "cache misses", snap->profile.clusterCacheMisses);
+		fprintf (f, "%-11s %-17s %i\n", "cpu.cluster", "miss set", snap->profile.clusterMissSet);
+		fprintf (f, "%-11s %-17s %i\n", "cpu.cluster", "miss leaf", snap->profile.clusterMissLeaf);
+		fprintf (f, "%-11s %-17s %i\n", "cpu.cluster", "miss geom", snap->profile.clusterMissGeom);
+		fprintf (f, "%-11s %-17s %i\n", "cpu.cluster", "grants", snap->profile.clusterGrants);
+		fprintf (f, "%-11s %-17s %i\n", "cpu.cluster", "denied", snap->profile.clusterDenied);
+		fprintf (f, "%-11s %-17s %i\n", "cpu.cluster", "gated", snap->profile.clusterGated);
+		fprintf (f, "%-11s %-17s %i\n", "cpu.cluster", "lights", snap->profile.clusterLights);
+		fprintf (f, "%-11s %-17s %i\n", "cpu.cluster", "lights add", snap->profile.clusterAttempts);
+		fprintf (f, "%-11s %-17s %i\n", "cpu.cluster", "lights drop", snap->profile.clusterDropped);
+	}
+	else
+	{
+		fprintf (f, "%-11s %-17s %s\n", "cpu", "unavailable", "the profiler is off, rt_stats 3 turns it on");
+	}
+
+	fputc ('\n', f);
+	fputc ('\n', f);
+}
+
+static int RT_StatsDumpThread (void *unused)
+{
+	rt_stats_dump_job_t job;
+	FILE               *f;
+
+	SDL_LockMutex (rt_stats_dump_mutex);
+	job = rt_stats_dump_job;
+	SDL_UnlockMutex (rt_stats_dump_mutex);
+
+	f = fopen (job.path, "a");
+
+	if (f)
+	{
+		RT_StatsDumpWrite (f, &job);
+		fclose (f);
+	}
+
+	// The flag stays set until the file is closed, so a second dump issued while this one is
+	// being written is refused instead of appending to the same file from two threads.
+	SDL_LockMutex (rt_stats_dump_mutex);
+	rt_stats_dump_busy = false;
+	SDL_UnlockMutex (rt_stats_dump_mutex);
+
+	return 0;
+}
+
+static void RT_StatsDump_f (void)
+{
+	SDL_Thread *thread;
+	time_t      now;
+	struct tm  *local;
+
+	if (!rt_stats_dump_mutex)
+		rt_stats_dump_mutex = SDL_CreateMutex ();
+
+	if (!rt_stats_dump_mutex)
+	{
+		Con_Printf ("rt_stats_dump: could not create the writer lock\n");
+		return;
+	}
+
+	SDL_LockMutex (rt_stats_dump_mutex);
+
+	if (rt_stats_dump_busy)
+	{
+		SDL_UnlockMutex (rt_stats_dump_mutex);
+		Con_Printf ("rt_stats_dump: the previous dump is still being written\n");
+		return;
+	}
+
+	RT_StatsCapture (&rt_stats_dump_job.snap);
+	q_snprintf (rt_stats_dump_job.path, sizeof (rt_stats_dump_job.path), "%s/" RT_STATS_DUMP_FILE, com_gamedir);
+
+	now = time (NULL);
+	local = localtime (&now);
+	if (local)
+		strftime (rt_stats_dump_job.stamp, sizeof (rt_stats_dump_job.stamp), "%Y-%m-%d %H:%M:%S", local);
+	else
+		rt_stats_dump_job.stamp[0] = 0;
+
+	rt_stats_dump_busy = true;
+
+	SDL_UnlockMutex (rt_stats_dump_mutex);
+
+	thread = SDL_CreateThread (RT_StatsDumpThread, "rt_stats_dump", NULL);
+
+	if (!thread)
+	{
+		SDL_LockMutex (rt_stats_dump_mutex);
+		rt_stats_dump_busy = false;
+		SDL_UnlockMutex (rt_stats_dump_mutex);
+		Con_Printf ("rt_stats_dump: could not start the writer thread\n");
+		return;
+	}
+
+	SDL_DetachThread (thread);
+
+	Con_Printf ("rt_stats_dump: appending the frame to %s\n", rt_stats_dump_job.path);
+
+	if (!RT_StatsPanel (RT_STATS_RAYS) || !RT_StatsPanel (RT_STATS_PASSES))
+		Con_Printf ("rt_stats_dump: ray counters need rt_stats 1 and the GPU timings need rt_stats 2\n");
 }
 
 
@@ -790,10 +1163,10 @@ static void RT_AcidColor(void)
 // rest of the config.
 typedef struct
 {
-	cvar_t  *cvar;       // its name is also the name of the command
-	vec3_t   fallback;   // used while the cvar holds something unparsable
-	char     parsed[64]; // the string `value` was parsed from
+	cvar_t  *cvar;     // its name is also the name of the command
+	vec3_t   fallback; // used while the cvar holds something unparsable
 	vec3_t   value;
+	qboolean dirty;    // `value` is stale until RT_ColorGet re-parses the cvar
 } rt_color_t;
 
 typedef enum
@@ -807,10 +1180,10 @@ typedef enum
 } rt_color_index_t;
 
 static rt_color_t rt_colors[RT_COLOR_COUNT] = {
-	[RT_COLOR_SKY]         = {&rt_sky_color,        {32 / 255.0f, 0.0f, 64 / 255.0f} },
-	[RT_COLOR_CLOUDS]      = {&rt_sky_clouds_color, {0.0f, 0.0f, 0.0f} },
-	[RT_COLOR_LIGHT]       = {&rt_light_color,      {1.0f, 1.0f, 1.0f} },
-	[RT_COLOR_GLOBALLIGHT] = {&rt_globallight,      {1.0f, 1.0f, 1.0f} },
+	[RT_COLOR_SKY]         = {.cvar = &rt_sky_color,        .fallback = {32 / 255.0f, 0.0f, 64 / 255.0f}, .dirty = true},
+	[RT_COLOR_CLOUDS]      = {.cvar = &rt_sky_clouds_color, .fallback = {0.0f, 0.0f, 0.0f},                .dirty = true},
+	[RT_COLOR_LIGHT]       = {.cvar = &rt_light_color,      .fallback = {1.0f, 1.0f, 1.0f},                .dirty = true},
+	[RT_COLOR_GLOBALLIGHT] = {.cvar = &rt_globallight,      .fallback = {1.0f, 1.0f, 1.0f},                .dirty = true},
 };
 
 static qboolean RT_ColorParse (const char *s, float *out)
@@ -850,15 +1223,34 @@ static rt_color_t *RT_ColorFind (const char *name)
 	return NULL;
 }
 
-// Parses the archived string, and only re-parses it when it changed, so a bad
-// value is reported once instead of on every frame.
+// Fired by Cvar_SetQuick on every real change, so the getters below need no test of
+// their own.
+static void RT_ColorChanged_f (cvar_t *var)
+{
+	for (size_t i = 0; i < countof (rt_colors); i++)
+	{
+		if (rt_colors[i].cvar == var)
+		{
+			rt_colors[i].dirty = true;
+			return;
+		}
+	}
+}
+
+// The getters run once per light per frame, which rules out comparing the string on
+// every call -- and a pointer comparison would not be enough either, because
+// Cvar_SetQuick reallocates only when the length changes (cvar.c:399) and memcpys
+// into the existing buffer otherwise (cvar.c:404), which leaves the pointer alone. So
+// the cvar's callback reports the change instead: the parse, and with it the
+// complaint about a value that does not parse, happens once per change rather than on
+// every call.
 static void RT_ColorGet (rt_color_t *c, float *out)
 {
-	if (!c->parsed[0] || strcmp (c->parsed, c->cvar->string))
+	if (c->dirty)
 	{
-		q_strlcpy (c->parsed, c->cvar->string, sizeof (c->parsed));
+		c->dirty = false;
 
-		if (!RT_ColorParse (c->parsed, c->value))
+		if (!RT_ColorParse (c->cvar->string, c->value))
 		{
 			Con_Printf ("%s: expected <r 0..255> <g 0..255> <b 0..255>, got \"%s\"\n", c->cvar->name, c->cvar->string);
 			VectorCopy (c->fallback, c->value);
@@ -905,7 +1297,7 @@ static void RT_ColorSet (rt_color_t *c, const float color[3])
 		(int)(CLAMP (0, color[1], 1.0f) * 255 + 0.5f),
 		(int)(CLAMP (0, color[2], 1.0f) * 255 + 0.5f)));
 
-	c->parsed[0] = '\0';
+	c->dirty = true;
 }
 
 static void RT_Color (void)
@@ -1035,6 +1427,8 @@ static void GL_InitInstance (void)
 	Cmd_AddCommand ("rt_water_acidcolor", RT_AcidColor);
 	Cmd_AddCommand ("rt_light_report", RT_LightReport_f);
 	Cmd_AddCommand ("fog", RT_Fog_Cmd);
+	Cmd_AddCommand ("rt_stats", RT_Stats_f);
+	Cmd_AddCommand ("rt_stats_dump", RT_StatsDump_f);
 	Cvar_SetValueQuick (&_rt_firsttime, 0);
 
 
@@ -1538,19 +1932,21 @@ static void GL_EndRenderingTask (end_rendering_parms_t *parms)
 		c[7] = c[8] = 0.0f;
 	}
 
+	// The volume light is the sky seen from the sun's direction, so it is
+	// sunlight: with rt_sun 0 there is nothing to scatter and only the ambient
+	// term below still lights the fog. The legacy rt_volume_lpitch/lyaw +
+	// skyflatcolor fallback that used to run here is gone: its colour was the
+	// sky texture's average rather than rt_sky_color, which made the shafts an
+	// order of magnitude brighter with the sun off.
 	vec3_t volume_light_angles;
 	vec3_t volume_light_color;
 
+	RT_VEC3_SET (volume_light_angles, CVAR_TO_FLOAT (rt_sun_pitch), CVAR_TO_FLOAT (rt_sun_yaw), 0);
+
 	if (CVAR_TO_BOOL (rt_sun))
-	{
-		RT_VEC3_SET (volume_light_angles, CVAR_TO_FLOAT (rt_sun_pitch), CVAR_TO_FLOAT (rt_sun_yaw), 0);
 		RT_GetSkyColor (volume_light_color);
-	}
 	else
-	{
-		RT_VEC3_SET (volume_light_angles, CVAR_TO_FLOAT (rt_volume_lpitch), CVAR_TO_FLOAT (rt_volume_lyaw), 0);
-		VectorCopy (skyflatcolor, volume_light_color);
-	}
+		volume_light_color[0] = volume_light_color[1] = volume_light_color[2] = 0.0f;
 
 	VectorScale (volume_light_color, CVAR_TO_FLOAT (rt_volume_lintensity) * CVAR_TO_FLOAT (rt_brightness), volume_light_color);
 	RT_APPLY_LIGHT_TINT (volume_light_color);
@@ -1701,11 +2097,11 @@ static void GL_EndRenderingTask (end_rendering_parms_t *parms)
 		.drawFlags = CVAR_TO_UINT32 (rt_debugflags),
 	};
 	debug_params.drawFlags |= RG_DEBUG_DRAW_Q2RTX_CORE_BIT;
-	if (CVAR_TO_BOOL (rt_stats))
+	if (RT_StatsPanel (RT_STATS_RAYS))
 	{
 		debug_params.drawFlags |= RG_DEBUG_DRAW_STATS_BIT;
 	}
-	if (CVAR_TO_BOOL (rt_pass_stats))
+	if (RT_StatsPanel (RT_STATS_PASSES))
 	{
 		debug_params.drawFlags |= RG_DEBUG_DRAW_PASS_STATS_BIT;
 	}
@@ -2138,6 +2534,14 @@ void VID_Init (void)
 #undef CVAR_DEF_T
 
 		Cvar_RegisterVariable (&rt_light_report_filter);
+
+		// The colour settings are read per light, so they watch their cvar instead of
+		// comparing its string on every read. Registered after the cvars, which is
+		// where VID_Init has them.
+		for (size_t i = 0; i < countof (rt_colors); i++)
+		{
+			Cvar_SetCallback (rt_colors[i].cvar, RT_ColorChanged_f);
+		}
 	}
 
 	Cvar_SetCallback (&rt_sun_preset, RT_SunPreset_f);

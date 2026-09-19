@@ -37,7 +37,11 @@ constexpr double RG_PI = 3.1415926535897932384626433;
 constexpr float MIN_COLOR_SUM = 0.0001f;
 constexpr float MIN_SPHERE_RADIUS = 0.005f;
 
-constexpr uint32_t LIGHT_ARRAY_MAX_SIZE = 4096;
+constexpr uint32_t LIGHT_ARRAY_MAX_SIZE = vkpt::LightManager::LIGHT_ARRAY_ENTRY_COUNT;
+
+// The header mirrors these to stay free of the generated macros, so they have to agree.
+static_assert(vkpt::LightManager::LIGHT_STATS_CLUSTER_COUNT == Q2_MAX_CLUSTERS, "cluster count of the light statistics buffer");
+static_assert(vkpt::LightManager::LIGHT_STATS_SLOT_COUNT == Q2_LIGHT_LIST_STATS_BUFFERS, "slots of the light statistics buffer");
 
 }
 
@@ -57,6 +61,13 @@ vkpt::LightManager::LightManager(
     descSets{},
     needDescSetUpdate{}
 {
+    // No frame is ever on generation zero, which is what an entry of a slot no frame has
+    // written holds, so no light is registered before the frame that registers it ran.
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+    {
+        registryGeneration[i] = 1;
+    }
+
     lightsBuffer    = std::make_shared<AutoBuffer>(device, _allocator);
     lightsBuffer->Create(sizeof(ShLightEncoded) * LIGHT_ARRAY_MAX_SIZE, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT, "Lights buffer");
 
@@ -291,7 +302,15 @@ void vkpt::LightManager::PrepareForFrame(VkCommandBuffer cmd, uint32_t frameInde
     memset(prevToCurIndex->GetMapped(frameIndex), 0xFF, sizeof(uint32_t) * GetLightArrayEnd(regLightCount_Prev, dirLightCount_Prev));
     // no need to clear curToPrevIndex, as it'll be filled in the cur frame
 
-    uniqueIDToArrayIndex[frameIndex].clear();
+    /* Emptying the registry of the frame costs a generation of it, as the entries the slot holds
+       are then of a frame the lookups of this one reject on their first read. */
+    if (++registryGeneration[frameIndex] == 0)
+    {
+        memset(registry[frameIndex], 0, sizeof(registry[frameIndex]));
+        registryGeneration[frameIndex] = 1;
+    }
+    registeredLightOrder[frameIndex].clear();
+    registeredLightIndex[frameIndex].clear();
 }
 
 void vkpt::LightManager::Reset()
@@ -301,8 +320,22 @@ void vkpt::LightManager::Reset()
         memset(prevToCurIndex->GetMapped(i), 0xFF, sizeof(uint32_t) * std::max(GetLightArrayEnd(regLightCount, dirLightCount), GetLightArrayEnd(regLightCount_Prev, dirLightCount_Prev)));
         memset(curToPrevIndex->GetMapped(i), 0xFF, sizeof(uint32_t) * std::max(GetLightArrayEnd(regLightCount, dirLightCount), GetLightArrayEnd(regLightCount_Prev, dirLightCount_Prev)));
 
-        uniqueIDToArrayIndex[i].clear();
+        registeredLightOrder[i].clear();
+        registeredLightIndex[i].clear();
+
+        memset(registry[i], 0, sizeof(registry[i]));
+        registryGeneration[i] = 1;
+
+        publishedListValid[i] = false;
+        publishedLightOrder[i].clear();
+        publishedLightIndex[i].clear();
+        lightListCopyPending[i] = false;
     }
+
+    /* No list of the scene to come is known yet, so the statistics fill has to keep covering the
+       whole range until one is published. */
+    statsClusterTarget = Q2_MAX_CLUSTERS;
+    memset(statsClusterCleared, 0, sizeof(statsClusterCleared));
 
     regLightCount_Prev = regLightCount = 0;
     dirLightCount_Prev = dirLightCount = 0;
@@ -351,10 +384,52 @@ void vkpt::LightManager::IncrementCount(const ShLightEncoded& encodedLight)
     }
 }
 
+uint32_t vkpt::LightManager::GetRegistrySlot(const RegistryEntry *entries, uint32_t generation, uint64_t uniqueID, bool &found)
+{
+    const uint64_t hash = uniqueID * 0x9E3779B97F4A7C15ull;
+    uint32_t       slot = static_cast<uint32_t>(hash >> 32) & LIGHT_REGISTRY_MASK;
+
+    found = false;
+
+    for (;;)
+    {
+        const RegistryEntry &entry = entries[slot];
+        if (entry.generation != generation)
+        {
+            // Either the slot was never written or it holds a light of a frame before this one,
+            // and then it holds a light this frame neither registered nor can match a lookup to.
+            return slot;
+        }
+        if (entry.uniqueID == uniqueID)
+        {
+            found = true;
+            return slot;
+        }
+        slot = (slot + 1) & LIGHT_REGISTRY_MASK;
+    }
+}
+
+bool vkpt::LightManager::FindRegisteredLight(uint32_t frameIndex, uint64_t uniqueID, uint32_t &outArrayIndex) const
+{
+    bool found = false;
+    const uint32_t slot = GetRegistrySlot(registry[frameIndex], registryGeneration[frameIndex], uniqueID, found);
+
+    if (found)
+    {
+        outArrayIndex = registry[frameIndex][slot].arrayIndex;
+    }
+    return found;
+}
+
 void vkpt::LightManager::AddLight(uint32_t frameIndex, uint64_t uniqueId, const vkpt::ShLightEncoded &encodedLight)
 {
-    if (uniqueIDToArrayIndex[frameIndex].find(uniqueId) != uniqueIDToArrayIndex[frameIndex].end())
+    bool found = false;
+    const uint32_t registrySlot = GetRegistrySlot(registry[frameIndex], registryGeneration[frameIndex], uniqueId, found);
+
+    if (found)
     {
+        // The frame already registered this light, and has to keep naming the light it gave it
+        // then, or the cluster lists resolved so far would name a place that is not the light.
         return;
     }
 
@@ -372,8 +447,21 @@ void vkpt::LightManager::AddLight(uint32_t frameIndex, uint64_t uniqueId, const 
     auto *dst = (ShLightEncoded *)lightsBuffer->GetMapped(frameIndex);
     memcpy(&dst[index.GetArrayIndex()], &encodedLight, sizeof(vkpt::ShLightEncoded));
 
-    FillMatchPrev(frameIndex, index, uniqueId);
-    uniqueIDToArrayIndex[frameIndex][uniqueId] = index;
+    const uint32_t ordinal = uint32_t(registeredLightOrder[frameIndex].size());
+
+    FillMatchPrev(frameIndex, index, uniqueId, ordinal);
+
+    /* The generation goes in first, so that a lookup of the next frame, which is on another
+       generation, rejects this entry without reading the rest of it. */
+    RegistryEntry &entry = registry[frameIndex][registrySlot];
+    entry.generation = registryGeneration[frameIndex];
+    entry.arrayIndex = index.GetArrayIndex();
+    entry.uniqueID = uniqueId;
+
+    /* The array index just given to the light is its place in this sequence, so the sequence is
+       what says whether the words a previous frame published still name the same lights. */
+    registeredLightOrder[frameIndex].push_back(uniqueId);
+    registeredLightIndex[frameIndex].push_back(index.GetArrayIndex());
 }
 
 void vkpt::LightManager::AddSphericalLight(uint32_t frameIndex, const RgSphericalLightUploadInfo &info)
@@ -476,8 +564,20 @@ void vkpt::LightManager::CopyFromStaging(VkCommandBuffer cmd, uint32_t frameInde
 
     lightsBuffer->CopyFromStaging(cmd, frameIndex, sizeof(ShLightEncoded) * GetLightArrayEnd(regLightCount, dirLightCount));
 
-    lightListOffsets->CopyFromStaging(cmd, frameIndex, sizeof(uint32_t) * (Q2_MAX_CLUSTERS + 1));
-    lightListLights->CopyFromStaging(cmd, frameIndex, sizeof(uint32_t) * Q2_MAX_CLUSTERS * Q2_LIGHT_LIST_MAX_PER_CELL);
+    /* The list buffers of the device are written once per change of the lists, not once per
+       frame: a frame whose lists are the ones the frame before it published leaves them as they
+       are, and with them the staging words that frame would have copied keep their age. */
+    if (lightListCopyPending[frameIndex])
+    {
+        lightListOffsets->CopyFromStaging(cmd, frameIndex, sizeof(uint32_t) * (Q2_MAX_CLUSTERS + 1));
+        /* The words of the publication this slot staged, which the offsets of that same staging
+           buffer delimit. It is the count that publication recorded and not whichever frame
+           published last: a publication is copied two frames after it was made, when the other
+           slot has published a count of its own. */
+        lightListLights->CopyFromStaging(cmd, frameIndex, sizeof(uint32_t) * publishedListWords[frameIndex]);
+
+        lightListCopyPending[frameIndex] = false;
+    }
 
     prevToCurIndex->CopyFromStaging(cmd, frameIndex, sizeof(uint32_t) * GetLightArrayEnd(regLightCount_Prev, dirLightCount_Prev));
     curToPrevIndex->CopyFromStaging(cmd, frameIndex, sizeof(uint32_t) * GetLightArrayEnd(regLightCount, dirLightCount));
@@ -492,11 +592,38 @@ void vkpt::LightManager::CopyFromStaging(VkCommandBuffer cmd, uint32_t frameInde
 
 void vkpt::LightManager::SetClusterLightLists(uint32_t frameIndex, uint32_t numClusters,
                                               const uint32_t *pOffsets, const uint64_t *pLightUniqueIds,
-                                              uint32_t totalLightCount)
+                                              uint32_t totalLightCount, uint64_t listGeneration)
 {
     if (numClusters > Q2_MAX_CLUSTERS)
     {
         numClusters = Q2_MAX_CLUSTERS;
+    }
+
+    /* This is the cluster count the lists the device holds from now on can name, which is how far
+       the light statistics of a cluster band can reach. */
+    statsClusterTarget = numClusters;
+
+    const uint32_t lightsWords = Q2_MAX_CLUSTERS * Q2_LIGHT_LIST_MAX_PER_CELL;
+    const uint32_t count = std::min(totalLightCount, lightsWords);
+
+    /* A word of a publication is the place an id resolves to, so this slot holds these words if
+       the composition says so and every id resolves the way it did then, which the places the
+       frame gave its lights in registration order say. Thousands of words are compared here
+       against the hundreds of thousands the loop below resolves one by one. */
+    const uint32_t registeredCount = uint32_t(registeredLightOrder[frameIndex].size());
+    const bool     samePlaces =
+        publishedLightIndex[frameIndex].size() == registeredCount &&
+        (registeredCount == 0 ||
+         memcmp(publishedLightIndex[frameIndex].data(), registeredLightIndex[frameIndex].data(), sizeof(uint32_t) * registeredCount) == 0);
+
+    const bool sameAsPublished =
+        publishedListValid[frameIndex] && publishedListGeneration[frameIndex] == listGeneration &&
+        publishedListClusters[frameIndex] == numClusters && publishedListWords[frameIndex] == count &&
+        samePlaces && publishedLightOrder[frameIndex] == registeredLightOrder[frameIndex];
+
+    if (sameAsPublished)
+    {
+        return;
     }
 
     uint32_t *dstOffsets = static_cast<uint32_t *>(lightListOffsets->GetMapped(frameIndex));
@@ -509,19 +636,77 @@ void vkpt::LightManager::SetClusterLightLists(uint32_t frameIndex, uint32_t numC
         dstOffsets[i] = pOffsets[i];
     }
 
-    const uint32_t lightsWords = Q2_MAX_CLUSTERS * Q2_LIGHT_LIST_MAX_PER_CELL;
     uint32_t *dstLights = static_cast<uint32_t *>(lightListLights->GetMapped(frameIndex));
-    for (uint32_t i = 0; i < lightsWords; i++)
-    {
-        dstLights[i] = 0;
-    }
 
-    const uint32_t count = std::min(totalLightCount, lightsWords);
+    /* One light is listed in every cluster its PVS covers, so a registry of at most a thousand
+       lights still produces hundreds of thousands of entries per frame. Resolving each unique id
+       through the light map once and remembering the answer keeps the loop off the hash map for
+       all but the first entry of a light. */
+    struct CachedIndex
+    {
+        uint64_t uid;
+        uint32_t index; // kNotCached marks an empty slot
+    };
+
+    constexpr uint32_t kCacheSize = 2048; // larger than the light registry, so the table stays sparse
+    constexpr uint32_t kNotCached = ~0u;
+
+    CachedIndex cache[kCacheSize];
+    memset(cache, 0xFF, sizeof(cache));
+
     for (uint32_t i = 0; i < count; i++)
     {
-        const auto it = uniqueIDToArrayIndex[frameIndex].find(pLightUniqueIds[i]);
-        dstLights[i] = (it != uniqueIDToArrayIndex[frameIndex].end()) ? it->second.GetArrayIndex() : 0u;
+        const uint64_t uid = pLightUniqueIds[i];
+        const uint64_t hash = uid * 0x9E3779B97F4A7C15ull;
+        uint32_t       slot = static_cast<uint32_t>(hash >> 32) & (kCacheSize - 1);
+
+        uint32_t index = 0;
+        bool     found = false;
+        for (uint32_t probe = 0; probe < kCacheSize; probe++)
+        {
+            const CachedIndex &entry = cache[slot];
+            if (entry.index == kNotCached)
+            {
+                break; // this slot is where the uid would be inserted
+            }
+            if (entry.uid == uid)
+            {
+                index = entry.index;
+                found = true;
+                break;
+            }
+            slot = (slot + 1) & (kCacheSize - 1);
+        }
+
+        if (!found)
+        {
+            uint32_t resolved = 0;
+            /* An id the frame does not know about resolves to no light at all. Zero is the
+               directional light slot, so publishing it would name the sun instead, and the
+               shader has to be able to tell the two apart to skip the entry. */
+            index = FindRegisteredLight(frameIndex, uid, resolved) ? resolved : uint32_t(LIGHT_INDEX_NONE);
+
+            if (cache[slot].index == kNotCached) // the probe above can leave slot occupied when full
+            {
+                cache[slot].uid = uid;
+                cache[slot].index = index;
+            }
+        }
+
+        dstLights[i] = index;
     }
+
+    /* The words of this publication, for this slot to recognize as its own the next time it is
+       the one being recorded. */
+    publishedListValid[frameIndex] = true;
+    publishedListGeneration[frameIndex] = listGeneration;
+    publishedListClusters[frameIndex] = numClusters;
+    publishedListWords[frameIndex] = count;
+    publishedLightOrder[frameIndex] = registeredLightOrder[frameIndex];
+    publishedLightIndex[frameIndex].assign(registeredLightIndex[frameIndex].begin(),
+                                           registeredLightIndex[frameIndex].end());
+
+    lightListCopyPending[frameIndex] = true;
 }
 
 void vkpt::LightManager::ResetLightStats(VkCommandBuffer cmd, uint32_t frameIndex, uint32_t frameId)
@@ -531,7 +716,27 @@ void vkpt::LightManager::ResetLightStats(VkCommandBuffer cmd, uint32_t frameInde
     const VkDeviceSize statsSlotSize =
         sizeof(uint32_t) * Q2_MAX_CLUSTERS * Q2_LIGHT_LIST_MAX_PER_CELL *
         Q2_LIGHT_LIST_STATS_SIDES * 2;
-    vkCmdFillBuffer(cmd, lightStats.GetBuffer(), statsSlotSize * slot, statsSlotSize, 0);
+
+    /* A cluster no list names has no counter any shader can read, so the clusters of a slot have to
+       be zero only as far as the lists the device holds can reach: on the maps whose lists stay
+       inside a fraction of the cluster grid this fills a fraction of the slot, and a fill is
+       proportional to its size. The slot of this frame is the one being handed over to the frames
+       after it and is filled again at every rotation; the others are filled only when the lists
+       grew past what a slot was last filled up to. */
+    const uint32_t clusterCount = std::min(statsClusterTarget, static_cast<uint32_t>(Q2_MAX_CLUSTERS));
+    const VkDeviceSize clusterSize = statsSlotSize / Q2_MAX_CLUSTERS;
+    const VkDeviceSize fillSize = clusterSize * clusterCount;
+
+    for (uint32_t i = 0; i < Q2_LIGHT_LIST_STATS_BUFFERS; i++)
+    {
+        if (i != slot && statsClusterCleared[i] >= clusterCount)
+        {
+            continue;
+        }
+
+        vkCmdFillBuffer(cmd, lightStats.GetBuffer(), statsSlotSize * i, fillSize, 0);
+        statsClusterCleared[i] = clusterCount;
+    }
 }
 
 void vkpt::LightManager::BarrierQ2ClusterLists(VkCommandBuffer cmd, uint32_t frameIndex)
@@ -576,24 +781,30 @@ VkDescriptorSet vkpt::LightManager::GetDescSet(uint32_t frameIndex)
     return descSets[frameIndex];
 }
 
-void vkpt::LightManager::FillMatchPrev(uint32_t curFrameIndex, LightArrayIndex lightIndexInCurFrame, UniqueLightID uniqueID)
+void vkpt::LightManager::FillMatchPrev(uint32_t curFrameIndex, LightArrayIndex lightIndexInCurFrame, UniqueLightID uniqueID, uint32_t ordinal)
 {
     uint32_t prevFrame = (curFrameIndex + 1) % MAX_FRAMES_IN_FLIGHT;
-    const rgl::unordered_map<UniqueLightID, LightArrayIndex> &uniqueToPrevIndex = uniqueIDToArrayIndex[prevFrame];
 
-    auto found = uniqueToPrevIndex.find(uniqueID);
-    if (found == uniqueToPrevIndex.end())
+    /* The previous frame registered the same ids in the same order when the light set of the scene
+       did not change, which is what happens in almost every frame: the light that is registered in
+       this place then is the light that had this place, and the place it had is the one the
+       previous frame recorded for it. */
+    uint32_t lightIndexInPrevFrame = 0;
+    if (ordinal < registeredLightOrder[prevFrame].size() && registeredLightOrder[prevFrame][ordinal] == uniqueID)
     {
+        lightIndexInPrevFrame = registeredLightIndex[prevFrame][ordinal];
+    }
+    else if (!FindRegisteredLight(prevFrame, uniqueID, lightIndexInPrevFrame))
+    {
+        // The light is new to the scene, so it has no place in the frame before this one.
         return;
     }
 
-    LightArrayIndex lightIndexInPrevFrame = found->second;
-
     uint32_t *prev2cur = static_cast<uint32_t *>(prevToCurIndex->GetMapped(curFrameIndex));
-    prev2cur[lightIndexInPrevFrame.GetArrayIndex()] = lightIndexInCurFrame.GetArrayIndex();
+    prev2cur[lightIndexInPrevFrame] = lightIndexInCurFrame.GetArrayIndex();
 
     uint32_t *cur2prev = static_cast<uint32_t *>(curToPrevIndex->GetMapped(curFrameIndex));
-    cur2prev[lightIndexInCurFrame.GetArrayIndex()] = lightIndexInPrevFrame.GetArrayIndex();
+    cur2prev[lightIndexInCurFrame.GetArrayIndex()] = lightIndexInPrevFrame;
 }
 
 constexpr uint32_t BINDINGS[] =
@@ -735,15 +946,14 @@ uint32_t vkpt::LightManager::GetLightIndexIgnoreFPVShadows(uint32_t frameIndex, 
     {
         return LIGHT_INDEX_NONE;
     }
-    UniqueLightID uniqueId = { *pLightUniqueId };
 
-    const auto f = uniqueIDToArrayIndex[frameIndex].find(uniqueId);
-    if (f == uniqueIDToArrayIndex[frameIndex].end())
+    uint32_t index = 0;
+    if (!FindRegisteredLight(frameIndex, *pLightUniqueId, index))
     {
         return LIGHT_INDEX_NONE;
     }
 
-    return f->second.GetArrayIndex();
+    return index;
 }
 
 static_assert(vkpt::MAX_FRAMES_IN_FLIGHT == 2);

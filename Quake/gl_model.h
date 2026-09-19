@@ -497,6 +497,7 @@ typedef struct qmodel_s
 	texture_t **textures;
 
 	byte *visdata;
+	int   visdatasize; // the lump holds the rows of the leafs end to end and nothing follows them
 	byte *lightdata;
 	char *entities;
 

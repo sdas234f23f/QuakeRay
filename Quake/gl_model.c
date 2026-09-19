@@ -328,6 +328,7 @@ static void Mod_FreeModelMemory (qmodel_t *mod)
 		SAFE_FREE (mod->textures);
 		mod->numtextures = 0;
 		SAFE_FREE (mod->visdata);
+		mod->visdatasize = 0;
 		mod->nowatervis = false;
 		SAFE_FREE (mod->lightdata);
 		SAFE_FREE (mod->entities);
@@ -979,9 +980,11 @@ static void Mod_LoadVisibility (qmodel_t *mod, byte *mod_base, lump_t *l)
 	if (!l->filelen)
 	{
 		mod->visdata = NULL;
+		mod->visdatasize = 0;
 		return;
 	}
 	mod->visdata = (byte *)Mem_Alloc (l->filelen);
+	mod->visdatasize = l->filelen;
 	memcpy (mod->visdata, mod_base + l->fileofs, l->filelen);
 }
 
@@ -2373,11 +2376,12 @@ static FILE *Mod_FindVisibilityExternal (qmodel_t *mod, const char *loadname)
 	return f;
 }
 
-static byte *Mod_LoadVisibilityExternal (FILE *f)
+static byte *Mod_LoadVisibilityExternal (FILE *f, int *p_len)
 {
 	int   filelen;
 	byte *visdata;
 
+	*p_len = 0;
 	filelen = 0;
 	if (fread (&filelen, 1, 4, f) != 4)
 		return NULL;
@@ -2388,6 +2392,7 @@ static byte *Mod_LoadVisibilityExternal (FILE *f)
 	visdata = (byte *)Mem_Alloc (filelen);
 	if (fread (visdata, filelen, 1, f) != 1)
 		return NULL;
+	*p_len = filelen;
 	return visdata;
 }
 
@@ -2547,7 +2552,7 @@ static void Mod_LoadBrushModel (qmodel_t *mod, const char *loadname, void *buffe
 			mod->leafs = NULL;
 			mod->numleafs = 0;
 			Con_DPrintf ("found valid external .vis file for map\n");
-			mod->visdata = Mod_LoadVisibilityExternal (fvis);
+			mod->visdata = Mod_LoadVisibilityExternal (fvis, &mod->visdatasize);
 			if (mod->visdata)
 			{
 				Mod_LoadLeafsExternal (mod, fvis);

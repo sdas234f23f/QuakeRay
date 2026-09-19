@@ -63,6 +63,10 @@ Swapchain::Swapchain(VkDevice _device,
     , isVsync(true)
     , swapchain(VK_NULL_HANDLE)
     , currentSwapchainIndex(UINT32_MAX)
+    , cachedSurfaceCaps{}
+    , cachedSurfaceCapsResult(VK_SUCCESS)
+    , cachedSurfaceCapsValid(false)
+    , cachedIsExtentOptimal(false)
 {
     VkResult r;
 
@@ -129,9 +133,15 @@ Swapchain::Swapchain(VkDevice _device,
 
 bool vkpt::Swapchain::IsExtentOptimal() const
 {
-    VkSurfaceCapabilitiesKHR surfCapabilities;
+    // the caps were queried successfully earlier in this frame: cachedIsExtentOptimal is
+    // the check made then
+    if (cachedSurfaceCapsValid)
+    {
+        return cachedIsExtentOptimal;
+    }
 
-    VkResult r = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physDevice, surface, &surfCapabilities);
+    VkSurfaceCapabilitiesKHR surfCapabilities;
+    VkResult r = GetSurfaceCapabilities(&surfCapabilities);
 
     if (r == VK_ERROR_SURFACE_LOST_KHR)
     {
@@ -140,16 +150,38 @@ bool vkpt::Swapchain::IsExtentOptimal() const
 
     VK_CHECKERROR(r);
 
-    return
-        !IsNullExtent(surfCapabilities.maxImageExtent) &&
-        !IsNullExtent(surfCapabilities.currentExtent);
+    return cachedIsExtentOptimal;
+}
+
+VkResult Swapchain::GetSurfaceCapabilities(VkSurfaceCapabilitiesKHR *outCaps) const
+{
+    if (!cachedSurfaceCapsValid)
+    {
+        cachedSurfaceCapsResult = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physDevice, surface, &cachedSurfaceCaps);
+        // a failed query is not cached: the surface can come back on the next call
+        cachedSurfaceCapsValid = (cachedSurfaceCapsResult == VK_SUCCESS);
+
+        if (cachedSurfaceCapsValid)
+        {
+            cachedIsExtentOptimal =
+                !IsNullExtent(cachedSurfaceCaps.maxImageExtent) &&
+                !IsNullExtent(cachedSurfaceCaps.currentExtent);
+        }
+    }
+
+    *outCaps = cachedSurfaceCaps;
+    return cachedSurfaceCapsResult;
+}
+
+void Swapchain::ResetSurfaceCapabilitiesCache() const
+{
+    cachedSurfaceCapsValid = false;
 }
 
 VkExtent2D Swapchain::GetOptimalExtent() const
 {
     VkSurfaceCapabilitiesKHR surfCapabilities;
-
-    VkResult r = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physDevice, surface, &surfCapabilities);
+    VkResult r = GetSurfaceCapabilities(&surfCapabilities);
     VK_CHECKERROR(r);
 
     if (IsNullExtent(surfCapabilities.maxImageExtent) ||
@@ -174,6 +206,9 @@ bool Swapchain::RequestVsync(bool enable)
 
 void Swapchain::AcquireImage(VkSemaphore imageAvailableSemaphore)
 {
+    // the surface state is the same for the whole frame, so query it once here
+    ResetSurfaceCapabilitiesCache();
+
     VkExtent2D requestedExtent = GetOptimalExtent();
 
     // if requested params are different
@@ -271,6 +306,9 @@ void Swapchain::Present(const std::shared_ptr<Queues> &queues, VkSemaphore rende
 
     if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR)
     {
+        // the surface moved under us: drop the frame's cached block so the extent, and the
+        // decision the recreate takes from it, come from a fresh query
+        ResetSurfaceCapabilitiesCache();
         TryRecreate(GetOptimalExtent(), requestedVsync);
     }
 }
@@ -295,8 +333,11 @@ void Swapchain::Create(uint32_t newWidth, uint32_t newHeight, bool vsync, VkSwap
     this->isVsync = vsync;
     this->surfaceExtent = { newWidth, newHeight };
 
+    // a swapchain is built against the surface as it is now, so this one reads the driver
+    ResetSurfaceCapabilitiesCache();
+
     VkSurfaceCapabilitiesKHR surfCapabilities;
-    VkResult r = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physDevice, surface, &surfCapabilities);
+    VkResult r = GetSurfaceCapabilities(&surfCapabilities);
     VK_CHECKERROR(r);
 
     if (surfCapabilities.currentExtent.width != UINT32_MAX && surfCapabilities.currentExtent.height != UINT32_MAX)

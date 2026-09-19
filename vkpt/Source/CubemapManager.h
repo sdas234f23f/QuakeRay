@@ -69,6 +69,10 @@ public:
 private:
     void CreateEmptyCubemap(VkCommandBuffer cmd);
 
+    // Descriptor writes are tracked per slot instead of rescanning every slot each frame
+    void MarkDescDirty(uint32_t cubemapIndex);
+    void MarkAllDescDirty();
+
 private:
     VkDevice device;
 
@@ -80,6 +84,14 @@ private:
 
     std::vector<Texture>    cubemaps;
     std::vector<Texture>    cubemapsToDestroy[MAX_FRAMES_IN_FLIGHT];
+
+    // Cubemap indices whose descriptor is not written yet. Per descriptor set, because
+    // each frame in flight has its own: a changed slot must reach all of them.
+    std::vector<uint32_t>   cubemapsToUpdateDesc[MAX_FRAMES_IN_FLIGHT];
+
+    // Marks the slots that are already in the matching cubemapsToUpdateDesc list: a slot can be
+    // marked dirty many times between two submits, but must be written only once per desc set.
+    std::vector<uint8_t>    cubemapsToUpdateDescMarked[MAX_FRAMES_IN_FLIGHT];
 
     std::string defaultTexturesPath;
     std::string overridenTexturePostfix;

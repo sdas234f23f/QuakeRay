@@ -20,8 +20,19 @@ if (-not $vsPath) {
     throw "Visual Studio Build Tools with the C++ workload are not installed."
 }
 
+$systemRoot = if ($env:SystemRoot) { $env:SystemRoot } else { "C:\Windows" }
+$system32 = Join-Path $systemRoot "System32"
+if ($env:PATH -notlike "*$system32*") {
+    $env:PATH = "$system32;$env:PATH"
+}
+
+$cmdExe = $env:ComSpec
+if (-not $cmdExe -or -not (Test-Path $cmdExe)) {
+    $cmdExe = Join-Path $system32 "cmd.exe"
+}
+
 $devCmd = Join-Path $vsPath "Common7\Tools\VsDevCmd.bat"
-$envLines = cmd /c "`"$devCmd`" -arch=x64 -host_arch=x64 >nul 2>&1 && set"
+$envLines = & $cmdExe /c "`"$devCmd`" -arch=x64 -host_arch=x64 >nul 2>&1 && set"
 foreach ($line in $envLines) {
     if ($line -match "^([^=]+)=(.*)$") {
         [Environment]::SetEnvironmentVariable($matches[1], $matches[2], "Process")

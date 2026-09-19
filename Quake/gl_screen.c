@@ -113,8 +113,6 @@ extern cvar_t r_tasks;
 extern cvar_t r_gpulightmapupdate;
 extern cvar_t r_showtris;
 extern cvar_t r_showbboxes;
-extern cvar_t rt_stats;
-extern cvar_t rt_pass_stats;
 
 qboolean scr_initialized; // ready to draw
 
@@ -581,90 +579,145 @@ static void SCR_DrawRTStatsString (cb_context_t *cbx, int x, int y, const char *
 	Draw_StringScaled (cbx, x, y, str, scale, color);
 }
 
-void SCR_DrawRTStats (cb_context_t *cbx)
+// One scale, one line spacing and one column width for the whole readout, so that
+// the panels rt_stats asks for look like the single readout they belong to.
+static const float rt_stats_scale = 2.0f;
+static const int   rt_stats_step = 16;  // 8 pixels of glyph times the scale
+static const int   rt_stats_col = 360;  // the table columns: 22 characters at that scale
+
+static void SCR_DrawRTStatsRow (cb_context_t *cbx, int x, int y, const char *name, float ms,
+                                const RgFloat4D *color)
 {
-	if (!rt_stats.value && !rt_pass_stats.value)
-		return;
+	const unsigned ms10 = (unsigned)(ms * 10.0f + 0.5f);
+	char           st[64];
 
-	RgFrameStats stats;
-	memset (&stats, 0, sizeof (stats));
+	sprintf (st, "%-14s %5u.%u ms", name, ms10 / 10, ms10 % 10);
+	SCR_DrawRTStatsString (cbx, x, y, st, rt_stats_scale, color, &color_shadow);
+}
 
-	if (rgGetFrameStatsEx (vulkan_globals.instance, &stats) != RG_SUCCESS)
-		return;
+/*
+================
+SCR_DrawRTStats
 
-	const float scale = 4.0f;
-	const int   step = 8 * (int)scale;
-	const float pass_scale = 2.0f;
-	const int   pass_step = 8 * (int)pass_scale;
-	const int   x = 8;
-	int         y = 8;
-	int         i;
-	char        st[64];
+The frame readout, in the panels that rt_stats asks for: the ray counters, the
+GPU pass timings and the CPU side of the frame. They are drawn in that order, one
+under the other, with a blank line between them, so the whole frame can be read
+as a single column.
+
+The GPU numbers come from the backend's frame stats and the CPU numbers from
+rt_prof_report, refreshed once a second by RT_Prof_Update. Slots hold the longest
+sample of the reporting window rather than the values of one frame, so they must
+not be added up.
+
+Returns the line the next section should start at.
+================
+*/
+int SCR_DrawRTStats (cb_context_t *cbx)
+{
+	const qboolean rays = RT_StatsPanel (RT_STATS_RAYS);
+	const qboolean passes = RT_StatsPanel (RT_STATS_PASSES);
+	const qboolean profile = RT_StatsPanel (RT_STATS_PROFILE);
+	const rt_prof_report_t *rep = &rt_prof_report;
+	rt_stats_snapshot_t     snap;
+
+	const int x = 8;
+	int       y = 8;
+	int       i;
+	char      st[64];
+
+	if (!rays && !passes && !profile)
+		return y;
+
+	RT_StatsCapture (&snap);
 
 	GL_SetCanvas (cbx, CANVAS_DEFAULT);
 
-	// Ray counters are accumulated by the shaders only while rt_stats is on, so with
-	// rt_pass_stats alone they would read as a permanent zero. Show the lines only when
-	// they are actually collected.
-	const qboolean rays = rt_stats.value != 0;
+	st[0] = 0;
 
-	if (rays)
+	if (snap.haveGpu)
+		sprintf (st, "FPS: %u.%u", snap.gpu.fpsX10 / 10, snap.gpu.fpsX10 % 10);
+	else if (snap.haveProfile)
 	{
-		sprintf (st, "RAYS: %u", stats.raysTotal);
-		SCR_DrawRTStatsString (cbx, x, y, st, scale, &color_orange, &color_shadow);
-		y += step;
+		const unsigned fps10 = (unsigned)(rep->fps * 10.0f + 0.5f);
+		sprintf (st, "FPS: %u.%u", fps10 / 10, fps10 % 10);
 	}
 
-	sprintf (st, "FPS: %u.%u", stats.fpsX10 / 10, stats.fpsX10 % 10);
-	SCR_DrawRTStatsString (cbx, x, y, st, scale, &color_orange, &color_shadow);
-	y += step;
-
-	if (rays)
+	if (st[0])
 	{
-		sprintf (st, "PRIMARY: %u", stats.raysPerCategory[0]);
-		SCR_DrawRTStatsString (cbx, x, y, st, scale, &color_orange, &color_shadow);
-		y += step;
-
-		sprintf (st, "REFL/REFR: %u", stats.raysPerCategory[1]);
-		SCR_DrawRTStatsString (cbx, x, y, st, scale, &color_orange, &color_shadow);
-		y += step;
-
-		sprintf (st, "INDIRECT: %u", stats.raysPerCategory[2]);
-		SCR_DrawRTStatsString (cbx, x, y, st, scale, &color_orange, &color_shadow);
-		y += step;
-
-		sprintf (st, "SHADOW: %u", stats.raysPerCategory[3]);
-		SCR_DrawRTStatsString (cbx, x, y, st, scale, &color_orange, &color_shadow);
-		y += step;
+		SCR_DrawRTStatsString (cbx, x, y, st, rt_stats_scale, &color_orange, &color_shadow);
+		y += rt_stats_step;
 	}
 
-	if (!rt_pass_stats.value || !stats.gpuTimingValid)
-		return;
-
-	const unsigned gpu_ms10 = (unsigned)(stats.gpuFrameMs * 10.0f + 0.5f);
-	sprintf (st, "GPU: %u.%u ms", gpu_ms10 / 10, gpu_ms10 % 10);
-	SCR_DrawRTStatsString (cbx, x, y, st, scale, &color_orange, &color_shadow);
-
-	for (i = 0; i < RG_GPU_PASS_COUNT; i++)
+	// The counters are accumulated by the shaders only while panel 1 is on, so with
+	// the other panels alone they would read as a permanent zero.
+	if (rays && snap.haveGpu)
 	{
-		const unsigned ms10 = (unsigned)(stats.gpuPassMs[i] * 10.0f + 0.5f);
-		sprintf (st, "%-9s %4u.%u ms", rgGetGpuPassName (i), ms10 / 10, ms10 % 10);
-		SCR_DrawRTStatsString (cbx, x, y + step + i * pass_step, st, pass_scale, &color_detail, &color_shadow);
+		y += rt_stats_step; // blank line before the section
+
+		sprintf (st, "RAYS: %u", snap.gpu.raysTotal);
+		SCR_DrawRTStatsString (cbx, x, y, st, rt_stats_scale, &color_orange, &color_shadow);
+		y += rt_stats_step;
+
+		sprintf (st, "PRIMARY: %u", snap.gpu.raysPerCategory[0]);
+		SCR_DrawRTStatsString (cbx, x, y, st, rt_stats_scale, &color_orange, &color_shadow);
+		y += rt_stats_step;
+
+		sprintf (st, "REFL/REFR: %u", snap.gpu.raysPerCategory[1]);
+		SCR_DrawRTStatsString (cbx, x, y, st, rt_stats_scale, &color_orange, &color_shadow);
+		y += rt_stats_step;
+
+		sprintf (st, "INDIRECT: %u", snap.gpu.raysPerCategory[2]);
+		SCR_DrawRTStatsString (cbx, x, y, st, rt_stats_scale, &color_orange, &color_shadow);
+		y += rt_stats_step;
+
+		sprintf (st, "SHADOW DIR: %u", snap.gpu.raysPerCategory[3]);
+		SCR_DrawRTStatsString (cbx, x, y, st, rt_stats_scale, &color_orange, &color_shadow);
+		y += rt_stats_step;
+
+		sprintf (st, "SHADOW IND: %u", snap.gpu.raysPerCategory[4]);
+		SCR_DrawRTStatsString (cbx, x, y, st, rt_stats_scale, &color_orange, &color_shadow);
+		y += rt_stats_step;
+
+		sprintf (st, "CALLS: %u", snap.gpu.apiCalls);
+		SCR_DrawRTStatsString (cbx, x, y, st, rt_stats_scale, &color_orange, &color_shadow);
+		y += rt_stats_step;
 	}
+
+	// The pass timestamps are collected only while panel 2 is on, and only the
+	// backend knows whether they could be read back for this frame.
+	if (passes && snap.haveGpu && snap.gpu.gpuTimingValid)
+	{
+		const unsigned gpu_ms10 = (unsigned)(snap.gpu.gpuFrameMs * 10.0f + 0.5f);
+		const int      rows = (RG_GPU_PASS_COUNT + 1) / 2;
+
+		y += rt_stats_step; // blank line before the section
+
+		sprintf (st, "GPU: %u.%u ms", gpu_ms10 / 10, gpu_ms10 % 10);
+		SCR_DrawRTStatsString (cbx, x, y, st, rt_stats_scale, &color_orange, &color_shadow);
+		y += rt_stats_step;
+
+		for (i = 0; i < RG_GPU_PASS_COUNT; i++)
+			SCR_DrawRTStatsRow (cbx, x + (i / rows) * rt_stats_col, y + (i % rows) * rt_stats_step,
+			                    rgGetGpuPassName (i), snap.gpu.gpuPassMs[i], &color_detail);
+
+		y += rows * rt_stats_step;
+	}
+
+	return y;
 }
 
 /*
 ================
 SCR_DrawRTProf
 
-CPU counterpart of SCR_DrawRTStats, drawn beside it so both sides of the frame
-can be read at the same time. The numbers come from rt_prof_report, refreshed
-once a second by RT_Prof_Update.
+The CPU side of the frame, the last section of the readout. It starts at the line
+the sections above left off at, so that the panels continue one another, and the
+numbers come from rt_prof_report, refreshed once a second by RT_Prof_Update.
 ================
 */
-void SCR_DrawRTProf (cb_context_t *cbx)
+void SCR_DrawRTProf (cb_context_t *cbx, int x, int y)
 {
-	if (!rt_prof.value || !rt_prof_report.valid)
+	if (!RT_StatsPanel (RT_STATS_PROFILE) || !rt_prof_report.valid)
 		return;
 
 	static const struct
@@ -675,7 +728,7 @@ void SCR_DrawRTProf (cb_context_t *cbx)
 		{ RT_PROF_SETUP, "setup" },       { RT_PROF_MARK, "mark" },         { RT_PROF_EFRAGS, "efrags" },
 		{ RT_PROF_CULL, "cull" },         { RT_PROF_CHAIN, "chain" },       { RT_PROF_WORLD, "world" },
 		{ RT_PROF_SKY, "sky" },           { RT_PROF_ENTS, "ents" },         { RT_PROF_ALPHA, "alpha" },
-		{ RT_PROF_PARTICLES, "particles" }, { RT_PROF_VIEWMODEL, "viewmodel" },
+		{ RT_PROF_PARTICLES, "particles" }, { RT_PROF_VIEWMODEL, "viewmodel" }, { RT_PROF_VIEWMODEL_DRAW, "vm draw" },
 	};
 
 	static const struct
@@ -684,73 +737,63 @@ void SCR_DrawRTProf (cb_context_t *cbx)
 		const char *label;
 	} right[] = {
 		{ RT_PROF_ELIGHTS, "elights" }, { RT_PROF_WMODEL_LIGHTS, "wmodel lights" }, { RT_PROF_TELEPORTS, "teleports" },
-		{ RT_PROF_CLUSTERS, "clusters" }, { RT_PROF_CLUSTERS1, "clust pvs" }, { RT_PROF_CLUSTERS2, "clust topup" },
+		{ RT_PROF_CLUSTERS, "clusters" }, { RT_PROF_CLUSTERS1, "clust pvs" },
+		{ RT_PROF_CLUSTERS_RESOLVE, "clust resolve" }, { RT_PROF_CLUSTERS_VIS, "clust vis" },
+		{ RT_PROF_CLUSTERS_WALK, "clust walk" }, { RT_PROF_CLUSTERS2, "clust topup" },
 		{ RT_PROF_CLUSTERS_FILL, "clust fill" }, { RT_PROF_CLUSTERS_UPLOAD, "clust upload" },
 	};
 
 	const rt_prof_report_t *rep = &rt_prof_report;
-	const qboolean         stats_panel = (rt_stats.value || rt_pass_stats.value);
-
-	const float scale = 4.0f;
-	const int   step = 8 * (int)scale;
-	const float pass_scale = 2.0f;
-	const int   pass_step = 8 * (int)pass_scale;
-	const int   x = stats_panel ? 640 : 8;
-	int         y = 8;
-	int         i;
-	char        st[64];
+	int  i;
+	char st[64];
 
 	GL_SetCanvas (cbx, CANVAS_DEFAULT);
 
-	// rt_stats prints the frame rate itself, so only show it here when standing alone
-	if (!stats_panel)
-	{
-		sprintf (st, "FPS: %u.%u", (unsigned)(rep->fps * 10.0f + 0.5f) / 10, (unsigned)(rep->fps * 10.0f + 0.5f) % 10);
-		SCR_DrawRTStatsString (cbx, x, y, st, scale, &color_orange, &color_shadow);
-		y += step;
-	}
+	y += rt_stats_step; // blank line before the section
 
-	unsigned ms10 = (unsigned)(rep->frameMs * 10.0f + 0.5f);
-	sprintf (st, "FRAME: %u.%u ms", ms10 / 10, ms10 % 10);
-	SCR_DrawRTStatsString (cbx, x, y, st, scale, &color_orange, &color_shadow);
-	y += step;
+	SCR_DrawRTStatsRow (cbx, x, y, "FRAME", rep->frameMs, &color_orange);
+	y += rt_stats_step;
 
-	ms10 = (unsigned)((rep->frameMs - rep->waitMs) * 10.0f + 0.5f);
-	sprintf (st, "MAIN: %u.%u ms", ms10 / 10, ms10 % 10);
-	SCR_DrawRTStatsString (cbx, x, y, st, scale, &color_orange, &color_shadow);
-	y += step;
+	SCR_DrawRTStatsRow (cbx, x, y, "MAIN", rep->frameMs - rep->waitMs, &color_orange);
+	y += rt_stats_step;
 
-	ms10 = (unsigned)(rep->waitMs * 10.0f + 0.5f);
-	sprintf (st, "WAIT: %u.%u ms", ms10 / 10, ms10 % 10);
-	SCR_DrawRTStatsString (cbx, x, y, st, scale, &color_orange, &color_shadow);
-	y += step;
+	SCR_DrawRTStatsRow (cbx, x, y, "WAIT", rep->waitMs, &color_orange);
+	y += rt_stats_step;
 
-	ms10 = (unsigned)(rep->ms[RT_PROF_DRAWFRAME] * 10.0f + 0.5f);
-	sprintf (st, "rgDrawFrame: %u.%u ms", ms10 / 10, ms10 % 10);
-	SCR_DrawRTStatsString (cbx, x, y, st, scale, &color_orange, &color_shadow);
-	y += step;
+	SCR_DrawRTStatsRow (cbx, x, y, "rgDrawFrame", rep->ms[RT_PROF_DRAWFRAME], &color_orange);
+	y += rt_stats_step;
 
 	for (i = 0; i < (int)countof (left); i++)
-	{
-		ms10 = (unsigned)(rep->ms[left[i].slot] * 10.0f + 0.5f);
-		sprintf (st, "%-12s %4u.%u ms", left[i].label, ms10 / 10, ms10 % 10);
-		SCR_DrawRTStatsString (cbx, x, y + i * pass_step, st, pass_scale, &color_detail, &color_shadow);
-	}
+		SCR_DrawRTStatsRow (cbx, x, y + i * rt_stats_step, left[i].label, rep->ms[left[i].slot], &color_detail);
 
 	for (i = 0; i < (int)countof (right); i++)
-	{
-		ms10 = (unsigned)(rep->ms[right[i].slot] * 10.0f + 0.5f);
-		sprintf (st, "%-12s %4u.%u ms", right[i].label, ms10 / 10, ms10 % 10);
-		SCR_DrawRTStatsString (cbx, x + 360, y + i * pass_step, st, pass_scale, &color_detail, &color_shadow);
-	}
+		SCR_DrawRTStatsRow (cbx, x + rt_stats_col, y + i * rt_stats_step,
+		                    right[i].label, rep->ms[right[i].slot], &color_detail);
+
+	y += (int)countof (left) * rt_stats_step;
 
 	// Slots hold the longest sample of the window, so the passes keep showing their rebuild cost
 	// even when almost every frame reused the cache. The ratio below is what tells the two apart.
 	const int cacheFrames = rep->clusterCacheHits + rep->clusterCacheMisses;
 	if (cacheFrames > 0)
 	{
+		int row = y + rt_stats_step; // blank line before the cluster counters
+
 		sprintf (st, "clust cache  %3i%% of %i", (100 * rep->clusterCacheHits) / cacheFrames, cacheFrames);
-		SCR_DrawRTStatsString (cbx, x + 360, y + (int)countof (right) * pass_step, st, pass_scale, &color_detail, &color_shadow);
+		SCR_DrawRTStatsString (cbx, x + rt_stats_col, row, st, rt_stats_scale, &color_detail, &color_shadow);
+		row += rt_stats_step;
+
+		sprintf (st, "clust miss  set %i leaf %i geom %i", rep->clusterMissSet, rep->clusterMissLeaf, rep->clusterMissGeom);
+		SCR_DrawRTStatsString (cbx, x + rt_stats_col, row, st, rt_stats_scale, &color_detail, &color_shadow);
+		row += rt_stats_step;
+
+		sprintf (st, "clust rebuild grants %i denied %i gated %i",
+			rep->clusterGrants, rep->clusterDenied, rep->clusterGated);
+		SCR_DrawRTStatsString (cbx, x + rt_stats_col, row, st, rt_stats_scale, &color_detail, &color_shadow);
+		row += rt_stats_step;
+
+		sprintf (st, "clust lights %i add %i drop %i", rep->clusterLights, rep->clusterAttempts, rep->clusterDropped);
+		SCR_DrawRTStatsString (cbx, x + rt_stats_col, row, st, rt_stats_scale, &color_detail, &color_shadow);
 	}
 }
 
@@ -1213,8 +1256,8 @@ static void SCR_DrawGUI (void *unused)
 		Sbar_Draw (cbx);
 		SCR_DrawDevStats (cbx); // johnfitz
 		SCR_DrawFPS (cbx);      // johnfitz
-		SCR_DrawRTStats (cbx);
-		SCR_DrawRTProf (cbx);
+		const int stats_y = SCR_DrawRTStats (cbx);
+		SCR_DrawRTProf (cbx, 8, stats_y);
 		SCR_DrawClock (cbx);    // johnfitz
 		SCR_DrawConsole (cbx);
 		M_Draw (cbx);

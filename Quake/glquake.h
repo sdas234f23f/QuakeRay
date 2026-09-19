@@ -369,13 +369,43 @@ float RT_NearestStyledLightDistance (int style, const vec3_t point);
 qboolean RT_AllowFakeLights (void);
 
 void RT_ClusterLightListsReset (void);
-void RT_ClusterLightAdd (uint64_t uniqueID, const vec3_t origin);
+// Registers a light for the per-cluster lists of this frame. reach is a distance in Quake units
+// up to which the light belongs in a list, and it is what keeps a light of a moving entity from
+// reaching every cluster of the map; zero means the light states no reach of its own and the
+// lists give it whatever the leaf it stands in sees. A light that is registered twice in one
+// frame with the same uniqueID keeps the last origin and reach it was given.
+void RT_ClusterLightAdd (uint64_t uniqueID, const vec3_t origin, float reach);
+// Reach of a light of a moving entity, from rt_light_reach_max: the distance the host promises
+// such a light does not reach past. The lights of the map itself pass zero instead.
+float RT_ClusterLightReach (void);
 void RT_ClusterLightListsUpload (void);
 
 // Frames that reused the cached cluster light lists and frames that rebuilt them. The profiler
 // reads and clears them once per reporting window, so the panel can show a hit rate.
 extern int rt_cluster_cache_hits;
 extern int rt_cluster_cache_misses;
+
+// Why the cluster light lists were rebuilt, counted per rebuild. The set of registered lights
+// changed, a light gained or lost the leaf it resolved into, or a light moved or changed the
+// reach it states for itself.
+extern int rt_cluster_miss_set;
+extern int rt_cluster_miss_leaf;
+extern int rt_cluster_miss_geom;
+
+// Slots granted and refused by the last composition, reported by panel 3 of rt_stats. A non-zero
+// deny count means clusters are hitting the renderer's per-list limit and dropping lights. The
+// gated count is how many (light, cluster) pairs were left out for standing beyond the reach the
+// light states for itself, which is what keeps a light of a moving entity from being handed to
+// every list of the map.
+extern int rt_cluster_last_grants;
+extern int rt_cluster_last_denied;
+extern int rt_cluster_last_gated;
+
+// Lights accepted into the registry of the last frame that uploaded lists, how many additions
+// were attempted by the registrars, and how many were refused by RT_CLUSTER_MAX_LIGHTS.
+extern int rt_cluster_last_lights;
+extern int rt_cluster_last_attempts;
+extern int rt_cluster_last_dropped;
 int RT_ResolvePointCluster (const vec3_t p);
 void RT_BrushClusterCacheReset (void);
 void RT_ClusterLightReport_f (void);
@@ -384,6 +414,13 @@ void RT_PrintEmissiveStats (void);
 void RT_WorldCensus (void);
 void RT_UploadWorldLights (void);
 int RT_GetSurfaceCluster (const qmodel_t *m, const msurface_t *s);
+
+// The cluster tables of the map: the index the renderer indexes the offsets, the lists and the
+// statistics with. Every leaf index that leaves the host has to go through RT_MapWorldCluster
+// first, the renderer's tables being smaller than the leaf table of the shipped maps.
+void RT_BuildWorldClusters (void);
+void RT_FreeWorldClusters (void);
+int RT_MapWorldCluster (int leaf_index);
 
 void GL_SubdivideSurface (msurface_t *fa);
 void R_BuildLightMap (msurface_t *surf, byte *dest, int stride);
@@ -473,8 +510,11 @@ static inline uint32_t RT_PackColorToUint32_FromFloat01(float r, float g, float 
 #define RT_QUAKE_LIGHT_AREA_INTENSITY_FIX (1.0f / (QUAKEUNIT_IN_METERS * QUAKEUNIT_IN_METERS))
 // The fixup above pays for the area a lamp emits from. A sun emits from none and
 // lights the whole sky, so it takes the same conversion at a fraction of it: at
-// full strength rt_sun 1 overdrives the scene.
-#define RT_SUN_LIGHT_INTENSITY_SCALE 0.1f
+// full strength rt_sun 1 overdrives the scene. The fraction is a hundredth, ten
+// times below the first calibration, which read as a sun too bright for the lamps
+// it shares the scene with. The god rays read this colour too, so they follow it.
+// rt_sun stays the multiplier in front of it: raise it to bring daylight back.
+#define RT_SUN_LIGHT_INTENSITY_SCALE 0.01f
 #define RT_FIXUP_LIGHT_INTENSITY(color, witharea)                                   \
 	do                                                                              \
 	{                                                                               \
@@ -544,10 +584,13 @@ RgTransform RT_GetBrushModelMatrix (entity_t *e);
 RgFloat3D RT_AnglesToDir (/* const */ vec3_t angles);
 float     RT_Luminance (const vec3_t color);
 
-// Frame profiler for the CPU side of the render loop, enabled with rt_prof.
+// Frame profiler for the CPU side of the render loop, enabled by panel 3 of rt_stats.
 // Each slot keeps the longest duration seen in the reporting window, so tasks
 // that run on several worker threads report their slowest instance instead of
 // an overlapping sum.
+// A slot that brackets other slots keeps a time that contains them and they must
+// not be added to it: the view model task covers the model draw and the four
+// uploads of the lights and the cluster lists that follow it in the same bracket.
 enum
 {
 	RT_PROF_SETUP,
@@ -561,11 +604,15 @@ enum
 	RT_PROF_ALPHA,
 	RT_PROF_PARTICLES,
 	RT_PROF_VIEWMODEL,
+	RT_PROF_VIEWMODEL_DRAW,
 	RT_PROF_ELIGHTS,
 	RT_PROF_WMODEL_LIGHTS,
 	RT_PROF_TELEPORTS,
 	RT_PROF_CLUSTERS,
 	RT_PROF_CLUSTERS1,
+	RT_PROF_CLUSTERS_RESOLVE,
+	RT_PROF_CLUSTERS_VIS,
+	RT_PROF_CLUSTERS_WALK,
 	RT_PROF_CLUSTERS2,
 	RT_PROF_CLUSTERS_FILL,
 	RT_PROF_CLUSTERS_UPLOAD,
@@ -576,7 +623,7 @@ enum
 	RT_PROF_COUNT
 };
 
-// The result of the latest reporting window, drawn on screen by SCR_DrawRTProf.
+// The result of the latest reporting window, drawn on screen as panel 3 of rt_stats.
 typedef struct
 {
 	qboolean valid;
@@ -586,15 +633,53 @@ typedef struct
 	float    ms[RT_PROF_COUNT];
 	int      clusterCacheHits;   // frames of the window that reused the cached cluster light lists
 	int      clusterCacheMisses; // frames that had to rebuild them
+	int      clusterMissSet;     // rebuilds caused by a new set of registered lights
+	int      clusterMissLeaf;    // rebuilds caused by lights that gained or lost their leaf
+	int      clusterMissGeom;    // rebuilds caused by moved origins or changed reaches
+	int      clusterGrants;      // slots granted by the last rebuild
+	int      clusterDenied;      // slots refused by the last rebuild
+	int      clusterGated;       // candidate slots refused for standing beyond the light's reach
+	int      clusterLights;      // lights accepted into the registry
+	int      clusterAttempts;    // additions attempted by the registrars
+	int      clusterDropped;     // additions refused because the registry was full
 } rt_prof_report_t;
 
-extern cvar_t           rt_prof;
+// Which readouts the rt_stats command asks for, as a bit per panel number. The
+// command is the only writer, so the value can be cached for a frame at a time.
+extern cvar_t rt_stats_panels;
+
+enum
+{
+	RT_STATS_RAYS = 1, // ray and frame rate counters
+	RT_STATS_PASSES,   // GPU frame total and per-pass timings
+	RT_STATS_PROFILE,  // CPU side of the frame
+};
+
+qboolean    RT_StatsPanel (int panel);
+const char *RT_ProfSlotName (int slot);
+
+// Everything the readouts report, read in one go so that the on-screen panel and
+// rt_stats_dump never disagree about which frame they are showing.
+typedef struct
+{
+	qboolean         haveGpu;
+	qboolean         haveProfile;
+	unsigned int     panels;
+	RgFrameStats     gpu;
+	rt_prof_report_t profile;
+} rt_stats_snapshot_t;
+
+void RT_StatsCapture (rt_stats_snapshot_t *snap);
+
 extern double           rt_prof_ms[RT_PROF_COUNT];
 extern rt_prof_report_t rt_prof_report;
 
 // Returns 0 while the profiler is off, which RT_Prof_End treats as "no sample".
 double RT_Prof_Begin (void);
 void   RT_Prof_End (int slot, double start);
+// For slots that are measured in pieces and added up on the caller's side: the value is the
+// duration of one whole pass, not of a single call.
+void   RT_Prof_Sample (int slot, double ms);
 void   RT_Prof_FrameStart (void);
 void   RT_Prof_FrameEnd (void);
 void   RT_Prof_Update (void);

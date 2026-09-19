@@ -2190,6 +2190,12 @@ static void PF_getsurfacepointattribute (void)
 		G_FLOAT (OFS_RETURN + 2) = 0;
 	}
 }
+/* R_LightPoint dereferences its cache unconditionally -- it reads the cache mutex and the cached
+   surface before it ever tests the pointer -- so this builtin has to hand it a real cache. The
+   engine-wide mutex in gl_model.c is picked up for it, since a zeroed cache has no mutex of its
+   own, and the position test inside the function invalidates the entry on its own. */
+static lightcache_t getlight_cache;
+
 static void PF_sv_getlight (void)
 {
 	qmodel_t *om = cl.worldmodel;
@@ -2200,7 +2206,7 @@ static void PF_sv_getlight (void)
 
 	// FIXME: seems like quakespasm doesn't do lits for model lighting, so we won't either.
 	vec3_t lightcolor;
-	G_FLOAT (OFS_RETURN + 0) = G_FLOAT (OFS_RETURN + 1) = G_FLOAT (OFS_RETURN + 2) = R_LightPoint (point, NULL, &lightcolor) / 255.0;
+	G_FLOAT (OFS_RETURN + 0) = G_FLOAT (OFS_RETURN + 1) = G_FLOAT (OFS_RETURN + 2) = R_LightPoint (point, &getlight_cache, &lightcolor) / 255.0;
 
 	cl.worldmodel = om;
 }

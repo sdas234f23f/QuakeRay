@@ -71,6 +71,12 @@ public:
 private:
     VkExtent2D GetOptimalExtent() const;
 
+    // The query below is a driver round trip and sits in every rg* entry point through
+    // VulkanDevice::IsSuspended(), so its result is cached for the duration of a frame and
+    // refreshed once per frame (AcquireImage) and after the frame is presented (Present).
+    VkResult GetSurfaceCapabilities(VkSurfaceCapabilitiesKHR *outCaps) const;
+    void ResetSurfaceCapabilitiesCache() const;
+
     // Safe to call even if swapchain wasn't created
     bool TryRecreate(const VkExtent2D &newExtent, bool vsync);
 
@@ -104,6 +110,15 @@ private:
     uint32_t currentSwapchainIndex;
 
     std::list<std::weak_ptr<ISwapchainDependency>> subscribers;
+
+    // Cached for the duration of a frame: the query is a driver round trip and sits in every
+    // rg* entry point through VulkanDevice::IsSuspended().
+    mutable VkSurfaceCapabilitiesKHR cachedSurfaceCaps;
+    mutable VkResult cachedSurfaceCapsResult;
+    mutable bool cachedSurfaceCapsValid;
+    // Extent check result of cachedSurfaceCaps, so that IsExtentOptimal() does not have to
+    // copy the caps struct on each rg* entry point
+    mutable bool cachedIsExtentOptimal;
 };
 
 }

@@ -55,6 +55,8 @@ RgVertex *rtallbrushvertices;
 
 static int *rt_surfcluster;
 
+/* The leaf a surface belongs to, which is not the index the renderer indexes its clusters with:
+   that one is RT_MapWorldCluster of this. */
 int RT_GetSurfaceCluster (const qmodel_t *m, const msurface_t *s)
 {
 	if (m == cl.worldmodel && rt_surfcluster)
@@ -814,7 +816,7 @@ void GL_BuildBModelVertexBuffer (void)
 
 				dst[v].packedColor = RT_PACKED_COLOR_WHITE;
 
-				dst[v].cluster = (uint32_t)RT_GetSurfaceCluster (m, s);
+				dst[v].cluster = (uint32_t)RT_MapWorldCluster (RT_GetSurfaceCluster (m, s));
 			}
 
 			varray_index += s->numedges;

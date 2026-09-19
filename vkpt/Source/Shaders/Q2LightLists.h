@@ -202,6 +202,14 @@ void q2SampleClusterLights(
     outSlot = 0u;
     outPdf = 0.0;
 
+    // The host folds the map into the table these lists are built on, so a cluster past its end
+    // means a leaf index reached this far. Reading it would leave the offsets and the lists
+    // behind, and the statistics this cell keeps are written to as well.
+    if (cluster >= uint(Q2_MAX_CLUSTERS))
+    {
+        return;
+    }
+
     const int lightCount = int(q2GetClusterLightCount(cluster));
     if (lightCount <= 0)
     {

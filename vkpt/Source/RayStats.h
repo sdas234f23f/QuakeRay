@@ -23,10 +23,16 @@
 #include "Buffer.h"
 #include "MemoryAllocator.h"
 
+// The generated shader common header defines the same name as a macro. Drop it here so that the
+// declaration below is never rewritten when that header is included first.
+#ifdef RAY_STATS_CATEGORY_COUNT
+#undef RAY_STATS_CATEGORY_COUNT
+#endif
+
 namespace vkpt
 {
 
-constexpr uint32_t RAY_STATS_CATEGORY_COUNT = 4;
+constexpr uint32_t RAY_STATS_CATEGORY_COUNT = 5;
 
 class RayStats
 {

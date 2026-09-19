@@ -41,12 +41,16 @@ extern cvar_t rt_reflrefr_depth;
 extern cvar_t rt_teleport_portals;
 extern cvar_t rt_wlight_intensity, rt_wlight_radius;
 extern cvar_t rt_emis_light_intensity;
+extern cvar_t rt_cluster_dlights;
 extern cvar_t rt_light_styles;
 extern cvar_t rt_light_styles_reach;
+extern cvar_t rt_wmodel_lights_batch;
+extern cvar_t rt_world_batch_merge;
 extern cvar_t rt_debugemissive;
 extern cvar_t rt_light_report_filter;
 extern cvar_t rt_worldcensus;
 extern cvar_t rt_worldlights_stats;
+extern cvar_t rt_worldclusters_grid;
 
 cvar_t r_parallelmark = {"r_parallelmark", "1", CVAR_NONE};
 
@@ -57,13 +61,31 @@ static int world_texend[NUM_WORLD_CBX];
 
 extern RgVertex *rtallbrushvertices;
 
-#define MAX_WORLDLIGHTS_COUNT 2048
+#define MAX_WORLDLIGHTS_COUNT 8192
+
+/* Polygons are emitted per texture repetition over the glow extents (see RT_AddEmissiveLight),
+   so a face contributes as many lights as it has repetitions of the glow. This is not a
+   fidelity limit but a hang guard: texture coordinates of a badly scaled surface can span
+   hundreds of repetitions, and every one of them would cost a clip, a light and a cluster
+   registry slot. Faces above it keep the whole-surface light. */
+#define RT_MAX_EMISSIVE_POLYS_PER_FACE 64
 
 static RgTexturedAreaLightUploadInfo rt_wldlights_emissive[MAX_WORLDLIGHTS_COUNT];
 static int                           rt_wldlights_emissive_count = 0;
 
 static const msurface_t *rt_wldlights_emissive_surf[MAX_WORLDLIGHTS_COUNT];
 static gltexture_t      *rt_wldlights_emissive_tex[MAX_WORLDLIGHTS_COUNT];
+
+/* The map's lights as handed to the renderer, and the center each one is placed by. */
+static RgTexturedAreaLightUploadInfo rt_wldlights_emissive_upload[MAX_WORLDLIGHTS_COUNT];
+static vec3_t                        rt_wldlights_emissive_center[MAX_WORLDLIGHTS_COUNT];
+
+/* Whether a style of a stored light is accepted by the reach test of RT_SurfaceLightStyleScale.
+   The answer only changes with the light list itself or with the reach cvar, never per frame:
+   the elight table is filled at map load and is not touched again. */
+static byte     rt_wldlights_style_accepted[MAX_WORLDLIGHTS_COUNT][MAXLIGHTMAPS];
+static qboolean rt_wldlights_style_accepted_dirty = true;
+static float    rt_wldlights_style_accepted_reach = 0.0f;
 
 typedef struct rt_emis_stats_s
 {
@@ -75,6 +97,9 @@ typedef struct rt_emis_stats_s
 	int static_queued;
 	int static_dropped;
 	int dynamic;
+	int glow_lights;
+	int glow_faces;
+	int glow_fallback;
 } rt_emis_stats_t;
 
 static rt_emis_stats_t rt_emis_stats;
@@ -890,7 +915,7 @@ RgTransform RT_GetBrushModelMatrix (entity_t *e)
 
 static qboolean  RT_FindNearestTeleport (const RgGeometryUploadInfo *info, uint8_t *result, qboolean *potentially_mirror);
 static RgFloat3D ApplyTransform (const RgTransform *transform, const vec3_t v);
-static gltexture_t *RT_AnimatedLightTex (texture_t *base);
+static gltexture_t *RT_CanonicalLightTex (texture_t *base, int alt);
 
 typedef struct rt_uploadsurf_state_t
 {
@@ -949,17 +974,73 @@ static void RT_EmitEmissiveWireTriangle (const RgFloat3D *p0, const RgFloat3D *p
 	RG_CHECK (r);
 }
 
-static uint32_t RT_PackSurfaceLightStyles (const rt_uploadsurf_state_t *s, const RgVertex *verts, int num_verts, const RgTransform *transform)
+typedef struct
+{
+	uint32_t packed;
+	float    reach;
+	qboolean light_styles;
+	qboolean set;
+} rt_surfacepack_entry_t;
+
+/* Faces of brush entities: the face cannot be found by index, and its reach answer follows the
+   entity, so the transform it was computed for is kept next to it. */
+typedef struct
+{
+	const entity_t   *ent;
+	const msurface_t *surf;
+	const texture_t  *tex;
+	RgTransform       transform;
+	uint32_t          packed;
+	float             reach;
+	qboolean          light_styles;
+	qboolean          set;
+} rt_surfacepackent_entry_t;
+
+#define RT_SURFACEPACK_ENT_SIZE 512
+
+static rt_surfacepack_entry_t    *rt_surfacepack;
+static rt_surfacepackent_entry_t  rt_surfacepack_ent[RT_SURFACEPACK_ENT_SIZE];
+static const qmodel_t            *rt_surfacepack_model;
+static int                        rt_surfacepack_size;
+
+/*
+================
+RT_SurfacePacksReset
+
+Every face of the world packs the same light styles each time it is drawn: the face does not
+move, the lights its reach test reads change only with the map, and the test itself looks at
+nothing but where those lights stand. The answers are therefore kept per face until the faces
+themselves go, which RT_BrushClusterCacheReset marks off the render tasks.
+================
+*/
+static void RT_SurfacePacksReset (void)
+{
+	Mem_Free (rt_surfacepack);
+	rt_surfacepack = NULL;
+	rt_surfacepack_model = NULL;
+	rt_surfacepack_size = 0;
+	memset (rt_surfacepack_ent, 0, sizeof (rt_surfacepack_ent));
+
+	const qmodel_t *model = cl.worldmodel;
+
+	if (!model || !model->surfaces || model->numsurfaces <= 0)
+		return;
+
+	rt_surfacepack = Mem_Alloc (sizeof (rt_surfacepack[0]) * (size_t) model->numsurfaces);
+	rt_surfacepack_model = model;
+	rt_surfacepack_size = model->numsurfaces;
+}
+
+static uint32_t RT_SurfacePackLightStyles (
+	const rt_uploadsurf_state_t *s, const RgVertex *verts, int num_verts, const RgTransform *transform, qboolean light_styles, float reach)
 {
 	uint32_t packed = 0;
 	int      slot   = 0;
 
-	gltexture_t *light_tex = RT_AnimatedLightTex (s->surf->texinfo->texture);
+	gltexture_t *light_tex = RT_CanonicalLightTex (s->surf->texinfo->texture, 0);
 
-	if (!light_tex || !light_tex->rtlightstyles || !CVAR_TO_BOOL (rt_light_styles))
+	if (!light_tex || !light_tex->rtlightstyles || !light_styles)
 		return 0;
-
-	const float reach = CVAR_TO_FLOAT (rt_light_styles_reach);
 
 	vec3_t accum = {0.0f, 0.0f, 0.0f};
 	for (int i = 0; i < num_verts; i++)
@@ -983,6 +1064,67 @@ static uint32_t RT_PackSurfaceLightStyles (const rt_uploadsurf_state_t *s, const
 		packed |= (uint32_t)(style + 1) << (slot * 8);
 		if (++slot == 4)
 			break;
+	}
+
+	return packed;
+}
+
+static uint32_t RT_PackSurfaceLightStyles (const rt_uploadsurf_state_t *s, const RgVertex *verts, int num_verts, const RgTransform *transform)
+{
+	const qboolean light_styles = CVAR_TO_BOOL (rt_light_styles);
+	const float    reach        = CVAR_TO_FLOAT (rt_light_styles_reach);
+
+	rt_surfacepack_entry_t *entry = NULL;
+
+	/* Only a face of the world that stands still is answered out of the table: the reach of a
+	   face of a moving model moves with it. */
+	if (rt_surfacepack && s->surf && !s->ent && s->model == rt_surfacepack_model)
+	{
+		const int index = (int) (s->surf - rt_surfacepack_model->surfaces);
+
+		if (index >= 0 && index < rt_surfacepack_size)
+			entry = &rt_surfacepack[index];
+	}
+
+	if (entry && entry->set && entry->light_styles == light_styles && entry->reach == reach)
+		return entry->packed;
+
+	if (!entry && s->surf && s->ent && s->model && s->model->surfaces && transform)
+	{
+		/* Direct mapped, as the brush cluster cache is: a collision only costs the lookup. The
+		   faces of a model are visited in order, so a stride index keeps them in step, and the
+		   entity moves the window so that two models do not share it. */
+		const size_t               index = (((size_t) (s->surf - s->model->surfaces)) + ((uintptr_t) s->ent >> 4)) % RT_SURFACEPACK_ENT_SIZE;
+		rt_surfacepackent_entry_t *ententry = &rt_surfacepack_ent[index];
+
+		if (ententry->set && ententry->ent == s->ent && ententry->surf == s->surf &&
+		    ententry->tex == s->surf->texinfo->texture &&
+		    ententry->light_styles == light_styles && ententry->reach == reach &&
+		    memcmp (&ententry->transform, transform, sizeof (RgTransform)) == 0)
+			return ententry->packed;
+
+		const uint32_t entpacked = RT_SurfacePackLightStyles (s, verts, num_verts, transform, light_styles, reach);
+
+		ententry->ent          = s->ent;
+		ententry->surf         = s->surf;
+		ententry->tex          = s->surf->texinfo->texture;
+		ententry->transform    = *transform;
+		ententry->packed       = entpacked;
+		ententry->reach        = reach;
+		ententry->light_styles = light_styles;
+		ententry->set          = true;
+
+		return entpacked;
+	}
+
+	const uint32_t packed = RT_SurfacePackLightStyles (s, verts, num_verts, transform, light_styles, reach);
+
+	if (entry)
+	{
+		entry->packed       = packed;
+		entry->reach        = reach;
+		entry->light_styles = light_styles;
+		entry->set          = true;
 	}
 
 	return packed;
@@ -1203,7 +1345,10 @@ static void RT_UploadEmissiveLight (const RgTexturedAreaLightUploadInfo *light_i
 
 		vec3_t center;
 		RT_TexturedAreaLightCenter (&li, center);
-		RT_ClusterLightAdd (li.uniqueID, center);
+		/* The geometry moved to get here, so the light is only promised the reach of a light of
+		   a moving entity. */
+		if (CVAR_TO_FLOAT (rt_cluster_dlights) != 0)
+			RT_ClusterLightAdd (li.uniqueID, center, RT_ClusterLightReach ());
 
 		if (CVAR_TO_BOOL (rt_debugemissive))
 		{
@@ -1216,6 +1361,9 @@ static void RT_UploadEmissiveLight (const RgTexturedAreaLightUploadInfo *light_i
 		rt_wldlights_emissive[index]      = *light_info;
 		rt_wldlights_emissive_surf[index] = surf;
 		rt_wldlights_emissive_tex[index]  = light_tex;
+		/* The stored light does not move, so the center it is placed by is derived here and
+		   not once per frame. */
+		RT_TexturedAreaLightCenter (&rt_wldlights_emissive[index], rt_wldlights_emissive_center[index]);
 		rt_emis_stats.static_queued++;
 	}
 	else
@@ -1262,41 +1410,88 @@ static float RT_SurfaceLightStyleScale (const msurface_t *surf, const vec3_t cen
 	return dims ? scale : 1.0f;
 }
 
+/*
+=================
+RT_BuildWorldLightStyleAcceptance
+
+Runs the reach test of RT_SurfaceLightStyleScale once per stored light and keeps the answer.
+=================
+*/
+static void RT_BuildWorldLightStyleAcceptance (void)
+{
+	const float reach = CVAR_TO_FLOAT (rt_light_styles_reach);
+
+	memset (rt_wldlights_style_accepted, 0, sizeof (rt_wldlights_style_accepted));
+
+	for (int i = 0; i < rt_wldlights_emissive_count; i++)
+	{
+		const msurface_t *surf = rt_wldlights_emissive_surf[i];
+
+		for (int k = 0; k < MAXLIGHTMAPS && surf->styles[k] != 255; k++)
+		{
+			if (reach < 0.0f)
+			{
+				/* No reach limit, every style of the surface is accepted. */
+				rt_wldlights_style_accepted[i][k] = 1;
+				continue;
+			}
+
+			const float dist = RT_NearestStyledLightDistance (surf->styles[k], rt_wldlights_emissive_center[i]);
+
+			rt_wldlights_style_accepted[i][k] = (dist >= 0.0f && dist <= reach);
+		}
+	}
+
+	rt_wldlights_style_accepted_dirty = false;
+	rt_wldlights_style_accepted_reach = reach;
+}
+
+/* RT_SurfaceLightStyleScale for a stored world light: the reach test is the cached answer, the
+   style value is read per frame because it is what animates. */
+static float RT_WorldLightStyleScale (int index)
+{
+	const msurface_t *surf     = rt_wldlights_emissive_surf[index];
+	const byte       *accepted = rt_wldlights_style_accepted[index];
+	float             scale    = 1.0f;
+	qboolean          dims     = false;
+
+	for (int k = 0; k < MAXLIGHTMAPS && surf->styles[k] != 255; k++)
+	{
+		const float value = (float)d_lightstylevalue[surf->styles[k]];
+
+		if (value >= 255.5f)
+			continue;
+
+		if (!accepted[k])
+			continue;
+
+		if (!dims || value < scale)
+			scale = value * (1.0f / 256.0f);
+		dims = true;
+	}
+
+	return dims ? scale : 1.0f;
+}
+
 static qboolean RT_IsStaticWorldSurface (const rt_uploadsurf_state_t *s)
 {
 	return s->model == cl.worldmodel && !s->is_warp && !s->is_animated;
 }
 
-static gltexture_t *RT_AnimatedLightTex (texture_t *base)
+typedef struct rt_emissive_params_s
 {
-	if (!base || !base->gltexture)
-		return NULL;
+	RgMaterial material;
+	float      meanEmiss;
+	vec3_t     color;
+	/* The texture glows over part of itself, so the light is built from polygons over those
+	   extents instead of from the whole surface. */
+	qboolean   glow;
+	float      glow_uvmin[2];
+	float      glow_uvmax[2];
+	float      glow_mean;
+} rt_emissive_params_t;
 
-	gltexture_t *frame = R_TextureAnimation (base, 0)->gltexture;
-
-	return (frame && frame->rthasmaterial) ? frame : base->gltexture;
-}
-
-static gltexture_t *RT_AnimatedLightTexAnyFrame (texture_t *base)
-{
-	gltexture_t *light_tex = RT_AnimatedLightTex (base);
-	if (light_tex && light_tex->rtislight)
-		return light_tex;
-
-	if (!base || !base->anim_total)
-		return NULL;
-
-	for (texture_t *f = base->anim_next; f && f != base; f = f->anim_next)
-	{
-		gltexture_t *ft = f->gltexture;
-		if (ft && ft->rtislight && ft->rthasmaterial)
-			return ft;
-	}
-
-	return NULL;
-}
-
-static qboolean RT_EmissiveLightParamsForTex (gltexture_t *light_tex, RgMaterial *material, float *meanEmiss, vec3_t color)
+static qboolean RT_EmissiveLightParamsForTex (gltexture_t *light_tex, rt_emissive_params_t *p)
 {
 	if (!light_tex || !light_tex->rtislight)
 		return false;
@@ -1306,24 +1501,226 @@ static qboolean RT_EmissiveLightParamsForTex (gltexture_t *light_tex, RgMaterial
 
 	const qboolean has_mask = light_tex->rtemissivetex && light_tex->rtemissivemean > 0.0f;
 
-	*material  = has_mask ? light_tex->rtmaterial : RG_NO_MATERIAL;
-	*meanEmiss = has_mask ? light_tex->rtemissivemean : 1.0f;
+	/* The mask is in the geometry now, so the shader never samples it: with no material the
+	   textured area light is uniform over its polygon and scaled by meanEmiss. */
+	p->material  = RG_NO_MATERIAL;
+	p->meanEmiss = has_mask ? light_tex->rtemissivemean : 1.0f;
+	p->glow      = false;
+	p->glow_mean = p->meanEmiss;
 
 	if (light_tex->rthaslightcolor)
 	{
-		VectorCopy (light_tex->rtlightcolor, color);
+		VectorCopy (light_tex->rtlightcolor, p->color);
 	}
 	else if (has_mask)
 	{
 		const float meanBase = light_tex->rtemissivemeanbase > 1e-6f ? light_tex->rtemissivemeanbase : 1e-6f;
-		VectorScale (light_tex->rtemissivecolor, 1.0f / meanBase, color);
+		VectorScale (light_tex->rtemissivecolor, 1.0f / meanBase, p->color);
 	}
 	else
 	{
-		VectorCopy (light_tex->rtemissivecolor, color);
+		VectorCopy (light_tex->rtemissivecolor, p->color);
+	}
+
+	if (has_mask && light_tex->rtemissiveglowtex && light_tex->rtemisglowfrac > 1e-6f)
+	{
+		p->glow          = true;
+		p->glow_uvmin[0] = light_tex->rtemisuvmin[0];
+		p->glow_uvmin[1] = light_tex->rtemisuvmin[1];
+		p->glow_uvmax[0] = light_tex->rtemisuvmax[0];
+		p->glow_uvmax[1] = light_tex->rtemisuvmax[1];
+		/* Area mean over the glow extents: the polygon lights cover only those, so they carry
+		   the emission the whole surface would have had over the glowing part. */
+		p->glow_mean     = light_tex->rtemissiveglow;
 	}
 
 	return true;
+}
+
+/*
+=================
+RT_CanonicalLightTex
+
+The frame of an animated texture the emissive light (and its light styles) is built from, or NULL
+when the texture cannot host a light. The light is collected anew every frame
+(RT_CollectWorldEmissiveLights, RT_AddEmissiveLight), so the frame the light comes from must not
+depend on cl.time: with R_TextureAnimation every animated texture in the map steps to the next
+frame at the same instant (relative = (int)(cl.time * 10) % anim_total), so a time-dependent pick
+makes the whole set of emissive lights change colour, change size or drop out together, which
+shifts the light array and, with it, every cluster light list. See plan.md, "мерцание по всей сцене".
+
+alt selects the alternate animation the entity is currently in (ent->frame), which is a state change
+and not an animation step, so it is kept. The frame inside that cycle is the first one that can host
+a light, in ring order from the base texture.
+=================
+*/
+static gltexture_t *RT_CanonicalLightTex (texture_t *base, int alt)
+{
+	if (alt && base && base->alternate_anims)
+		base = base->alternate_anims;
+
+	if (!base || !base->gltexture)
+		return NULL;
+
+	rt_emissive_params_t params;
+	gltexture_t         *fallback = base->gltexture;
+
+	for (texture_t *f = base; f; f = f->anim_next)
+	{
+		gltexture_t *ft = f->gltexture;
+
+		if (ft && RT_EmissiveLightParamsForTex (ft, &params))
+			return ft;
+
+		if (ft && ft->rthasmaterial && !fallback->rthasmaterial)
+			fallback = ft;
+
+		if (!f->anim_next || f->anim_next == base)
+			break;
+	}
+
+	return fallback;
+}
+
+static float RT_UvPolyArea (const RgFloat2D *p, int n)
+{
+	float a = 0.0f;
+
+	for (int i = 0; i < n; i++)
+	{
+		const RgFloat2D p0 = p[i];
+		const RgFloat2D p1 = p[(i + 1) % n];
+
+		a += p0.data[0] * p1.data[1] - p1.data[0] * p0.data[1];
+	}
+
+	return 0.5f * a;
+}
+
+static int RT_ClipUvPolyEdge (const RgFloat2D *in, int n, int axis, float limit, qboolean keep_greater, RgFloat2D *out)
+{
+	int m = 0;
+
+	for (int i = 0; i < n; i++)
+	{
+		const RgFloat2D a  = in[i];
+		const RgFloat2D b  = in[(i + 1) % n];
+		const float     da = a.data[axis] - limit;
+		const float     db = b.data[axis] - limit;
+		const qboolean  ia = keep_greater ? (da >= 0.0f) : (da <= 0.0f);
+		const qboolean  ib = keep_greater ? (db >= 0.0f) : (db <= 0.0f);
+
+		if (ia)
+		{
+			if (m >= MAX_TEXTURED_AREA_LIGHT_VERTS)
+				return 0;
+			out[m++] = a;
+		}
+
+		if (ia != ib)
+		{
+			const float t = da / (da - db);
+			RgFloat2D   p;
+
+			p.data[0] = a.data[0] + t * (b.data[0] - a.data[0]);
+			p.data[1] = a.data[1] + t * (b.data[1] - a.data[1]);
+
+			if (m >= MAX_TEXTURED_AREA_LIGHT_VERTS)
+				return 0;
+			out[m++] = p;
+		}
+	}
+
+	return m;
+}
+
+/* Sutherland-Hodgman against one repetition of the glow extents. The result stays in the uv
+   space of the surface fit, so A/B/C map it back to world without any world-space vertices. */
+static int RT_ClipUvPolyToRect (const RgFloat2D *in, int n, const float *uvmin, const float *uvmax, RgFloat2D *out)
+{
+	RgFloat2D tmp[MAX_TEXTURED_AREA_LIGHT_VERTS];
+	int       m;
+
+	m = RT_ClipUvPolyEdge (in, n, 0, uvmin[0], true, tmp);
+	if (m < 3)
+		return 0;
+	m = RT_ClipUvPolyEdge (tmp, m, 0, uvmax[0], false, out);
+	if (m < 3)
+		return 0;
+	m = RT_ClipUvPolyEdge (out, m, 1, uvmin[1], true, tmp);
+	if (m < 3)
+		return 0;
+
+	return RT_ClipUvPolyEdge (tmp, m, 1, uvmax[1], false, out);
+}
+
+static int RT_EmissiveGlowPolygons (const rt_uploadsurf_state_t *s, const RgFloat2D *surfuv, int vertcount,
+                                    const vec3_t A, const vec3_t B, const rt_emissive_params_t *params,
+                                    const RgTexturedAreaLightUploadInfo *base,
+                                    RgTexturedAreaLightUploadInfo *out, int out_max)
+{
+	float uvmin[2] = {surfuv[0].data[0], surfuv[0].data[1]};
+	float uvmax[2] = {surfuv[0].data[0], surfuv[0].data[1]};
+
+	for (int i = 1; i < vertcount; i++)
+	{
+		for (int k = 0; k < 2; k++)
+		{
+			if (surfuv[i].data[k] < uvmin[k])
+				uvmin[k] = surfuv[i].data[k];
+			if (surfuv[i].data[k] > uvmax[k])
+				uvmax[k] = surfuv[i].data[k];
+		}
+	}
+
+	/* Same repetition range the shader samples with getTalUvTiles: one unit of uv is one tile. */
+	const int tileminx = (int)floor (uvmin[0]);
+	const int tilemaxx = (int)fmax ((double)ceil (uvmax[0]) - 1.0, (double)tileminx);
+	const int tileminy = (int)floor (uvmin[1]);
+	const int tilemaxy = (int)fmax ((double)ceil (uvmax[1]) - 1.0, (double)tileminy);
+
+	const int tiles = (tilemaxx - tileminx + 1) * (tilemaxy - tileminy + 1);
+
+	if (tiles <= 0 || tiles > RT_MAX_EMISSIVE_POLYS_PER_FACE)
+		return 0;
+
+	vec3_t ab;
+	CrossProduct (A, B, ab);
+
+	int num = 0;
+
+	for (int ty = tileminy; ty <= tilemaxy && num < out_max; ty++)
+	{
+		for (int tx = tileminx; tx <= tilemaxx && num < out_max; tx++)
+		{
+			const float uvmin_t[2] = {(float)tx + params->glow_uvmin[0], (float)ty + params->glow_uvmin[1]};
+			const float uvmax_t[2] = {(float)tx + params->glow_uvmax[0], (float)ty + params->glow_uvmax[1]};
+			RgFloat2D   clipped[MAX_TEXTURED_AREA_LIGHT_VERTS];
+			const int   n = RT_ClipUvPolyToRect (surfuv, vertcount, uvmin_t, uvmax_t, clipped);
+
+			if (n < 3)
+				continue;
+
+			const float uvare = fabs (RT_UvPolyArea (clipped, n));
+
+			if (uvare <= 1e-9f)
+				continue;
+
+			RgTexturedAreaLightUploadInfo li = *base;
+
+			for (int i = 0; i < n; i++)
+				li.uvVerts[i] = clipped[i];
+
+			li.numVerts  = n;
+			li.area      = uvare * VectorLength (ab);
+			li.meanEmiss = params->glow_mean;
+			li.uniqueID  = RT_GetBrushSurfUniqueId (s->entuniqueid, s->model, s->surf, (uint64_t)(num + 1));
+
+			out[num++] = li;
+		}
+	}
+
+	return num;
 }
 
 static void RT_AddEmissiveLight (const rt_uploadsurf_state_t *s)
@@ -1335,11 +1732,9 @@ static void RT_AddEmissiveLight (const rt_uploadsurf_state_t *s)
 	if (watch)
 		watch->surfaces++;
 
-	RgMaterial material;
-	float      meanEmiss;
-	vec3_t     color;
+	rt_emissive_params_t params;
 
-	if (!RT_EmissiveLightParamsForTex (light_tex, &material, &meanEmiss, color))
+	if (!RT_EmissiveLightParamsForTex (light_tex, &params))
 	{
 		if (!light_tex || !light_tex->rtislight)
 		{
@@ -1451,7 +1846,7 @@ static void RT_AddEmissiveLight (const rt_uploadsurf_state_t *s)
 
 		if (!is_static_geom)
 		{
-			VectorScale (color, style_scale, color);
+			VectorScale (params.color, style_scale, params.color);
 
 			if (style_scale <= 0.0f)
 			{
@@ -1563,8 +1958,8 @@ static void RT_AddEmissiveLight (const rt_uploadsurf_state_t *s)
 
 	RgTexturedAreaLightUploadInfo light_info = {0};
 	light_info.uniqueID  = RT_GetBrushSurfUniqueId (s->entuniqueid, s->model, s->surf, 0);
-	light_info.material  = material;
-	light_info.meanEmiss = meanEmiss;
+	light_info.material  = params.material;
+	light_info.meanEmiss = params.meanEmiss;
 	light_info.area      = total_area;
 	light_info.fit       = 0;
 	light_info.isStatic  = is_static_geom ? 1 : 0;
@@ -1617,11 +2012,103 @@ static void RT_AddEmissiveLight (const rt_uploadsurf_state_t *s)
 
 	light_info.fit = fit_ok ? 1 : 0;
 
-	VectorCopy (color, light_info.color.data);
+	VectorCopy (params.color, light_info.color.data);
 
 	if (watch)
 		watch->lights++;
+
+	if (params.glow)
+	{
+		if (poly_ok)
+		{
+			RgTexturedAreaLightUploadInfo polys[RT_MAX_EMISSIVE_POLYS_PER_FACE];
+			const int num = RT_EmissiveGlowPolygons (s, light_info.uvVerts, light_info.numVerts, A, B, &params,
+			                                        &light_info, polys, RT_MAX_EMISSIVE_POLYS_PER_FACE);
+
+			if (num > 0)
+			{
+				rt_emis_stats.glow_faces++;
+				rt_emis_stats.glow_lights += num;
+
+				for (int i = 0; i < num; i++)
+					RT_UploadEmissiveLight (&polys[i], is_static_geom, s->surf, light_tex);
+
+				return;
+			}
+		}
+
+		/* No glow polygon survived (too many repetitions, or a surface that has no uv fit):
+		   the whole surface keeps the light instead. */
+		rt_emis_stats.glow_fallback++;
+	}
+
 	RT_UploadEmissiveLight (&light_info, is_static_geom, s->surf, light_tex);
+}
+
+/*
+================
+RT_OwnedFacesReset / RT_FaceOwnedBySubmodel
+
+Whether a face of the world belongs to an inline submodel (a door, a platform) is a property
+of the BSP, so it is answered once per map instead of walking the submodel table once per
+face: the collector asks it for every face, and the world of ad_mountain has 393 submodels
+over 25k faces. Like the surface packs, this table is sized off the render tasks by
+RT_BrushClusterCacheReset; the fallback keeps the answer when it was not built.
+================
+*/
+static uint8_t        *rt_ownedfaces;
+static const qmodel_t *rt_ownedfaces_model;
+static int             rt_ownedfaces_count;
+
+static void RT_OwnedFacesReset (void)
+{
+	Mem_Free (rt_ownedfaces);
+	rt_ownedfaces = NULL;
+	rt_ownedfaces_model = NULL;
+	rt_ownedfaces_count = 0;
+
+	const qmodel_t *model = cl.worldmodel;
+
+	if (!model || !model->surfaces || !model->submodels || model->numsubmodels <= 0 || model->numsurfaces <= 0)
+		return;
+
+	rt_ownedfaces = Mem_Alloc ((size_t) model->numsurfaces);
+
+	for (int j = 1; j < model->numsubmodels; j++)
+	{
+		const dmodel_t *sm    = &model->submodels[j];
+		int             first = sm->firstface;
+		int             last  = sm->firstface + sm->numfaces;
+
+		if (first < 0)
+			first = 0;
+		if (last > model->numsurfaces)
+			last = model->numsurfaces;
+		if (last > first)
+			memset (rt_ownedfaces + first, 1, (size_t) (last - first));
+	}
+
+	rt_ownedfaces_model = model;
+	rt_ownedfaces_count = model->numsurfaces;
+}
+
+static qboolean RT_FaceOwnedBySubmodel (const qmodel_t *model, int surfindex)
+{
+	if (!model)
+		return false;
+
+	if (rt_ownedfaces && model == rt_ownedfaces_model && surfindex >= 0 && surfindex < rt_ownedfaces_count)
+		return rt_ownedfaces[surfindex] != 0;
+
+	for (int j = 1; j < model->numsubmodels; j++)
+	{
+		const dmodel_t *sm = &model->submodels[j];
+
+		if (surfindex >= sm->firstface && surfindex < sm->firstface + sm->numfaces)
+			return true;
+	}
+
+	return false;
 }
 
 static void RT_CollectWorldEmissiveLights (void)
@@ -1630,17 +2117,7 @@ static void RT_CollectWorldEmissiveLights (void)
 
 	for (int i = 0; i < model->numsurfaces; i++)
 	{
-		qboolean owned_by_submodel = false;
-		for (int j = 1; j < model->numsubmodels; j++)
-		{
-			const dmodel_t *sm = &model->submodels[j];
-			if (i >= sm->firstface && i < sm->firstface + sm->numfaces)
-			{
-				owned_by_submodel = true;
-				break;
-			}
-		}
-		if (owned_by_submodel)
+		if (RT_FaceOwnedBySubmodel (model, i))
 			continue;
 
 		msurface_t *surf = &model->surfaces[i];
@@ -1652,7 +2129,7 @@ static void RT_CollectWorldEmissiveLights (void)
 		if (surf->flags & (SURF_DRAWSKY | SURF_NOTEXTURE))
 			continue;
 
-		gltexture_t *light_tex = RT_AnimatedLightTexAnyFrame (t);
+		gltexture_t *light_tex = RT_CanonicalLightTex (t, 0);
 
 		if (!light_tex)
 			continue;
@@ -1687,6 +2164,11 @@ static rt_brushcluster_cacheentry_t rt_brushcluster_cache[RT_BRUSHCLUSTER_CACHE_
 void RT_BrushClusterCacheReset (void)
 {
 	memset (rt_brushcluster_cache, 0, sizeof (rt_brushcluster_cache));
+
+	/* New faces and a new light set: the per surface answers of the old map are void. Both
+	   tables are sized here, where no render task runs, and never during a frame. */
+	RT_SurfacePacksReset ();
+	RT_OwnedFacesReset ();
 }
 
 static int RT_ResolveBrushSurfCluster (const rt_uploadsurf_state_t *s, const RgVertex *verts, int numverts)
@@ -1811,6 +2293,63 @@ void R_DrawTextureChains_ShowTris (cb_context_t *cbx, qmodel_t *model, texchain_
 
 /*
 ================
+RT_UploadStatesMatch
+
+True when two consecutive surfaces of a world texture chain produce the same upload, so
+that the second one continues the batch of the first.
+
+Everything the upload of the batch reads is compared. Left out are the surface, whose
+vertex range, unique id and packed light styles travel per surface inside the batch, and
+the lightmap page, which the upload does not read: it names a texture of the rasterizer's
+lightmap pass, and no per surface state is taken from it.
+================
+*/
+static qboolean RT_UploadStatesMatch (const rt_uploadsurf_state_t *cur, const rt_uploadsurf_state_t *last)
+{
+	if (cur->is_teleport || last->is_teleport)
+	{
+		// the portal of a teleport surface is resolved into the uploaded geometry
+		return false;
+	}
+
+	return cur->entuniqueid == last->entuniqueid &&
+	       cur->ent == last->ent &&
+	       cur->model == last->model &&
+	       cur->diffuse_tex == last->diffuse_tex &&
+	       cur->light_tex == last->light_tex &&
+	       cur->alpha_test == last->alpha_test &&
+	       cur->alpha == last->alpha &&
+	       cur->use_zbias == last->use_zbias &&
+	       cur->is_warp == last->is_warp &&
+	       cur->is_water == last->is_water &&
+	       cur->is_acid == last->is_acid &&
+	       cur->is_animated == last->is_animated;
+}
+
+/*
+================
+RT_ShouldSplitBatch
+
+Decides whether the surface being batched opens a new upload.
+
+rt_world_batch_merge 0 keeps the split that history left in these two chains: a new
+lightmap page, and -- a comparison whose sign was never fixed -- an unchanged alpha, which
+cuts a separate upload for nearly every water and animated surface of a map although their
+vertex data, material and flags are the same. With it 1 the batch is split only when
+something the upload carries really differs, so the surfaces of one texture share one
+upload.
+================
+*/
+static qboolean RT_ShouldSplitBatch (const rt_uploadsurf_state_t *cur, const rt_uploadsurf_state_t *last, qboolean legacy_split)
+{
+	if (CVAR_TO_BOOL (rt_world_batch_merge))
+		return !RT_UploadStatesMatch (cur, last);
+
+	return legacy_split;
+}
+
+/*
+================
 R_DrawTextureChains_Water -- johnfitz
 ================
 */
@@ -1831,6 +2370,13 @@ void R_DrawTextureChains_Water (cb_context_t *cbx, qmodel_t *model, entity_t *en
 		
 		RT_ClearBatch (cbx);
 
+		/* All three name a property of the texture: R_TextureAnimation is read at frame 0 of
+		   the cycle and cl.time is fixed for the frame, so they do not vary between the
+		   surfaces of this chain. */
+		gltexture_t *anim_tex  = R_TextureAnimation (t, 0)->gltexture;
+		gltexture_t *surf_tex  = (anim_tex && anim_tex->rthasmaterial) ? anim_tex : t->gltexture;
+		gltexture_t *light_tex = RT_CanonicalLightTex (t, 0);
+
 		for (s = t->texturechains[chain]; s; s = s->texturechains[chain])
 		{
 			if (model != cl.worldmodel)
@@ -1841,16 +2387,13 @@ void R_DrawTextureChains_Water (cb_context_t *cbx, qmodel_t *model, entity_t *en
 				Atomic_StoreUInt32 (&t->update_warp, true); // FIXME: one frame too late!
 			}
 
-			gltexture_t *anim_tex  = R_TextureAnimation (t, 0)->gltexture;
-			gltexture_t *surf_tex  = (anim_tex && anim_tex->rthasmaterial) ? anim_tex : t->gltexture;
-
 			rt_uploadsurf_state_t cur_state = {
 				.entuniqueid = entuniqueid,
 				.ent = ent,
 				.model = model,
 				.surf = s,
 				.diffuse_tex = surf_tex,
-				.light_tex = surf_tex,
+				.light_tex = light_tex ? light_tex : surf_tex,
 				.lightmap_tex = (s->lightmaptexturenum >= 0) ? lightmaps[s->lightmaptexturenum].texture : greytexture,
 				.alpha_test = false,
 				.alpha = GL_WaterAlphaForEntitySurface (ent, s),
@@ -1861,8 +2404,9 @@ void R_DrawTextureChains_Water (cb_context_t *cbx, qmodel_t *model, entity_t *en
 				.is_teleport = (s->flags & SURF_DRAWTELE),
 			};
 
-			if (cur_state.lightmap_tex != last_state.lightmap_tex ||
-				fabsf(cur_state.alpha - last_state.alpha) < 0.001f)
+			if (RT_ShouldSplitBatch (&cur_state, &last_state,
+			                         cur_state.lightmap_tex != last_state.lightmap_tex ||
+			                         fabsf(cur_state.alpha - last_state.alpha) < 0.001f))
 			{
 				RT_FlushBatch (cbx, &last_state, &brushpasses);
 			}
@@ -1929,7 +2473,7 @@ void R_DrawTextureChains_Animated (cb_context_t *cbx, qmodel_t *model)
 				.is_animated = true,
 			};
 
-			if (cur_state.lightmap_tex != last_state.lightmap_tex)
+			if (RT_ShouldSplitBatch (&cur_state, &last_state, cur_state.lightmap_tex != last_state.lightmap_tex))
 			{
 				RT_FlushBatch (cbx, &last_state, &brushpasses);
 			}
@@ -1975,9 +2519,7 @@ void R_DrawTextureChains_Multitexture (
 		qboolean alpha_test = (t->texturechains[chain]->flags & SURF_DRAWFENCE) != 0;
 		gltexture_t *diffuse_tex = R_TextureAnimation (t, ent_frame)->gltexture;
 
-		gltexture_t *light_tex = t->gltexture;
-		if (diffuse_tex->rthasmaterial)
-			light_tex = diffuse_tex;
+		gltexture_t *light_tex = RT_CanonicalLightTex (t, ent_frame);
 
 		for (s = t->texturechains[chain]; s; s = s->texturechains[chain])
 		{
@@ -2041,6 +2583,9 @@ R_DrawWorld -- ericw -- moved from R_DrawTextureChains, which is no longer speci
 void R_DrawWorld (cb_context_t *cbx)
 {
 	rt_wldlights_emissive_count = 0;
+	/* The list is about to be collected again, so the cached reach answers for the old
+	   entries are void. */
+	rt_wldlights_style_accepted_dirty = true;
 
 	memset (&rt_emis_stats, 0, sizeof (rt_emis_stats));
 	rt_emis_skip_num = 0;
@@ -2097,56 +2642,86 @@ void R_DrawWorld_ShowTris (cb_context_t *cbx)
 
 
 
+/*
+=============
+RT_RegisterWorldModelLight
+
+A light of the map itself: it stands where it stands every frame, and the leaf it resolved
+into is the reach that is right for it, so it is registered without one.
+=============
+*/
+static void RT_RegisterWorldModelLight (const RgTexturedAreaLightUploadInfo *lt, vec3_t center)
+{
+	const float nudge = 2.0f;
+
+	center[0] += nudge * lt->normal.data[0];
+	center[1] += nudge * lt->normal.data[1];
+	center[2] += nudge * lt->normal.data[2];
+
+	RT_ClusterLightAdd (lt->uniqueID, center, 0.0f);
+
+	if (CVAR_TO_BOOL (rt_debugemissive))
+	{
+		RT_EmitEmissiveWirePolygon (lt);
+	}
+}
+
 void RT_UploadAllWorldModelLights (void)
 {
+	if (rt_wldlights_style_accepted_dirty ||
+	    rt_wldlights_style_accepted_reach != CVAR_TO_FLOAT (rt_light_styles_reach))
+	{
+		RT_BuildWorldLightStyleAcceptance ();
+	}
+
 	for (int i = 0; i < rt_wldlights_emissive_count; i++)
 	{
-		RgTexturedAreaLightUploadInfo li = rt_wldlights_emissive[i];
+		RgTexturedAreaLightUploadInfo *li = &rt_wldlights_emissive_upload[i];
+		gltexture_t *light_tex = rt_wldlights_emissive_tex[i];
 
-		vec3_t center;
-		RT_TexturedAreaLightCenter (&li, center);
+		*li = rt_wldlights_emissive[i];
 
-		gltexture_t *light_tex = RT_AnimatedLightTex (rt_wldlights_emissive_surf[i]->texinfo->texture);
-		if (light_tex != rt_wldlights_emissive_tex[i])
-		{
-			RgMaterial material;
-			float      meanEmiss;
-			vec3_t     color;
-
-			if (!RT_EmissiveLightParamsForTex (light_tex, &material, &meanEmiss, color))
-				continue;
-
-			li.material  = material;
-			li.meanEmiss = meanEmiss;
-			VectorCopy (color, li.color.data);
-		}
-
+		/* The light keeps the parameters of the frame that was stored when the map was
+		   loaded. Re-deriving them from the animation frame the surface currently shows
+		   changes the light's selection mass several times a second, and a frame without
+		   emissive parameters dropped the light from the frame's light array altogether.
+		   Both are visible across the whole map, because one light is listed in every
+		   cluster of its PVS, and the lists themselves never change. */
 		if (light_tex && light_tex->rtlightstyles && CVAR_TO_BOOL (rt_light_styles))
 		{
-			const float style_scale = RT_SurfaceLightStyleScale (rt_wldlights_emissive_surf[i], center);
+			const float style_scale = RT_WorldLightStyleScale (i);
 
-			if (style_scale <= 0.0f)
-				continue;
-
-			VectorScale (li.color.data, style_scale, li.color.data);
+			/* A switched-off style dims the light to zero emission instead of dropping it:
+			   an id that is missing from a frame's light array leaves a hole in every cluster
+			   list naming it, which the renderer resolves to nothing for that frame. */
+			li->meanEmiss *= style_scale;
 		}
 
-		RT_ScaleEmissiveLightColor (li.color.data);
-		const RgTexturedAreaLightUploadInfo *lt = &li;
+		RT_ScaleEmissiveLightColor (li->color.data);
+	}
 
-		RgResult r = rgUploadTexturedAreaLight (vulkan_globals.instance, lt);
+	if (CVAR_TO_BOOL (rt_wmodel_lights_batch))
+	{
+		/* The per-light cost is the call, not the light: hand the whole map over in one. */
+		RgResult r = rgUploadTexturedAreaLights (vulkan_globals.instance, rt_wldlights_emissive_upload,
+		                                         (uint32_t) rt_wldlights_emissive_count);
 		RG_CHECK (r);
 
-		const float nudge = 2.0f;
-		center[0] += nudge * lt->normal.data[0];
-		center[1] += nudge * lt->normal.data[1];
-		center[2] += nudge * lt->normal.data[2];
-
-		RT_ClusterLightAdd (lt->uniqueID, center);
-
-		if (CVAR_TO_BOOL (rt_debugemissive))
+		for (int i = 0; i < rt_wldlights_emissive_count; i++)
 		{
-			RT_EmitEmissiveWirePolygon (lt);
+			RT_RegisterWorldModelLight (&rt_wldlights_emissive_upload[i], rt_wldlights_emissive_center[i]);
+		}
+	}
+	else
+	{
+		for (int i = 0; i < rt_wldlights_emissive_count; i++)
+		{
+			const RgTexturedAreaLightUploadInfo *lt = &rt_wldlights_emissive_upload[i];
+
+			RgResult r = rgUploadTexturedAreaLight (vulkan_globals.instance, lt);
+			RG_CHECK (r);
+
+			RT_RegisterWorldModelLight (lt, rt_wldlights_emissive_center[i]);
 		}
 	}
 }
@@ -2510,36 +3085,26 @@ static gltexture_t *RT_EmissiveLightTex (msurface_t *surf, RgMaterial *material,
 	if (!t || !t->gltexture)
 		return NULL;
 
-	gltexture_t *light_tex = RT_AnimatedLightTexAnyFrame (t);
+	gltexture_t *light_tex = RT_CanonicalLightTex (t, 0);
 
-	RgMaterial mat;
-	float      mean;
-	vec3_t     col;
+	rt_emissive_params_t p;
 
-	if (!light_tex || !RT_EmissiveLightParamsForTex (light_tex, &mat, &mean, col))
+	if (!light_tex || !RT_EmissiveLightParamsForTex (light_tex, &p))
 		return NULL;
 
 	if (material)
-		*material = mat;
+		*material = p.material;
 	if (meanEmiss)
-		*meanEmiss = mean;
+		*meanEmiss = p.meanEmiss;
 	if (color)
-		VectorCopy (col, color);
+		VectorCopy (p.color, color);
 
 	return light_tex;
 }
 
 static qboolean RT_SurfaceOwnedBySubmodel (const qmodel_t *model, int surfindex)
 {
-	for (int j = 1; j < model->numsubmodels; j++)
-	{
-		const dmodel_t *sm = &model->submodels[j];
-
-		if (surfindex >= sm->firstface && surfindex < sm->firstface + sm->numfaces)
-			return true;
-	}
-
-	return false;
+	return RT_FaceOwnedBySubmodel (model, surfindex);
 }
 
 /*
@@ -2642,36 +3207,554 @@ void RT_WorldCensus (void)
 
 /*
 =================
+World clusters
+
+The renderer builds its cluster light lists, and the statistics of those lists, on tables of a
+fixed size: a cluster index past that size lands outside the offsets, outside the lists and
+outside the statistics buffer, and the atomic write of the statistics is what turns a light of a
+moving entity into a shifting picture all over the map. BSP leaf indices do reach that size - the
+AD maps ship up to 134394 leafs against a table of 8192 - so the leaf indices are folded into a
+cluster space that fits here, once per map load, and every surface, brush model and light is
+translated into it.
+
+Two tables can be built, and the leaf count alone decides which one:
+
+  identity  every leaf is a cluster. The surface, brush model and light indices are the leaf
+            indices they always were, the map's own visdata is the PVS the renderer reads, and
+            nothing about the picture changes.
+  grid      the leafs are folded into uniform cells of the map box, at most 8191 of them. A cell
+            carries the union of the PVS rows of the leafs inside it, so a light in a cell reaches
+            everything any of those leafs reached. The union is wider than the row of a single
+            leaf, which is why the grid only takes over when the identity table cannot be built.
+
+A PVS row names its cluster with bit + 1 - R_MarkLeafsSIMD and the renderer's own walk read it
+that way - so a row stands for the clusters 1..n and not for 0..n-1. The cell index is the bit
+index, which keeps the projection a copy of the bits when the clusters happen to be leafs.
+=================
+*/
+#define RT_WORLD_CLUSTER_MAX 8192
+// A row names its cluster with bit + 1, so the last index of the table stays unused.
+#define RT_WORLD_CLUSTER_CELLS (RT_WORLD_CLUSTER_MAX - 1)
+
+typedef struct
+{
+	int      num_leafs;
+	int32_t *leaf_cluster; // leaf index -> cluster index
+	int      is_grid;
+	// The map the tables were built from: a new map needs new tables, and the callers of the
+	// mapping run before the upload that would otherwise build them.
+	qmodel_t *model;
+
+	int        num_clusters;
+	RgFloat3D *cluster_mins;
+	RgFloat3D *cluster_maxs;
+	uint8_t   *cluster_flags;
+	int32_t   *vis_offsets;
+	uint32_t   pvs_row_bytes;
+
+	// Only the grid publishes its own rows; the identity table leaves the map's visdata in place.
+	uint8_t *vis_data;
+	int      vis_data_size;
+
+	float grid_mins[3];
+	float grid_cell_size[3];
+	float grid_inv_cell[3];
+	int   grid_dims[3];
+} rt_worldclusters_t;
+
+static rt_worldclusters_t rt_worldclusters;
+
+static void RT_AllocClusterTables (int num_clusters)
+{
+	rt_worldclusters.num_clusters  = num_clusters;
+	rt_worldclusters.cluster_mins  = (RgFloat3D *)Mem_Alloc (sizeof (RgFloat3D) * num_clusters);
+	rt_worldclusters.cluster_maxs  = (RgFloat3D *)Mem_Alloc (sizeof (RgFloat3D) * num_clusters);
+	rt_worldclusters.cluster_flags = (uint8_t *)Mem_Alloc (sizeof (uint8_t) * num_clusters);
+	rt_worldclusters.vis_offsets   = (int32_t *)Mem_Alloc (sizeof (int32_t) * num_clusters);
+}
+
+void RT_FreeWorldClusters (void)
+{
+	Mem_Free (rt_worldclusters.leaf_cluster);
+	Mem_Free (rt_worldclusters.cluster_mins);
+	Mem_Free (rt_worldclusters.cluster_maxs);
+	Mem_Free (rt_worldclusters.cluster_flags);
+	Mem_Free (rt_worldclusters.vis_offsets);
+	Mem_Free (rt_worldclusters.vis_data);
+
+	memset (&rt_worldclusters, 0, sizeof (rt_worldclusters));
+}
+
+/*
+=================
+RT_MapWorldCluster
+
+The one place a leaf index becomes a cluster index, for surfaces, brush models and lights alike.
+Both tables are built from the same leaf table, and a request that arrives before one exists
+builds it, so no caller has to care about the map load order.
+=================
+*/
+int RT_MapWorldCluster (int leaf_index)
+{
+	if (rt_worldclusters.model != cl.worldmodel || !rt_worldclusters.leaf_cluster)
+		RT_BuildWorldClusters ();
+
+	if (leaf_index <= 0 || leaf_index >= rt_worldclusters.num_leafs)
+		return 0;
+
+	return rt_worldclusters.leaf_cluster[leaf_index];
+}
+
+static int RT_GridCellOfPoint (const float *p)
+{
+	int cell = 0;
+
+	for (int a = 0; a < 3; a++)
+	{
+		float f = (p[a] - rt_worldclusters.grid_mins[a]) * rt_worldclusters.grid_inv_cell[a];
+
+		if (!(f > 0.0f))
+			f = 0.0f;
+		else if (f >= (float)rt_worldclusters.grid_dims[a])
+			f = (float)rt_worldclusters.grid_dims[a] - 1.0f;
+
+		cell = cell * rt_worldclusters.grid_dims[a] + (int)f;
+	}
+
+	return cell;
+}
+
+static void RT_GridCellBounds (int cell, float *mins, float *maxs)
+{
+	const int dim_y = rt_worldclusters.grid_dims[1];
+	const int dim_z = rt_worldclusters.grid_dims[2];
+	const int idx[3] = { cell / (dim_y * dim_z), (cell / dim_z) % dim_y, cell % dim_z };
+
+	for (int a = 0; a < 3; a++)
+	{
+		mins[a] = rt_worldclusters.grid_mins[a] + (float)idx[a] * rt_worldclusters.grid_cell_size[a];
+		maxs[a] = mins[a] + rt_worldclusters.grid_cell_size[a];
+	}
+}
+
+/* The row of a leaf names a leaf with bit + 1 - the renderer reads its own walk that way - so the
+   row of a cluster names the cluster with the same offset: the bit of a cluster is its index
+   minus one. The map stores a row as runs, and the rows of the maps that need the grid are
+   millions of bits with a few hundred of them set, so the runs are followed rather than the row
+   expanded first: a run carries no bits at all. */
+static void RT_ProjectVisRow (const uint8_t *p_compressed, int in_avail, int leaf_row_bytes, int num_leafs,
+	const int32_t *p_leaf_cluster, uint8_t *p_cluster_row)
+{
+	// A byte of the row never costs more than two, and the lump ends after the last row of the map.
+	int in_limit = leaf_row_bytes * 2;
+
+	if (in_limit > in_avail)
+		in_limit = in_avail;
+
+	if (in_limit <= 0)
+		return;
+
+	int in = 0;
+
+	for (int b = 0; b < leaf_row_bytes && in < in_limit; )
+	{
+		const uint8_t bits = p_compressed[in++];
+
+		if (bits != 0)
+		{
+			for (int k = 0; k < 8; k++)
+			{
+				const int leaf = (b << 3) + k + 1;
+				int32_t   cluster;
+
+				if (!(bits & (1u << k)) || leaf >= num_leafs)
+					continue;
+
+				cluster = p_leaf_cluster[leaf] - 1;
+
+				if (cluster < 0)
+					continue;
+
+				p_cluster_row[cluster >> 3] |= (uint8_t)(1u << (cluster & 7));
+			}
+
+			b++;
+			continue;
+		}
+
+		if (in >= in_limit)
+			return;
+
+		// The count of a run covers the byte the run starts at, as Mod_DecompressVis expands it,
+		// so the row advances by the count alone; a run that names more than the row holds is cut
+		// the same way the renderer cuts it.
+		int run = p_compressed[in++];
+
+		if (run > leaf_row_bytes - b)
+			run = leaf_row_bytes - b;
+
+		b += run;
+	}
+}
+
+// A run of zero bytes is what the renderer reads as a run count, so a row is left uncompressed.
+static int RT_CompressVisRow (const uint8_t *p_row, int row_bytes, uint8_t *p_out)
+{
+	int out = 0;
+
+	for (int i = 0; i < row_bytes; )
+	{
+		if (p_row[i] != 0)
+		{
+			p_out[out++] = p_row[i++];
+			continue;
+		}
+
+		int run = 0;
+
+		while (i + run < row_bytes && run < 255 && p_row[i + run] == 0)
+			run++;
+
+		p_out[out++] = 0;
+		p_out[out++] = (uint8_t)run;
+		i += run;
+	}
+
+	return out;
+}
+
+static void RT_BuildWorldClustersIdentity (qmodel_t *model)
+{
+	const int num_leafs = model->numleafs;
+	const int row_bytes = (num_leafs + 31) / 8;
+
+	rt_worldclusters.num_leafs = num_leafs;
+	rt_worldclusters.leaf_cluster = (int32_t *)Mem_Alloc (sizeof (int32_t) * num_leafs);
+	rt_worldclusters.pvs_row_bytes = (uint32_t)row_bytes;
+	rt_worldclusters.model = model;
+
+	RT_AllocClusterTables (num_leafs);
+
+	for (int i = 0; i < num_leafs; i++)
+	{
+		const mleaf_t *leaf = &model->leafs[i];
+		int32_t        offset = -1;
+
+		rt_worldclusters.leaf_cluster[i] = i;
+		VectorCopy (leaf->minmaxs, rt_worldclusters.cluster_mins[i].data);
+		VectorCopy (leaf->minmaxs + 3, rt_worldclusters.cluster_maxs[i].data);
+		rt_worldclusters.cluster_flags[i] = (leaf->contents == CONTENTS_SOLID) ? RG_WORLD_CLUSTER_SOLID_BIT : 0;
+
+		if (leaf->compressed_vis)
+		{
+			offset = (int32_t)(leaf->compressed_vis - model->visdata);
+
+			if ((int)offset + row_bytes > rt_worldclusters.vis_data_size)
+				rt_worldclusters.vis_data_size = (int)offset + row_bytes;
+		}
+
+		rt_worldclusters.vis_offsets[i] = offset;
+	}
+}
+
+// The number of cells an axis would be cut into at this scale, the product of the three being
+// the cell count of the whole grid.
+static int RT_GridCellsAt (const float *ext, float scale, int *dims)
+{
+	int cells = 1;
+
+	for (int a = 0; a < 3; a++)
+	{
+		int n = (int)floor (ext[a] * scale);
+
+		if (n < 1)
+			n = 1;
+		else if (n > RT_WORLD_CLUSTER_CELLS)
+			n = RT_WORLD_CLUSTER_CELLS;
+
+		dims[a] = n;
+		cells *= n;
+	}
+
+	return cells;
+}
+
+static void RT_BuildWorldClustersGrid (qmodel_t *model, const float *map_mins, const float *map_maxs, const int *dims)
+{
+	const int num_leafs = model->numleafs;
+	const int num_cells = dims[0] * dims[1] * dims[2];
+	// A row names its cluster with bit + 1, so cluster 0 stays empty and the cells start at 1.
+	const int num_clusters = num_cells + 1;
+	const int cluster_row_bytes = (num_clusters + 7) / 8;
+	const int leaf_row_bytes = (num_leafs + 31) / 8;
+
+	int     *cell_counts = (int *)Mem_Alloc (sizeof (int) * num_cells);
+	int     *cell_start = (int *)Mem_Alloc (sizeof (int) * (num_cells + 1));
+	int     *members = (int *)Mem_Alloc (sizeof (int) * num_leafs);
+	int     *filled = (int *)Mem_Alloc (sizeof (int) * num_cells);
+	uint8_t *row = (uint8_t *)Mem_Alloc (cluster_row_bytes);
+
+	rt_worldclusters.num_leafs = num_leafs;
+	rt_worldclusters.leaf_cluster = (int32_t *)Mem_Alloc (sizeof (int32_t) * num_leafs);
+	rt_worldclusters.is_grid = 1;
+	rt_worldclusters.pvs_row_bytes = (uint32_t)cluster_row_bytes;
+	rt_worldclusters.model = model;
+	// A cell of n rows needs at most two bytes per byte of a row, and there are num_cells of them.
+	rt_worldclusters.vis_data = (uint8_t *)Mem_Alloc ((size_t)num_clusters * 2 * cluster_row_bytes + 16);
+
+	for (int a = 0; a < 3; a++)
+	{
+		const float ext = map_maxs[a] - map_mins[a];
+
+		rt_worldclusters.grid_mins[a] = map_mins[a];
+		rt_worldclusters.grid_dims[a] = dims[a];
+		rt_worldclusters.grid_cell_size[a] = ext / (float)dims[a];
+		rt_worldclusters.grid_inv_cell[a] = (ext > 0.0f) ? (float)dims[a] / ext : 0.0f;
+	}
+
+	RT_AllocClusterTables (num_clusters);
+
+	/* An empty cell keeps the whole map in its bounds and is marked solid: the top-up pass skips
+	   it and no light can stand in it, so it is a hole at the edge of the grid and not a room. */
+	for (int c = 0; c < num_clusters; c++)
+	{
+		for (int a = 0; a < 3; a++)
+		{
+			rt_worldclusters.cluster_mins[c].data[a] = map_maxs[a];
+			rt_worldclusters.cluster_maxs[c].data[a] = map_mins[a];
+		}
+
+		rt_worldclusters.cluster_flags[c] = RG_WORLD_CLUSTER_SOLID_BIT;
+	}
+
+	rt_worldclusters.vis_offsets[0] = -1;
+
+	for (int i = 0; i < num_leafs; i++)
+	{
+		const mleaf_t *leaf = &model->leafs[i];
+		float          center[3];
+		int            cell;
+
+		// A leaf sits in the cell its centre falls into, so the members of a cell are neighbours.
+		for (int a = 0; a < 3; a++)
+			center[a] = 0.5f * (leaf->minmaxs[a] + leaf->minmaxs[a + 3]);
+
+		cell = RT_GridCellOfPoint (center);
+		rt_worldclusters.leaf_cluster[i] = cell + 1;
+
+		if (leaf->contents == CONTENTS_SOLID)
+			continue;
+
+		cell_counts[cell]++;
+
+		for (int a = 0; a < 3; a++)
+		{
+			if (leaf->minmaxs[a] < rt_worldclusters.cluster_mins[cell + 1].data[a])
+				rt_worldclusters.cluster_mins[cell + 1].data[a] = leaf->minmaxs[a];
+
+			if (leaf->minmaxs[a + 3] > rt_worldclusters.cluster_maxs[cell + 1].data[a])
+				rt_worldclusters.cluster_maxs[cell + 1].data[a] = leaf->minmaxs[a + 3];
+		}
+	}
+
+	int running = 0;
+
+	for (int cell = 0; cell < num_cells; cell++)
+	{
+		cell_start[cell] = running;
+		running += cell_counts[cell];
+	}
+
+	cell_start[num_cells] = running;
+
+	for (int i = 0; i < num_leafs; i++)
+	{
+		int cell;
+
+		if (model->leafs[i].contents == CONTENTS_SOLID)
+			continue;
+
+		cell = rt_worldclusters.leaf_cluster[i] - 1;
+		members[cell_start[cell] + filled[cell]] = i;
+		filled[cell]++;
+	}
+
+	/* The row of a cell is the union of the rows of the leafs inside it, and the union is what a
+	   light standing in the cell hands out. */
+	int vis_data_used = 0;
+
+	for (int cell = 0; cell < num_cells; cell++)
+	{
+		qboolean have_row = false;
+
+		memset (row, 0, cluster_row_bytes);
+
+		for (int m = cell_start[cell]; m < cell_start[cell + 1]; m++)
+		{
+			const uint8_t *compressed = model->leafs[members[m]].compressed_vis;
+			int            offset;
+
+			if (compressed == NULL || model->visdata == NULL)
+				continue;
+
+			offset = (int)(compressed - model->visdata);
+
+			// What a walk may read: the row and the rows that follow it, up to the end of the lump.
+			RT_ProjectVisRow (compressed, model->visdatasize - offset, leaf_row_bytes, num_leafs,
+				rt_worldclusters.leaf_cluster, row);
+			have_row = true;
+		}
+
+		if (!have_row)
+		{
+			// A light standing here hands out nothing and is left to the top-up pass, which is
+			// what the renderer does with every cluster that carries no row.
+			rt_worldclusters.vis_offsets[cell + 1] = -1;
+			continue;
+		}
+
+		rt_worldclusters.vis_offsets[cell + 1] = vis_data_used;
+		vis_data_used += RT_CompressVisRow (row, cluster_row_bytes, rt_worldclusters.vis_data + vis_data_used);
+	}
+
+	rt_worldclusters.vis_data_size = vis_data_used + cluster_row_bytes;
+
+	// A cell no leaf lives in is solid, and its box is the one the top-up pass measures against.
+	for (int cell = 0; cell < num_cells; cell++)
+	{
+		if (cell_counts[cell] > 0)
+		{
+			rt_worldclusters.cluster_flags[cell + 1] = 0;
+			continue;
+		}
+
+		RT_GridCellBounds (cell, rt_worldclusters.cluster_mins[cell + 1].data,
+			rt_worldclusters.cluster_maxs[cell + 1].data);
+	}
+
+	// Cluster 0 is the one no row can name: the whole map in its bounds, and solid.
+	for (int a = 0; a < 3; a++)
+	{
+		rt_worldclusters.cluster_mins[0].data[a] = map_mins[a];
+		rt_worldclusters.cluster_maxs[0].data[a] = map_maxs[a];
+	}
+
+	Mem_Free (cell_counts);
+	Mem_Free (cell_start);
+	Mem_Free (members);
+	Mem_Free (filled);
+	Mem_Free (row);
+}
+
+void RT_BuildWorldClusters (void)
+{
+	qmodel_t *model = cl.worldmodel;
+	vec3_t    map_mins, map_maxs, ext;
+	qboolean  have_bounds = false;
+	float     scale = 1.0f;
+	int       num_cells, dims[3];
+
+	RT_FreeWorldClusters ();
+
+	if (!model || !model->leafs || model->numleafs < 2)
+		return;
+
+	if (model->numleafs <= RT_WORLD_CLUSTER_MAX || !CVAR_TO_BOOL (rt_worldclusters_grid))
+	{
+		if (model->numleafs > RT_WORLD_CLUSTER_MAX)
+		{
+			/* Leaf indices go to the renderer as they are, and the renderer's tables hold
+			   RT_WORLD_CLUSTER_MAX of them, so what lies past that is not addressed at all. */
+			Con_DWarning ("RT: %i leafs over the renderer's %i clusters, rt_worldclusters_grid is off\n",
+				model->numleafs, RT_WORLD_CLUSTER_MAX);
+		}
+
+		RT_BuildWorldClustersIdentity (model);
+		return;
+	}
+
+	/* The grid has to hold the leafs a light or a view can stand in, and the solid leafs reach
+	   all around the map, so the open ones are what its box is measured from. */
+	for (int i = 0; i < model->numleafs; i++)
+	{
+		const mleaf_t *leaf = &model->leafs[i];
+
+		if (leaf->contents == CONTENTS_SOLID)
+			continue;
+
+		for (int a = 0; a < 3; a++)
+		{
+			if (!have_bounds || leaf->minmaxs[a] < map_mins[a])
+				map_mins[a] = leaf->minmaxs[a];
+			if (!have_bounds || leaf->minmaxs[a + 3] > map_maxs[a])
+				map_maxs[a] = leaf->minmaxs[a + 3];
+		}
+
+		have_bounds = true;
+	}
+
+	if (!have_bounds)
+	{
+		for (int a = 0; a < 3; a++)
+		{
+			map_mins[a] = model->mins[a];
+			map_maxs[a] = model->maxs[a];
+		}
+	}
+
+	for (int a = 0; a < 3; a++)
+		ext[a] = map_maxs[a] - map_mins[a];
+
+	/* The finest grid whose cells fit the table, the same count per axis: cells the same size in
+	   every direction is what the reach test of the top-up pass assumes. */
+	const double volume = (double)ext[0] * (double)ext[1] * (double)ext[2];
+
+	if (volume > 1.0)
+		scale = (float)pow ((double)RT_WORLD_CLUSTER_CELLS / volume, 1.0 / 3.0);
+
+	if (!(scale > 0.0f) || scale > 1.0e4f)
+		scale = 1.0f;
+
+	num_cells = RT_GridCellsAt (ext, scale, dims);
+
+	while (num_cells > RT_WORLD_CLUSTER_CELLS)
+	{
+		scale *= 0.9f;
+		num_cells = RT_GridCellsAt (ext, scale, dims);
+	}
+
+	RT_BuildWorldClustersGrid (model, map_mins, map_maxs, dims);
+
+	Con_Printf ("RT: %i leafs folded into %i clusters over a %ix%ix%i grid, %i bytes of PVS rows\n",
+		model->numleafs, num_cells + 1, dims[0], dims[1], dims[2], rt_worldclusters.vis_data_size);
+}
+
+/*
+=================
 RT_UploadWorldLights
 
-Builds the world tables once per map load and hands them to the renderer: the clusters
-(BSP leafs) with their bounds, the compressed PVS and every emissive face with its
-corners. The face gate is the same one RT_WorldCensus counts and RT_CollectWorldEmissiveLights
-collects, so the renderer can grow light polygons out of these faces.
-Nothing in the renderer reads the tables yet, so the picture stays the same.
+Builds the world tables once per map load and hands them to the renderer: the clusters with
+their bounds, the compressed PVS and every emissive face with its corners. The clusters are the
+leafs themselves while the map fits the renderer's table and a grid of cells over them when it
+does not, and each face carries the cluster of the surface it was grown from. The face gate is
+the same one RT_WorldCensus counts and RT_CollectWorldEmissiveLights collects, so the renderer
+can grow light polygons out of these faces.
 =================
 */
 typedef struct
 {
-	RgFloat3D        *cluster_mins;
-	RgFloat3D        *cluster_maxs;
-	int32_t          *vis_offsets;
 	RgWorldLightFace *faces;
 	RgVertex         *face_vertices;
 
 	int num_clusters;
 	int num_faces;
 	int num_face_vertices;
-	int vis_data_size;
 } rt_worldlights_t;
 
 static rt_worldlights_t rt_worldlights;
 
 static void RT_FreeWorldLights (void)
 {
-	Mem_Free (rt_worldlights.cluster_mins);
-	Mem_Free (rt_worldlights.cluster_maxs);
-	Mem_Free (rt_worldlights.vis_offsets);
 	Mem_Free (rt_worldlights.faces);
 	Mem_Free (rt_worldlights.face_vertices);
 
@@ -2687,8 +3770,8 @@ void RT_UploadWorldLights (void)
 	if (!model || !model->leafs || !model->surfaces || model->numleafs < 2 || !vulkan_globals.instance)
 		return;
 
-	// Same row size as Mod_DecompressVis, which the renderer has to reproduce.
-	const int pvs_rowbytes = (model->numleafs + 31) / 8;
+	// The cluster tables are what turns a leaf index into the index the renderer indexes with.
+	RT_BuildWorldClusters ();
 
 	// First pass: how many faces and corners there are, so the tables can be sized once.
 	for (int i = 0; i < model->numsurfaces; i++)
@@ -2702,35 +3785,12 @@ void RT_UploadWorldLights (void)
 		rt_worldlights.num_face_vertices += surf->numedges;
 	}
 
-	rt_worldlights.num_clusters = model->numleafs;
-	rt_worldlights.cluster_mins = (RgFloat3D *)Mem_Alloc (sizeof (RgFloat3D) * model->numleafs);
-	rt_worldlights.cluster_maxs = (RgFloat3D *)Mem_Alloc (sizeof (RgFloat3D) * model->numleafs);
-	rt_worldlights.vis_offsets  = (int32_t *)Mem_Alloc (sizeof (int32_t) * model->numleafs);
+	rt_worldlights.num_clusters = rt_worldclusters.num_clusters;
 
 	if (rt_worldlights.num_faces > 0)
 	{
 		rt_worldlights.faces = (RgWorldLightFace *)Mem_Alloc (sizeof (RgWorldLightFace) * rt_worldlights.num_faces);
 		rt_worldlights.face_vertices = (RgVertex *)Mem_Alloc (sizeof (RgVertex) * rt_worldlights.num_face_vertices);
-	}
-
-	for (int i = 0; i < model->numleafs; i++)
-	{
-		const mleaf_t *leaf = &model->leafs[i];
-
-		VectorCopy (leaf->minmaxs, rt_worldlights.cluster_mins[i].data);
-		VectorCopy (leaf->minmaxs + 3, rt_worldlights.cluster_maxs[i].data);
-
-		int32_t offset = -1;
-
-		if (leaf->compressed_vis)
-		{
-			offset = (int32_t)(leaf->compressed_vis - model->visdata);
-
-			if ((int)offset + pvs_rowbytes > rt_worldlights.vis_data_size)
-				rt_worldlights.vis_data_size = (int)offset + pvs_rowbytes;
-		}
-
-		rt_worldlights.vis_offsets[i] = offset;
 	}
 
 	// Second pass: the faces themselves, with their corners in world space.
@@ -2752,7 +3812,7 @@ void RT_UploadWorldLights (void)
 		face->uniqueID    = RT_GetBrushSurfUniqueId (ENT_UNIQUEID_WORLD, model, surf, 0);
 		face->firstVertex = (uint32_t)vertex_index;
 		face->numVertices = (uint32_t)surf->numedges;
-		face->cluster     = (uint32_t)RT_GetSurfaceCluster (model, surf);
+		face->cluster     = (uint32_t)RT_MapWorldCluster (RT_GetSurfaceCluster (model, surf));
 		// has_mask of RT_EmissiveLightParamsForTex: only a part of the texture glows.
 		face->flags     = (material != RG_NO_MATERIAL) ? RG_WORLD_LIGHT_FACE_MASKED_BIT : 0;
 		face->material  = material;
@@ -2781,20 +3841,29 @@ void RT_UploadWorldLights (void)
 		}
 	}
 
+	// The grid carries its own rows; the identity table leaves the map's visdata in place, and
+	// RT_BuildWorldClusters measured the span the renderer walks in it.
+	const uint8_t *pvis_data = model->visdata;
+	uint32_t       vis_data_size = (uint32_t)rt_worldclusters.vis_data_size;
+
+	if (rt_worldclusters.vis_data)
+		pvis_data = rt_worldclusters.vis_data;
+
 	RgWorldLightsUploadInfo info =
 	{
 		.flags           = CVAR_TO_BOOL (rt_worldlights_stats) ? RG_WORLD_LIGHTS_UPLOAD_PRINT_STATS_BIT : 0,
 		.numClusters     = (uint32_t)rt_worldlights.num_clusters,
-		.pClusterMins    = rt_worldlights.cluster_mins,
-		.pClusterMaxs    = rt_worldlights.cluster_maxs,
+		.pClusterMins    = rt_worldclusters.cluster_mins,
+		.pClusterMaxs    = rt_worldclusters.cluster_maxs,
+		.pClusterFlags   = rt_worldclusters.cluster_flags,
 		.numFaces        = (uint32_t)rt_worldlights.num_faces,
 		.pFaces          = rt_worldlights.faces,
 		.numFaceVertices = (uint32_t)rt_worldlights.num_face_vertices,
 		.pFaceVertices   = rt_worldlights.face_vertices,
-		.pVisData        = model->visdata,
-		.visDataSize     = (uint32_t)rt_worldlights.vis_data_size,
-		.pvsRowBytes     = (uint32_t)pvs_rowbytes,
-		.pVisOffsets     = rt_worldlights.vis_offsets,
+		.pVisData        = pvis_data,
+		.visDataSize     = vis_data_size,
+		.pvsRowBytes     = rt_worldclusters.pvs_row_bytes,
+		.pVisOffsets     = rt_worldclusters.vis_offsets,
 	};
 
 	RgResult r = rgUploadWorldLights (vulkan_globals.instance, &info);
@@ -2807,6 +3876,10 @@ void RT_PrintEmissiveStats (void)
 		rt_emis_stats.surfaces, rt_emis_stats.static_queued, rt_emis_stats.dynamic);
 	Con_Printf ("rejected: %i no light material, %i no light color, %i lightstyle off, %i degenerate\n",
 		rt_emis_stats.no_material, rt_emis_stats.no_color, rt_emis_stats.style_off, rt_emis_stats.degenerate);
+
+	if (rt_emis_stats.glow_lights || rt_emis_stats.glow_fallback)
+		Con_Printf ("partial-glow textures: %i faces built %i polygon lights, %i faces fell back to the whole surface\n",
+			rt_emis_stats.glow_faces, rt_emis_stats.glow_lights, rt_emis_stats.glow_fallback);
 
 	if (rt_emis_stats.static_dropped || rt_wldlights_emissive_count >= MAX_WORLDLIGHTS_COUNT)
 		Con_Printf ("WARNING: the static world-light list is full (%i/%i), %i dropped - "

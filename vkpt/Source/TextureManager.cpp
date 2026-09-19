@@ -230,6 +230,14 @@ TextureManager::TextureManager( VkDevice                                       _
 
     textures.resize( maxTextureCount );
 
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+    {
+        texturesToUpdateDescMarked[i].assign(maxTextureCount, 0);
+    }
+
+    // desc sets are allocated with undefined content: every slot needs a write
+    MarkAllDescDirty();
+
     // submit cmd to create empty texture
     VkCommandBuffer cmd = _cmdManager->StartGraphicsCmd();
 
@@ -351,6 +359,39 @@ void TextureManager::PrepareForFrame(uint32_t frameIndex)
     textureUploader->ClearStaging(frameIndex);
 }
 
+void TextureManager::MarkDescDirty(uint32_t textureIndex)
+{
+    // all desc sets must be updated, as the next frame in flight uses another one
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+    {
+        // a slot which is already pending does not need a second entry: the desc is written
+        // from the current texture state, not from the state at the moment of this call
+        if (texturesToUpdateDescMarked[i][textureIndex] == 0)
+        {
+            texturesToUpdateDescMarked[i][textureIndex] = 1;
+            texturesToUpdateDesc[i].push_back(textureIndex);
+        }
+    }
+}
+
+void TextureManager::MarkAllDescDirty()
+{
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+    {
+        auto &dirty = texturesToUpdateDesc[i];
+
+        dirty.clear();
+        dirty.reserve(textures.size());
+
+        for (uint32_t t = 0; t < textures.size(); t++)
+        {
+            dirty.push_back(t);
+        }
+
+        std::fill(texturesToUpdateDescMarked[i].begin(), texturesToUpdateDescMarked[i].end(), 1);
+    }
+}
+
 void TextureManager::SubmitDescriptors(uint32_t frameIndex, 
                                        const RgDrawFrameTexturesParams *pTexturesParams,
                                        bool forceUpdateAllDescriptors)
@@ -369,10 +410,20 @@ void TextureManager::SubmitDescriptors(uint32_t frameIndex,
     if (forceUpdateAllDescriptors)
     {
         textureDesc->ResetAllCache(frameIndex);
+
+        // samplers were recreated: every slot in every desc set must be written again
+        MarkAllDescDirty();
     }
 
-    // update desc set with current values
-    for (uint32_t i = 0; i < textures.size(); i++)
+    // update desc set with current values, for the slots that were changed since
+    // their descriptor was written to this desc set
+    auto &dirty = texturesToUpdateDesc[frameIndex];
+
+    // no slot was written before this call: the desc set already holds what the write cache
+    // describes, so there is nothing to flush either
+    const bool hasDescWrites = !dirty.empty();
+
+    for (uint32_t i : dirty)
     {
         textures[i].samplerHandle.SetIfHasDynamicSamplerFilter(newDynamicSamplerFilter);
 
@@ -386,9 +437,17 @@ void TextureManager::SubmitDescriptors(uint32_t frameIndex,
             // reset descriptor to empty texture
             textureDesc->ResetTextureDesc(frameIndex, i);
         }
+
+        // the slot is written to this desc set, changes made after this call will mark it again
+        texturesToUpdateDescMarked[frameIndex][i] = 0;
     }
 
-    textureDesc->FlushDescWrites();
+    dirty.clear();
+
+    if (hasDescWrites)
+    {
+        textureDesc->FlushDescWrites();
+    }
 }
 
 uint32_t TextureManager::CreateMaterial( VkCommandBuffer             cmd,
@@ -816,6 +875,8 @@ void TextureManager::DestroyMaterialTextures(uint32_t frameIndex, const Material
             texture.image = VK_NULL_HANDLE;
             texture.view = VK_NULL_HANDLE;
             texture.samplerHandle = SamplerManager::Handle();
+
+            MarkDescDirty(t);
         }
     }
 }
@@ -906,7 +967,11 @@ uint32_t TextureManager::InsertTexture(uint32_t frameIndex, VkImage image, VkIma
     texture->view = view;
     texture->samplerHandle = samplerHandle;
 
-    return (uint32_t)std::distance(textures.begin(), texture);
+    const uint32_t textureIndex = (uint32_t)std::distance(textures.begin(), texture);
+
+    MarkDescDirty(textureIndex);
+
+    return textureIndex;
 }
 
 void TextureManager::DestroyTexture(const Texture &texture)
