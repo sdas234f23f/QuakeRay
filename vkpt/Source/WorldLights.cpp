@@ -54,6 +54,16 @@ void WorldLights::Upload(const RgWorldLightsUploadInfo &uploadInfo, UserPrint *p
 
     pvsRowBytes = uploadInfo.pvsRowBytes;
 
+    /* The sky visibility is sized by the cluster count, so it is copied by hand rather than
+       through CopyTable, and a missing table is not an error: the light manager keeps every
+       cluster tracing then. */
+    clusterSkyVisibility.clear();
+    if (uploadInfo.pClusterSkyVisibility != nullptr && uploadInfo.numClusters > 0)
+    {
+        clusterSkyVisibility.assign(uploadInfo.pClusterSkyVisibility,
+                                    uploadInfo.pClusterSkyVisibility + (uploadInfo.numClusters + 7) / 8);
+    }
+
     if (uploadInfo.flags & RG_WORLD_LIGHTS_UPLOAD_PRINT_STATS_BIT)
     {
         Print(pUserPrint);

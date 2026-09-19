@@ -898,6 +898,11 @@ typedef struct RgWorldLightsUploadInfo
     uint32_t       visDataSize;
     uint32_t       pvsRowBytes;
     const int32_t *pVisOffsets;
+
+    // Per-cluster sky visibility, ceil(numClusters / 8) bytes: bit c of byte c/8 is 1
+    // when a sun ray from cluster c can still reach the sky (the PVS union of every
+    // cluster that holds sky). May be NULL, which leaves every cluster tracing.
+    const uint8_t *pClusterSkyVisibility;
 } RgWorldLightsUploadInfo;
 
 RGAPI RgResult RGCONV rgUploadWorldLights(

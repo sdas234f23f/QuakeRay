@@ -88,6 +88,19 @@ vkpt::LightManager::LightManager(
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, "Q2 light stats");
 
+    /* One bit per cluster: whether a sun ray from it can still reach the sky. The staging
+       starts all-visible, so a frame before the first map upload traces as it always has. */
+    clusterSkyVis = std::make_shared<AutoBuffer>(device, _allocator);
+    clusterSkyVis->Create(sizeof(uint32_t) * CLUSTER_SKY_VIS_WORD_COUNT,
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        "Q2 cluster sky visibility");
+
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+    {
+        memset(clusterSkyVis->GetMapped(i), 0xFF, sizeof(uint32_t) * CLUSTER_SKY_VIS_WORD_COUNT);
+        clusterSkyVisCopyPending[i] = true;
+    }
+
     prevToCurIndex = std::make_shared<AutoBuffer>(device, _allocator);
     prevToCurIndex->Create(sizeof(uint32_t) * LIGHT_ARRAY_MAX_SIZE, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, "Lights buffer - prev to cur");
 
@@ -330,6 +343,9 @@ void vkpt::LightManager::Reset()
         publishedLightOrder[i].clear();
         publishedLightIndex[i].clear();
         lightListCopyPending[i] = false;
+
+        memset(clusterSkyVis->GetMapped(i), 0xFF, sizeof(uint32_t) * CLUSTER_SKY_VIS_WORD_COUNT);
+        clusterSkyVisCopyPending[i] = true;
     }
 
     /* No list of the scene to come is known yet, so the statistics fill has to keep covering the
@@ -579,6 +595,12 @@ void vkpt::LightManager::CopyFromStaging(VkCommandBuffer cmd, uint32_t frameInde
         lightListCopyPending[frameIndex] = false;
     }
 
+    if (clusterSkyVisCopyPending[frameIndex])
+    {
+        clusterSkyVis->CopyFromStaging(cmd, frameIndex, sizeof(uint32_t) * CLUSTER_SKY_VIS_WORD_COUNT);
+        clusterSkyVisCopyPending[frameIndex] = false;
+    }
+
     prevToCurIndex->CopyFromStaging(cmd, frameIndex, sizeof(uint32_t) * GetLightArrayEnd(regLightCount_Prev, dirLightCount_Prev));
     curToPrevIndex->CopyFromStaging(cmd, frameIndex, sizeof(uint32_t) * GetLightArrayEnd(regLightCount, dirLightCount));
 
@@ -709,6 +731,37 @@ void vkpt::LightManager::SetClusterLightLists(uint32_t frameIndex, uint32_t numC
     lightListCopyPending[frameIndex] = true;
 }
 
+void vkpt::LightManager::SetClusterSkyVisibility(const uint8_t *pBits, uint32_t numClusters)
+{
+    /* The table is packed into words the way the shader unpacks them. A cluster the host
+       never sent a bit for - one past numClusters, or every cluster when the map sent no
+       table at all - keeps the 1 it started with and keeps tracing its sun ray. */
+    uint32_t words[CLUSTER_SKY_VIS_WORD_COUNT];
+    memset(words, 0xFF, sizeof(words));
+
+    if (pBits != nullptr)
+    {
+        const uint32_t count = std::min(numClusters, LIGHT_STATS_CLUSTER_COUNT);
+
+        for (uint32_t c = 0; c < count; c++)
+        {
+            if ((pBits[c >> 3] & (1u << (c & 7u))) == 0)
+            {
+                words[c >> 5] &= ~(1u << (c & 31u));
+            }
+        }
+    }
+
+    /* A map load publishes to every slot at once, not to the one being recorded the way a
+       light list publication does: the upload arrives between frames and the copy of
+       whichever slot records next has to carry it. */
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+    {
+        memcpy(clusterSkyVis->GetMapped(i), words, sizeof(words));
+        clusterSkyVisCopyPending[i] = true;
+    }
+}
+
 void vkpt::LightManager::ResetLightStats(VkCommandBuffer cmd, uint32_t frameIndex, uint32_t frameId)
 {
     const uint32_t slot = frameId % Q2_LIGHT_LIST_STATS_BUFFERS;
@@ -817,6 +870,7 @@ constexpr uint32_t BINDINGS[] =
     BINDING_LIGHT_SOURCES_Q2_LIGHT_LIST_LIGHTS,
     BINDING_LIGHT_SOURCES_Q2_LIGHT_STATS,
     BINDING_LIGHT_SOURCES_TAL_CDF,
+    BINDING_LIGHT_SOURCES_Q2_CLUSTER_SKY_VIS,
 };
 
 void vkpt::LightManager::CreateDescriptors()
@@ -894,6 +948,7 @@ void vkpt::LightManager::UpdateDescriptors(uint32_t frameIndex)
         lightListLights->GetDeviceLocal(),
         lightStats.GetBuffer(),
         talCdf,
+        clusterSkyVis->GetDeviceLocal(),
     };
     static_assert(std::size(BINDINGS) == std::size(buffers));
 

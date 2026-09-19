@@ -66,6 +66,13 @@ public:
     // Row of the compressed PVS of a cluster, or nullptr when it sees everything.
     const uint8_t *GetClusterVis(uint32_t cluster) const;
 
+    // Bit c of byte c/8 is 1 when a sun ray from cluster c can still reach the sky;
+    // nullptr when the host sent no table, which the light manager reads as all-visible.
+    const uint8_t *GetClusterSkyVisibility() const
+    {
+        return clusterSkyVisibility.empty() ? nullptr : clusterSkyVisibility.data();
+    }
+
     size_t GetMemoryBytes() const;
 
 private:
@@ -79,6 +86,7 @@ private:
     std::vector<RgVertex>         faceVertices;
     std::vector<uint8_t>          visData;
     std::vector<int32_t>          visOffsets;
+    std::vector<uint8_t>          clusterSkyVisibility;
     uint32_t                      pvsRowBytes = 0;
 };
 

@@ -48,6 +48,10 @@ public:
     static constexpr uint32_t LIGHT_STATS_CLUSTER_COUNT = 8192;
     static constexpr uint32_t LIGHT_STATS_SLOT_COUNT = 3;
 
+    // One bit per cluster of the sky visibility table, kept in uint32 words like the shader
+    // reads them; the same table the upload path checks Q2_MAX_CLUSTERS against.
+    static constexpr uint32_t CLUSTER_SKY_VIS_WORD_COUNT = LIGHT_STATS_CLUSTER_COUNT / 32;
+
     LightManager(VkDevice device, std::shared_ptr<MemoryAllocator> &allocator, VkBuffer talCdfBuffer);
     ~LightManager();
 
@@ -80,6 +84,11 @@ public:
     void SetClusterLightLists(uint32_t frameIndex, uint32_t numClusters,
                               const uint32_t *pOffsets, const uint64_t *pLightUniqueIds,
                               uint32_t totalLightCount, uint64_t listGeneration);
+
+    /* Replaces the per-cluster sky visibility the shaders gate the sun shadow ray with.
+       pBits is the host table, bit c of byte c/8 naming cluster c; nullptr (a map that
+       sent none) leaves every cluster tracing. */
+    void SetClusterSkyVisibility(const uint8_t *pBits, uint32_t numClusters);
 
     void ResetLightStats(VkCommandBuffer cmd, uint32_t frameIndex, uint32_t frameId);
     void BarrierQ2ClusterLists(VkCommandBuffer cmd, uint32_t frameIndex);
@@ -131,6 +140,12 @@ private:
 
     std::shared_ptr<AutoBuffer> lightListOffsets;
     std::shared_ptr<AutoBuffer> lightListLights;
+
+    /* One bit per cluster: whether a sun ray from it can still reach the sky. Written once
+       per map load rather than per frame, but staged and copied through the same per-slot
+       pending flags as the light lists. */
+    std::shared_ptr<AutoBuffer> clusterSkyVis;
+    bool                        clusterSkyVisCopyPending[MAX_FRAMES_IN_FLIGHT] = {};
 
     /* What the words of the list buffers are. A published word is the place of a light in the light
        array, and a light is named by its id, so the words a frame would publish are the words

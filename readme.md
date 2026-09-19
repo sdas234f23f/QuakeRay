@@ -6,7 +6,7 @@ The renderer is a Q2RTX-style ray tracer (ported from [Q2RTX](https://github.com
 
 QuakeRay is based on the [vkQuake](https://github.com/Novum/vkQuake) — a port of QuakeSpasm to Vulkan API.
 
-## What is implemented
+## Features
 
 ### Path traced renderer
 
