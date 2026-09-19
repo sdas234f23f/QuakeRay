@@ -1,6 +1,6 @@
 # QuakeRay
 
-QuakeRay **0.9.1** adds a path tracing renderer to id Software's [Quake](https://en.wikipedia.org/wiki/Quake_(video_game)).
+QuakeRay **0.10.0** adds a path tracing renderer to id Software's [Quake](https://en.wikipedia.org/wiki/Quake_(video_game)).
 
 The renderer is a Q2RTX-style ray tracer (ported from [Q2RTX](https://github.com/NVIDIA/Q2RTX)) — it is **vendored into this repository** in the `vkpt/` folder (source + shaders + KTX/FidelityFX) and built as a static library linked straight into `quakeray.exe`. There is no external renderer library dependency.
 
