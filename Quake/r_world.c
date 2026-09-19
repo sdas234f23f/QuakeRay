@@ -2656,12 +2656,13 @@ only sees into, where the lights standing there are then the ones the pass has t
 static void RT_RegisterWorldModelLight (const RgTexturedAreaLightUploadInfo *lt, vec3_t center)
 {
 	const float nudge = 2.0f;
+	const vec3_t origin = {
+		center[0] + nudge * lt->normal.data[0],
+		center[1] + nudge * lt->normal.data[1],
+		center[2] + nudge * lt->normal.data[2],
+	};
 
-	center[0] += nudge * lt->normal.data[0];
-	center[1] += nudge * lt->normal.data[1];
-	center[2] += nudge * lt->normal.data[2];
-
-	RT_ClusterLightAdd (lt->uniqueID, center, RT_ClusterLightReachStatic ());
+	RT_ClusterLightAdd (lt->uniqueID, origin, RT_ClusterLightReachStatic ());
 
 	if (CVAR_TO_BOOL (rt_debugemissive))
 	{
