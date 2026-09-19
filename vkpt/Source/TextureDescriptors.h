@@ -43,8 +43,8 @@ public:
     void ResetTextureDesc(uint32_t frameIndex, uint32_t textureIndex);
     void ResetAllCache(uint32_t frameIndex);
 
-    // Must be called after a series of UpdateTextureDesc and
-    // ResetTextureDesc to make an actual desc write 
+    // Writes the pending batch. UpdateTextureDesc flushes by itself when the batch is full,
+    // so this is only needed to make the last partial batch visible before a submit
     void FlushDescWrites();
 
     VkDescriptorSet GetDescSet(uint32_t frameIndex) const;

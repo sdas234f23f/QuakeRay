@@ -38,7 +38,7 @@ layout(rgba16f, set = 0, binding = 2) uniform imageCube envCubemapOut;
 layout(std140, set = 0, binding = 1) uniform Params
 {
     vec4 faceBasis[18]; // 6 faces * (right, up, forward)
-    vec4 sunDirection;  // xyz = normalized direction TOWARD the sun, w = unused
+    vec4 sunDirection;  // xyz = normalized direction TOWARD the sun, w = how much sun the sky shows (0 = no sun)
     vec4 sunColor;      // xyz = sun color, w = physical sun angular radius (radians)
     vec4 skyParams;     // x = sky color multiplier, y = tint strength, z = sun disc intensity, w = sun disc display radius (radians)
     vec4 cloudColor;    // xyz = cloud color, w = cloud time (seconds)
@@ -134,7 +134,7 @@ float cloudMask(vec3 dir, float time, float speed)
     return n;
 }
 
-vec3 evaluateSky(vec3 rd, vec3 sunDir, vec3 sunColor, float tintStrength)
+vec3 evaluateSky(vec3 rd, vec3 sunDir, vec3 sunColor, float tintStrength, float sunAmount)
 {
     vec3 camera = vec3(0.0, 0.0, PLANET_RADIUS);
     // exit distance of the atmosphere along the view ray
@@ -177,8 +177,10 @@ vec3 evaluateSky(vec3 rd, vec3 sunDir, vec3 sunColor, float tintStrength)
         vec3 sunTrans = exp(-(BETA_RAYLEIGH * odSunR + BETA_MIE * odSunM));
 
         float mu = dot(rd, sunDir);
+        // mie is the forward scattering that makes the sun's halo, so it follows
+        // the amount of sun the sky has; rayleigh (the atmosphere itself) stays.
         vec3 scatter = sunTrans * (BETA_RAYLEIGH * phaseRayleigh(mu) * densR +
-                                   BETA_MIE      * phaseMie(mu)      * densM) *
+                                   BETA_MIE      * phaseMie(mu)      * densM * sunAmount) *
                        SOLAR_IRRADIANCE;
 
         inScatter += scatter * transmittance * ds;
@@ -228,17 +230,19 @@ void main()
 
     vec3  sunDir       = normalize(params.sunDirection.xyz);
     vec3  sunColor     = max(params.sunColor.xyz, vec3(0.0));
+    float sunAmount    = params.sunDirection.w;      // 0 when the host has no sun (rt_sun 0)
     float sunAngRad    = max(params.skyParams.w, 0.0); // display sun disc radius
     float multiplier   = params.skyParams.x;
     float tintStrength = params.skyParams.y;
     float sunIntensity = params.skyParams.z;
 
-    vec3 base = evaluateSky(dir, sunDir, sunColor, tintStrength);
+    vec3  base         = evaluateSky(dir, sunDir, sunColor, tintStrength, sunAmount);
 
     imageStore(envCubemapOut, ipos, vec4(base * multiplier, 1.0));
 
     float cosAng = cos(sunAngRad);
-    float disc = smoothstep(cosAng, 1.0, dot(dir, sunDir));
+    // smoothstep() is evaluated for the whole cubemap before the amount scales it
+    float disc = smoothstep(cosAng, 1.0, dot(dir, sunDir)) * sunAmount;
     vec3 col = (base + sunColor * sunIntensity * disc) * multiplier;
 
     imageStore(cubemapOut, ipos, vec4(col, 1.0));

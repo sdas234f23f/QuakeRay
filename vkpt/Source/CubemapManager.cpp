@@ -70,6 +70,14 @@ vkpt::CubemapManager::CubemapManager(
     cubemapDesc = std::make_shared<TextureDescriptors>(device, samplerManager, MAX_CUBEMAP_COUNT, BINDING_CUBEMAPS);
     cubemapUploader = std::make_shared<CubemapUploader>(device, allocator);
 
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+    {
+        cubemapsToUpdateDescMarked[i].assign(MAX_CUBEMAP_COUNT, 0);
+    }
+
+    // desc sets are allocated with undefined content: every slot needs a write
+    MarkAllDescDirty();
+
     VkCommandBuffer cmd = _cmdManager->StartGraphicsCmd();
     CreateEmptyCubemap(cmd);
     _cmdManager->Submit(cmd);
@@ -286,7 +294,11 @@ uint32_t vkpt::CubemapManager::CreateCubemap(VkCommandBuffer cmd, uint32_t frame
     f->view = i.view;
     f->samplerHandle = SamplerManager::Handle(info.filter, RG_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, RG_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, 0);
 
-    return std::distance(cubemaps.begin(), f);
+    const uint32_t cubemapIndex = (uint32_t)std::distance(cubemaps.begin(), f);
+
+    MarkDescDirty(cubemapIndex);
+
+    return cubemapIndex;
 }
 
 void vkpt::CubemapManager::DestroyCubemap(uint32_t frameIndex, uint32_t cubemapIndex)
@@ -310,6 +322,8 @@ void vkpt::CubemapManager::DestroyCubemap(uint32_t frameIndex, uint32_t cubemapI
     t.image = VK_NULL_HANDLE;
     t.view = VK_NULL_HANDLE;
     t.samplerHandle = SamplerManager::Handle();
+
+    MarkDescDirty(cubemapIndex);
 }
 
 VkDescriptorSetLayout vkpt::CubemapManager::GetDescSetLayout() const
@@ -336,10 +350,50 @@ void vkpt::CubemapManager::PrepareForFrame(uint32_t frameIndex)
     cubemapUploader->ClearStaging(frameIndex);
 }
 
+void vkpt::CubemapManager::MarkDescDirty(uint32_t cubemapIndex)
+{
+    // all desc sets must be updated, as the next frame in flight uses another one
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+    {
+        // a slot which is already pending does not need a second entry: the desc is written
+        // from the current cubemap state, not from the state at the moment of this call
+        if (cubemapsToUpdateDescMarked[i][cubemapIndex] == 0)
+        {
+            cubemapsToUpdateDescMarked[i][cubemapIndex] = 1;
+            cubemapsToUpdateDesc[i].push_back(cubemapIndex);
+        }
+    }
+}
+
+void vkpt::CubemapManager::MarkAllDescDirty()
+{
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+    {
+        auto &dirty = cubemapsToUpdateDesc[i];
+
+        dirty.clear();
+        dirty.reserve(cubemaps.size());
+
+        for (uint32_t c = 0; c < cubemaps.size(); c++)
+        {
+            dirty.push_back(c);
+        }
+
+        std::fill(cubemapsToUpdateDescMarked[i].begin(), cubemapsToUpdateDescMarked[i].end(), 1);
+    }
+}
+
 void vkpt::CubemapManager::SubmitDescriptors(uint32_t frameIndex)
 {
-    // update desc set with current values
-    for (uint32_t i = 0; i < cubemaps.size(); i++)
+    // update desc set with current values, for the slots that were changed since
+    // their descriptor was written to this desc set
+    auto &dirty = cubemapsToUpdateDesc[frameIndex];
+
+    // no slot was written before this call: the desc set already holds what the write cache
+    // describes, so there is nothing to flush either
+    const bool hasDescWrites = !dirty.empty();
+
+    for (uint32_t i : dirty)
     {
         if (cubemaps[i].image != VK_NULL_HANDLE)
         {
@@ -350,9 +404,17 @@ void vkpt::CubemapManager::SubmitDescriptors(uint32_t frameIndex)
             // reset descriptor to empty texture
             cubemapDesc->ResetTextureDesc(frameIndex, i);
         }
+
+        // the slot is written to this desc set, changes made after this call will mark it again
+        cubemapsToUpdateDescMarked[frameIndex][i] = 0;
     }
 
-    cubemapDesc->FlushDescWrites();
+    dirty.clear();
+
+    if (hasDescWrites)
+    {
+        cubemapDesc->FlushDescWrites();
+    }
 }
 
 bool vkpt::CubemapManager::IsCubemapValid(uint32_t cubemapIndex) const

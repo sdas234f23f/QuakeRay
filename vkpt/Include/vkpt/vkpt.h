@@ -713,18 +713,122 @@ RGAPI RgResult RGCONV rgUploadTexturedAreaLight(
     RgInstance                          rgInstance,
     const RgTexturedAreaLightUploadInfo *pUploadInfo);
 
-
-typedef struct RgClusterLightListsUploadInfo
-{
-    uint32_t        numClusters;
-    const uint32_t *pOffsets;
-    const uint64_t *pLightUniqueIds;
-    uint32_t        totalLightCount;
-} RgClusterLightListsUploadInfo;
-
-RGAPI RgResult RGCONV rgUploadClusterLightLists(
+// Equivalent to rgUploadTexturedAreaLight() for each of the count lights, in order, with the
+// per-instance and per-upload work paid once for the batch.
+RGAPI RgResult RGCONV rgUploadTexturedAreaLights(
     RgInstance                          rgInstance,
-    const RgClusterLightListsUploadInfo *pUploadInfo);
+    const RgTexturedAreaLightUploadInfo *pUploadInfos,
+    uint32_t                            count);
+
+
+// Cluster of a light the host could not place in an open leaf.
+#define RG_CLUSTER_LIGHT_NO_CLUSTER    (~0u)
+
+// A light the renderer has to sample. The host registers one per light it uploads and
+// supplies the things the renderer cannot derive: which leaf the origin resolved into,
+// the origin itself, in the same Quake units as the cluster bounds of
+// RgWorldLightsUploadInfo, and how far the light still matters.
+typedef struct RgClusterLightSource
+{
+    uint64_t  uniqueID;
+    RgFloat3D origin;
+    // RG_CLUSTER_LIGHT_NO_CLUSTER when the origin resolved into no open leaf.
+    uint32_t  cluster;
+    // Distance from the origin up to which the light still belongs in a cluster list, in
+    // Quake units. A light is registered by a moving entity and every cluster within this
+    // distance reaches it, whatever its PVS says: a light that reaches across leaf
+    // boundaries is what keeps a flame lighting the wall it stands against. Zero or less
+    // means the light states no reach of its own and reaches wherever its leaf sees, which
+    // is what a light of the map itself wants, its own PVS row being its reach. A positive
+    // value is a promise from the host that the light contributes nothing beyond it, and
+    // the renderer holds the light to it: a light whose reach covers a few rooms instead
+    // of a map is what keeps a single moving entity from reaching every list of the scene.
+    float     reach;
+} RgClusterLightSource;
+
+typedef struct RgClusterLightSourcesUploadInfo
+{
+    uint32_t                    numLights;
+    const RgClusterLightSource *pLights;
+    // Reach of the pass that tops a cluster up with lights its own PVS hides, in Quake
+    // units: such a light is taken when it is closer to the cluster bounds than this. It
+    // also caps the reach a light may state for itself in RgClusterLightSource.
+    float                       topUpReach;
+    // Zero keeps the composition all or nothing: a frame whose light set is unchanged takes
+    // every light and every PVS row again as soon as one of them moved. Nonzero lets such a
+    // frame take back the slots of the lights that moved, hand them out again from where
+    // those lights stand now, and look at the top-up set of the clusters that lost or can
+    // gain one, leaving every other list of the scene as the composition left it.
+    int32_t                     allowIncremental;
+} RgClusterLightSourcesUploadInfo;
+
+// Registers the lights of the current frame. The renderer composes the per-cluster lists
+// out of them and hands them to the light manager itself, so the host never sees a list.
+RGAPI RgResult RGCONV rgUploadClusterLightSources(
+    RgInstance                              rgInstance,
+    const RgClusterLightSourcesUploadInfo   *pUploadInfo);
+
+// What the last composed frame did, for the host's statistics panel.
+typedef struct RgClusterLightStats
+{
+    // Clusters of the map and sources of the last frame.
+    uint32_t clusters;
+    uint32_t sources;
+    // Sources that resolved into no open leaf, and so hold no slot anywhere.
+    uint32_t unresolved;
+    // Entries the lists hold, and (light, cluster) pairs the passes granted and rejected:
+    // a rejection means that the cluster had filled all of its slots.
+    uint32_t listEntries;
+    uint32_t grants;
+    uint32_t denied;
+    // Slots granted by the reach pass of the last frame.
+    uint32_t topUpGrants;
+    // (Light, cluster) pairs pass one left out because the cluster stands beyond the reach
+    // the light states for itself. Zero when no light of the frame states one.
+    uint32_t reachGated;
+    // Sources whose PVS walk ran on this frame and sources whose walk the cache reused.
+    uint32_t walkedSources;
+    uint32_t cachedSources;
+    // Sources that appeared, disappeared and changed leaf since the previous frame.
+    uint32_t addedSources;
+    uint32_t removedSources;
+    uint32_t movedSources;
+    // Frames that composed the lists and frames that found the sources unchanged.
+    uint32_t composedFrames;
+    uint32_t reusedFrames;
+    // Clusters that filled every slot of their list.
+    uint32_t fullClusters;
+    // Where the time of the last frame went, in milliseconds: the PVS walk of pass one, the
+    // reach pass, the compaction of the slots into the lists, the publication to the light
+    // manager, and the whole call. A frame that reused the composition only pays the last two.
+    float    visMs;
+    float    topUpMs;
+    float    fillMs;
+    float    publishMs;
+    float    totalMs;
+} RgClusterLightStats;
+
+RGAPI RgResult RGCONV rgGetClusterLightStats(
+    RgInstance              rgInstance,
+    RgClusterLightStats    *pStats);
+
+// Slot accounting of every source of the last composed frame, in the order the sources
+// were uploaded. Either output array may be null when only the count is wanted.
+RGAPI RgResult RGCONV rgGetClusterLightGrants(
+    RgInstance  rgInstance,
+    uint32_t   *pGranted,
+    uint32_t   *pDenied,
+    uint32_t    maxCount,
+    uint32_t   *pCount);
+
+// One cluster list as the last composed frame left it: exactly the lights that frame gave
+// the cluster, with no invalid entries, and no more than the renderer's per-list limit.
+RGAPI RgResult RGCONV rgGetClusterLightList(
+    RgInstance  rgInstance,
+    uint32_t    cluster,
+    uint64_t   *pLightUniqueIds,
+    uint32_t    maxCount,
+    uint32_t   *pCount);
 
 
 // A face of the world (or of an inline brush model, such as a door) that the renderer
@@ -763,6 +867,13 @@ typedef enum RgWorldLightsUploadFlags
     RG_WORLD_LIGHTS_UPLOAD_PRINT_STATS_BIT = 1 << 0,
 } RgWorldLightsUploadFlags;
 
+typedef enum RgWorldClusterFlags
+{
+    // Leaf is CONTENTS_SOLID. No light is visible from it, so the light list builder
+    // skips it entirely.
+    RG_WORLD_CLUSTER_SOLID_BIT = 1 << 0,
+} RgWorldClusterFlags;
+
 typedef struct RgWorldLightsUploadInfo
 {
     // RgWorldLightsUploadFlags
@@ -772,6 +883,8 @@ typedef struct RgWorldLightsUploadInfo
     uint32_t         numClusters;
     const RgFloat3D *pClusterMins;
     const RgFloat3D *pClusterMaxs;
+    // RgWorldClusterFlags, one byte per cluster.
+    const uint8_t   *pClusterFlags;
 
     // Emissive faces with their corners in world space, as raw Quake vertexes.
     uint32_t                numFaces;
@@ -1456,9 +1569,9 @@ RGAPI RgBool32 RGCONV rgIsRenderUpscaleTechniqueAvailable(
     RgInstance                          rgInstance,
     RgRenderUpscaleTechnique            technique);
 
-#define RG_GPU_PASS_COUNT 15
+#define RG_GPU_PASS_COUNT 18
 
-#define RG_RAY_STATS_CATEGORY_COUNT 4
+#define RG_RAY_STATS_CATEGORY_COUNT 5
 
 typedef struct RgFrameStats
 {
@@ -1468,6 +1581,9 @@ typedef struct RgFrameStats
     RgBool32    gpuTimingValid;
     float       gpuFrameMs;
     float       gpuPassMs[RG_GPU_PASS_COUNT];
+    // Number of rg* entry points the host called since rgStartFrame: the per-frame work the
+    // backend pays outside of the passes, whatever the resolution or the ray budget is.
+    uint32_t    apiCalls;
 } RgFrameStats;
 
 RGAPI RgResult RGCONV rgGetFrameStatsEx(

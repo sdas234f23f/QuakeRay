@@ -115,6 +115,7 @@ extern cvar_t rt_sun;
 extern cvar_t rt_sun_pitch;
 extern cvar_t rt_sun_yaw;
 extern cvar_t rt_materials_only;
+extern cvar_t rt_cluster_dlights;
 
 /*
 =================
@@ -395,7 +396,9 @@ static void RT_UploadAllDlights ()
 		RgResult r = rgUploadSphericalLight (vulkan_globals.instance, &info);
 		RG_CHECK (r);
 
-		RT_ClusterLightAdd (info.uniqueID, l->origin);
+		/* rt_cluster_dlights 0 keeps dlights out of the cluster lists (A/B experiment). */
+		if (CVAR_TO_FLOAT (rt_cluster_dlights) != 0)
+			RT_ClusterLightAdd (info.uniqueID, l->origin, RT_ClusterLightReach ());
 	}
 	}
 
@@ -443,7 +446,7 @@ static void RT_UploadAllDlights ()
 		// A sun emits from no area and covers the whole sky, so it takes that
 		// fixup at a fraction of its strength (RT_SUN_LIGHT_INTENSITY_SCALE) --
 		// otherwise rt_sun 1 overdrives the scene. The god rays read this colour,
-		// so they follow the sun too.
+		// so they follow the sun too, including the fraction.
 		VectorScale (color, RT_SUN_LIGHT_INTENSITY_SCALE, color);
 
 		RgDirectionalLightUploadInfo info = {
@@ -957,9 +960,14 @@ static void R_DrawViewModelTask (void *unused)
 	double prof_start;
 
 	R_SetupContext (&vulkan_globals.secondary_cb_contexts[CBX_VIEW_MODEL]);
+
+	// Only the draw itself, so that the model upload cost can be told apart from
+	// the light and cluster list uploads that share this task.
+	prof_start = RT_Prof_Begin ();
 	R_DrawViewModel (&vulkan_globals.secondary_cb_contexts[CBX_VIEW_MODEL]);     // johnfitz -- moved here from R_RenderView
 	R_ShowTris (&vulkan_globals.secondary_cb_contexts[CBX_VIEW_MODEL]);          // johnfitz
 	R_ShowBoundingBoxes (&vulkan_globals.secondary_cb_contexts[CBX_VIEW_MODEL]); // johnfitz
+	RT_Prof_End (RT_PROF_VIEWMODEL_DRAW, prof_start);
 
 	prof_start = RT_Prof_Begin ();
 	RT_UploadAllElights (); // RT

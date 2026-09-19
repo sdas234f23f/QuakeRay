@@ -109,7 +109,7 @@ void main()
 
                 if (lightTraced)
                 {
-                    rayStatsAdd(RAY_STATS_CATEGORY_SHADOW, 1);
+                    rayStatsAdd(RAY_STATS_CATEGORY_SHADOW_DIRECT, 1);
                 }
 
                 if (lightSources[lightIndex].lightType == LIGHT_TYPE_TRIANGLE ||
@@ -139,7 +139,7 @@ void main()
 
         if (sunTraced)
         {
-            rayStatsAdd(RAY_STATS_CATEGORY_SHADOW, 1);
+            rayStatsAdd(RAY_STATS_CATEGORY_SHADOW_DIRECT, 1);
         }
 
         vec3 d, s;

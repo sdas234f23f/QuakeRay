@@ -103,6 +103,10 @@ private:
     void DestroyTexture(const Texture &texture);
     void AddToBeDestroyed(uint32_t frameIndex, const Texture &texture);
 
+    // Descriptor writes are tracked per slot instead of rescanning every slot each frame
+    void MarkDescDirty(uint32_t textureIndex);
+    void MarkAllDescDirty();
+
     void RebuildTalCdf(VkCommandBuffer cmd, uint32_t frameIndex, uint32_t textureIndex, const uint8_t *pData);
 
     uint32_t GenerateMaterialIndex(const MaterialTextures &materialTextures);
@@ -141,6 +145,14 @@ private:
     // Textures are not destroyed immediately, but when
     // they won't be in use
     std::vector<Texture> texturesToDestroy[MAX_FRAMES_IN_FLIGHT];
+
+    // Texture indices whose descriptor is not written yet. Per descriptor set, because
+    // each frame in flight has its own: a changed slot must reach all of them.
+    std::vector<uint32_t> texturesToUpdateDesc[MAX_FRAMES_IN_FLIGHT];
+
+    // Marks the slots that are already in the matching texturesToUpdateDesc list: a slot can be
+    // marked dirty many times between two submits, but must be written only once per desc set.
+    std::vector<uint8_t> texturesToUpdateDescMarked[MAX_FRAMES_IN_FLIGHT];
 
     rgl::unordered_map<uint32_t, AnimatedMaterial> animatedMaterials;
     rgl::unordered_map<uint32_t, Material> materials;

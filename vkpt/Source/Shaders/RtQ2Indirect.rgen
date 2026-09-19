@@ -191,7 +191,7 @@ vec3 processSecondDiffuseBounce(const uint seed, const Surface surf, const vec3 
 
             if ( sunTraced )
             {
-                rayStatsAdd( RAY_STATS_CATEGORY_SHADOW, 1 );
+                rayStatsAdd( RAY_STATS_CATEGORY_SHADOW_INDIRECT, 1 );
             }
 
             vec3 d, s;
@@ -276,7 +276,7 @@ vec3 q2SkyNee( const Surface surf, const uint seed )
     }
 
     const float vis = traceSkyVisibility( surf, skyDirection );
-    rayStatsAdd( RAY_STATS_CATEGORY_SHADOW, 1 );
+    rayStatsAdd( RAY_STATS_CATEGORY_SHADOW_INDIRECT, 1 );
 
     return evalBRDFLambertian( 1.0 ) * nl * radiance * vis * oneOverPdfSky * misWeight;
 }
@@ -388,7 +388,7 @@ void main()
 
                     if ( lightTraced )
                     {
-                        rayStatsAdd( RAY_STATS_CATEGORY_SHADOW, 1 );
+                        rayStatsAdd( RAY_STATS_CATEGORY_SHADOW_INDIRECT, 1 );
                     }
 
                     if ( lightSources[ lightIndex ].lightType == LIGHT_TYPE_TRIANGLE ||
@@ -424,7 +424,7 @@ void main()
 
                 if ( sunTraced )
                 {
-                    rayStatsAdd( RAY_STATS_CATEGORY_SHADOW, 1 );
+                    rayStatsAdd( RAY_STATS_CATEGORY_SHADOW_INDIRECT, 1 );
                 }
 
                 vec3 d, s;

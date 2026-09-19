@@ -57,6 +57,12 @@ public:
     const RgWorldLightFace &GetFace(uint32_t index) const { return faces[index]; }
     const RgVertex         &GetFaceVertex(uint32_t index) const { return faceVertices[index]; }
 
+    // A solid leaf holds no light the camera could see, so the list builder skips it.
+    bool IsClusterSolid(uint32_t cluster) const
+    {
+        return cluster < clusterFlags.size() && (clusterFlags[cluster] & RG_WORLD_CLUSTER_SOLID_BIT) != 0;
+    }
+
     // Row of the compressed PVS of a cluster, or nullptr when it sees everything.
     const uint8_t *GetClusterVis(uint32_t cluster) const;
 
@@ -68,6 +74,7 @@ private:
 private:
     std::vector<RgFloat3D>        clusterMins;
     std::vector<RgFloat3D>        clusterMaxs;
+    std::vector<uint8_t>          clusterFlags;
     std::vector<RgWorldLightFace> faces;
     std::vector<RgVertex>         faceVertices;
     std::vector<uint8_t>          visData;

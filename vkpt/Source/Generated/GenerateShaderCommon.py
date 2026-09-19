@@ -404,7 +404,7 @@ CONST = {
 
     # Number of ray categories the RT shaders atomically accumulate per frame
     # (see vkpt/Source/RayStats.h).
-    "RAY_STATS_CATEGORY_COUNT"              : 4,
+    "RAY_STATS_CATEGORY_COUNT"              : 5,
     
     "MAX_RAY_LENGTH"                        : "10000.0",
 
@@ -433,13 +433,19 @@ CONST = {
     "TAL_CDF_GRID_MAX_SIZE"                 : 256,
 
     # Q2RTX-style per-BSP-cluster light lists. The world model's BSP leaves are
-    # used as clusters (vkQuake's PVS is leaf-indexed). The lists are built on
-    # the CPU (Quake side) from the PVS and uploaded per frame as
+    # used as clusters (vkQuake's PVS is leaf-indexed). The lists are composed in
+    # the renderer from the registered lights and uploaded per frame as
     # q2LightListOffsets / q2LightListLights. Q2_MAX_CLUSTERS must cover the
     # leaf count of any map (Quake BSP allows up to 32767 leaves; real maps
     # stay well under 8192).
+    #
+    # Q2_LIGHT_LIST_MAX_PER_CELL is the capacity of one cluster's list; the
+    # statistics buffer below is sized by it, so raising it costs 4 bytes of
+    # VRAM per cluster, slot, side, hit/miss flag and frame in flight, and
+    # doubles the per-slot eviction scan in ClusterLightLists. 128 was chosen
+    # after 166 clusters of a dense Arcane Dimensions map filled all 64 slots.
     "Q2_MAX_CLUSTERS"                       : 8192,
-    "Q2_LIGHT_LIST_MAX_PER_CELL"            : 64,
+    "Q2_LIGHT_LIST_MAX_PER_CELL"            : 128,
     "Q2_LIGHT_LIST_STATS_SIDES"             : 6,
     "Q2_LIGHT_LIST_STATS_BUFFERS"           : 3,
     "COMPUTE_Q2_LIGHT_LIST_GROUP_SIZE_X"    : 64,

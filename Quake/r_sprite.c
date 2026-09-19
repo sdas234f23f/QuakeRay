@@ -27,6 +27,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 extern cvar_t rt_model_metal, rt_model_rough;
 extern cvar_t rt_dlight_intensity, rt_dlight_radius;
+extern cvar_t rt_cluster_dlights;
 
 /*
 ================
@@ -215,7 +216,8 @@ void R_DrawSpriteModel (cb_context_t *cbx, entity_t *e, int entuniqueid)
 		RgResult r = rgUploadSphericalLight (vulkan_globals.instance, &light_info);
 		RG_CHECK (r);
 
-		RT_ClusterLightAdd (light_info.uniqueID, e->origin);
+		if (CVAR_TO_FLOAT (rt_cluster_dlights) != 0)
+			RT_ClusterLightAdd (light_info.uniqueID, e->origin, RT_ClusterLightReach ());
 	}
 
 	if (is_rasterized)

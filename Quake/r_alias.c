@@ -31,6 +31,7 @@ extern cvar_t scr_fov;
 extern cvar_t rt_model_rough, rt_model_metal, rt_enable_pvs;
 extern cvar_t rt_viewm_fovscale, rt_viewm_wide;
 extern cvar_t rt_dlight_intensity, rt_dlight_radius;
+extern cvar_t rt_cluster_dlights;
 
 // up to 16 color translated skins
 gltexture_t* playertextures[MAX_SCOREBOARD]; // johnfitz -- changed to an array of pointers
@@ -81,16 +82,6 @@ static size_t GetNextAllocStep(size_t x)
     return i * step;
 }
 
-static float r_avertexnormal_dot(const vec3_t vertexnormal, const vec3_t shadevector)
-{
-    float dot = DotProduct(vertexnormal, shadevector);
-    // wtf - this reproduces anorm_dots within as reasonable a degree of tolerance as the >= 0 case
-    if (dot < 0.0f)
-        return 1.0f + dot * (13.0f / 44.0f);
-    else
-        return 1.0f + dot;
-}
-
 static float Lerp(float a, float b, float t)
 {
     float dt = b - a;
@@ -106,8 +97,7 @@ static void LerpPosition(float* dst, const float* src1, const float* src2, float
 }
 
 static const RgVertex*
-GetPoseVertices(const qmodel_t* m, const aliashdr_t* hdr, int pose1, int pose2, float blend, /* const */
-                vec3_t shadevector, /* const */ vec3_t lightcolor, int cluster)
+GetPoseVertices(const qmodel_t* m, const aliashdr_t* hdr, int pose1, int pose2, float blend, int cluster)
 {
     const RgVertex* v_pose1 = GetModelVerticesForPose(m, hdr, pose1);
     const RgVertex* v_pose2 = GetModelVerticesForPose(m, hdr, pose2);
@@ -186,7 +176,7 @@ Based on code by MH from RMQEngine
 */
 static void GL_DrawAliasFrame(
     cb_context_t* cbx, entity_t* e, aliashdr_t* paliashdr, lerpdata_t lerpdata, gltexture_t* tx, float entity_alpha,
-    qboolean alphatest, vec3_t shadevector, vec3_t lightcolor, int entuniqueid)
+    qboolean alphatest, int entuniqueid)
 {
     // poses the same means either 1. the entity has paused its animation, or 2. r_lerpmodels is disabled
     float blend = lerpdata.pose1 != lerpdata.pose2 ? lerpdata.blend : 0;
@@ -217,7 +207,8 @@ static void GL_DrawAliasFrame(
         vec3_t lightorigin;
         VectorCopy(lerpdata.origin, lightorigin);
         lightorigin[2] += tx->rtupoffset;
-        RT_ClusterLightAdd(light_info.uniqueID, lightorigin);
+        if (CVAR_TO_FLOAT (rt_cluster_dlights) != 0)
+            RT_ClusterLightAdd(light_info.uniqueID, lightorigin, RT_ClusterLightReach ());
     }
 
 assert(
@@ -238,8 +229,7 @@ if
     RgRasterizedGeometryUploadInfo info = {
         .renderType = RG_RASTERIZED_GEOMETRY_RENDER_TYPE_DEFAULT,
         .vertexCount = paliashdr->numverts_vbo,
-        .pVertices = GetPoseVertices(e->model, paliashdr, lerpdata.pose1, lerpdata.pose2, blend, shadevector,
-                                     lightcolor, cluster),
+        .pVertices = GetPoseVertices(e->model, paliashdr, lerpdata.pose1, lerpdata.pose2, blend, cluster),
         .indexCount = paliashdr->numindexes,
         .pIndices = e->model->rtindices,
         .transform = RT_GetAliasModelTransform(paliashdr, &lerpdata, isfirstperson),
@@ -278,7 +268,7 @@ else
 		        isviewer ? RG_GEOMETRY_VISIBILITY_TYPE_FIRST_PERSON_VIEWER :
 		        RG_GEOMETRY_VISIBILITY_TYPE_WORLD_0,
 			.vertexCount = paliashdr->numverts_vbo,
-			.pVertices = GetPoseVertices (e->model, paliashdr, lerpdata.pose1, lerpdata.pose2, blend, shadevector, lightcolor, cluster),
+			.pVertices = GetPoseVertices (e->model, paliashdr, lerpdata.pose1, lerpdata.pose2, blend, cluster),
 			.indexCount = paliashdr->numindexes,
 			.pIndices = e->model->rtindices,
 			.layerColors = {RT_COLOR_WHITE},
@@ -447,82 +437,6 @@ void R_SetupEntityTransform(entity_t* e, lerpdata_t* lerpdata)
 
 /*
 =================
-R_SetupAliasLighting -- johnfitz -- broken out from R_DrawAliasModel and rewritten
-=================
-*/
-static void R_SetupAliasLighting(entity_t* e, vec3_t* shadevector, vec3_t* lightcolor)
-{
-    vec3_t dist;
-    float add;
-    int i;
-    int quantizedangle;
-    float radiansangle;
-    vec3_t lpos;
-
-    VectorCopy(e->origin, lpos);
-    // start the light trace from slightly above the origin
-    // this helps with models whose origin is below ground level, but are otherwise visible
-    // (e.g. some of the candles in the DOTM start map, which would otherwise appear black)
-    lpos[2] += e->model->maxs[2] * 0.5f;
-    R_LightPoint(lpos, &e->lightcache, lightcolor);
-
-    // add dlights
-    for (i = 0; i < MAX_DLIGHTS; i++)
-    {
-        if (cl_dlights[i].die >= cl.time)
-        {
-            VectorSubtract(e->origin, cl_dlights[i].origin, dist);
-            add = cl_dlights[i].radius - VectorLength(dist);
-            if (add > 0)
-                VectorMA(*lightcolor, add, cl_dlights[i].color, *lightcolor);
-        }
-    }
-
-    // minimum light value on gun (24)
-    if (e == &cl.viewent)
-    {
-        add = 72.0f - ((*lightcolor)[0] + (*lightcolor)[1] + (*lightcolor)[2]);
-        if (add > 0.0f)
-        {
-            (*lightcolor)[0] += add / 3.0f;
-            (*lightcolor)[1] += add / 3.0f;
-            (*lightcolor)[2] += add / 3.0f;
-        }
-    }
-
-    // minimum light value on players (8)
-    if (e > cl.entities && e <= cl.entities + cl.maxclients)
-    {
-        add = 24.0f - ((*lightcolor)[0] + (*lightcolor)[1] + (*lightcolor)[2]);
-        if (add > 0.0f)
-        {
-            (*lightcolor)[0] += add / 3.0f;
-            (*lightcolor)[1] += add / 3.0f;
-            (*lightcolor)[2] += add / 3.0f;
-        }
-    }
-
-    // clamp lighting so it doesn't overbright as much (96)
-    add = 288.0f / ((*lightcolor)[0] + (*lightcolor)[1] + (*lightcolor)[2]);
-    if (add < 1.0f)
-        VectorScale((*lightcolor), add, (*lightcolor));
-
-    quantizedangle = ((int)(e->angles[1] * (SHADEDOT_QUANT / 360.0))) & (SHADEDOT_QUANT - 1);
-
-    // ericw -- shadevector is passed to the shader to compute shadedots inside the
-    // shader, see GLAlias_CreateShaders()
-    radiansangle = (quantizedangle / 16.0) * 2.0 * 3.14159;
-    (*shadevector)[0] = cos(-radiansangle);
-    (*shadevector)[1] = sin(-radiansangle);
-    (*shadevector)[2] = 1;
-    VectorNormalize(*shadevector);
-    // ericw --
-
-    VectorScale((*lightcolor), 1.0f / 200.0f, (*lightcolor));
-}
-
-/*
-=================
 R_DrawAliasModel -- johnfitz -- almost completely rewritten
 =================
 */
@@ -561,12 +475,10 @@ void R_DrawAliasModel(cb_context_t* cbx, entity_t* e, int entuniqueid)
     if (entalpha == 0)
         return;
 
-    //
-    // set up lighting
-    //
     Atomic_AddUInt32(&rs_aliaspolys, paliashdr->numtris);
-    vec3_t shadevector, lightcolor;
-    R_SetupAliasLighting(e, &shadevector, &lightcolor);
+
+    // The per-entity light trace is gone: nothing in the RT renderer reads the shade vector or the
+    // light colour it produced, and the cheatsafe modes only overrode that light colour.
 
     //
     // set up textures
@@ -584,27 +496,15 @@ void R_DrawAliasModel(cb_context_t* cbx, entity_t* e, int entuniqueid)
         if ((uintptr_t)e >= (uintptr_t)&cl.entities[1] && (uintptr_t)e <= (uintptr_t)&cl.entities[cl.maxclients])
             tx = playertextures[e - cl.entities - 1];
 
-    if (r_fullbright_cheatsafe)
-    {
-        lightcolor[0] = 0.5f;
-        lightcolor[1] = 0.5f;
-        lightcolor[2] = 0.5f;
-    }
     if (r_lightmap_cheatsafe)
     {
         tx = whitetexture;
-        if (r_fullbright.value)
-        {
-            lightcolor[0] = 1.0f;
-            lightcolor[1] = 1.0f;
-            lightcolor[2] = 1.0f;
-        }
     }
 
     //
     // draw it
     //
-    GL_DrawAliasFrame(cbx, e, paliashdr, lerpdata, tx, entalpha, alphatest, shadevector, lightcolor, entuniqueid);
+    GL_DrawAliasFrame(cbx, e, paliashdr, lerpdata, tx, entalpha, alphatest, entuniqueid);
 }
 
 // johnfitz -- values for shadow matrix

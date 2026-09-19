@@ -391,6 +391,15 @@ void ASManager::UpdateASDescriptors(uint32_t frameIndex)
     VkAccelerationStructureKHR asHandle = tlas[frameIndex]->GetAS();
     assert(asHandle != VK_NULL_HANDLE);
 
+    // this descriptor set is written nowhere else, so a handle that didn't
+    // change doesn't need a new write
+    if (asDescHandles[frameIndex] == asHandle)
+    {
+        return;
+    }
+
+    asDescHandles[frameIndex] = asHandle;
+
     VkWriteDescriptorSetAccelerationStructureKHR asInfo = {};
     asInfo.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR;
     asInfo.accelerationStructureCount = 1;
@@ -501,6 +510,97 @@ void ASManager::UpdateBLAS(BLASComponent &blas, const std::shared_ptr<VertexColl
                        fastTrace, update, blas.GetFilter() & VertexCollectorFilterTypeFlagBits::CF_STATIC_MOVABLE);
 }
 
+// Information about a dynamic geometry is spread between the collector's staging memory
+// and its device-local buffers, so the input that a BLAS is built from is hashed while
+// the geometries are added. The hash is then used to tell whether the previous BLAS of
+// the same frame slot still describes the geometry.
+
+static_assert(
+    (sizeof(VertexCollectorFilterGroup_ChangeFrequency) / sizeof(VertexCollectorFilterGroup_ChangeFrequency[0])) *
+    (sizeof(VertexCollectorFilterGroup_PassThrough) / sizeof(VertexCollectorFilterGroup_PassThrough[0])) *
+    (sizeof(VertexCollectorFilterGroup_PrimaryVisibility) / sizeof(VertexCollectorFilterGroup_PrimaryVisibility[0]))
+    == MAX_TOP_LEVEL_INSTANCE_COUNT, "");
+
+namespace
+{
+    // FNV-1a, over the input that the BVH builder reads
+    uint64_t HashBytes(uint64_t h, const void *data, size_t size)
+    {
+        const uint8_t *p = (const uint8_t *)data;
+
+        while (size >= sizeof(uint64_t))
+        {
+            uint64_t v;
+            memcpy(&v, p, sizeof(v));
+            h = (h ^ v) * 0x100000001b3ull;
+            p += sizeof(v);
+            size -= sizeof(uint64_t);
+        }
+
+        while (size > 0)
+        {
+            h = (h ^ *p) * 0x100000001b3ull;
+            p++;
+            size--;
+        }
+
+        return h;
+    }
+
+    constexpr uint64_t DYNAMIC_BUILD_HASH_SEED = 0xcbf29ce484222325ull;
+
+    // Only the vertex positions are the BVH input of a geometry, but the transform
+    // belongs to it too, as it is applied to the positions when the TLAS is traversed.
+    uint64_t HashDynamicGeometryInput(uint64_t h, const RgGeometryUploadInfo &info)
+    {
+        if (info.pVertices != nullptr && info.vertexCount > 0)
+        {
+            for (uint32_t i = 0; i < info.vertexCount; i++)
+            {
+                h = HashBytes(h, info.pVertices[i].position, sizeof(float) * 3);
+            }
+        }
+
+        if (info.pIndices != nullptr && info.indexCount > 0)
+        {
+            h = HashBytes(h, info.pIndices, (size_t)info.indexCount * sizeof(uint32_t));
+        }
+
+        h = HashBytes(h, &info.transform, sizeof(VkTransformMatrixKHR));
+
+        return h;
+    }
+
+    // AS geometries are built from addresses and offsets in the collector's buffers, so a
+    // changed set of geometries or a changed order of them also changes the hash. The AS
+    // handle is included as well, because a recreated AS has undefined contents.
+    uint64_t HashDynamicBLASInput(
+        uint64_t h,
+        const std::shared_ptr<VertexCollector> &vertCollector,
+        VertexCollectorFilterTypeFlags filter,
+        VkAccelerationStructureKHR as)
+    {
+        h = HashBytes(h, &as, sizeof(as));
+
+        const std::vector<VkAccelerationStructureGeometryKHR> &geoms = vertCollector->GetASGeometries(filter);
+        const std::vector<VkAccelerationStructureBuildRangeInfoKHR> &ranges = vertCollector->GetASBuildRangeInfos(filter);
+        const std::vector<uint32_t> &primCounts = vertCollector->GetPrimitiveCounts(filter);
+
+        assert(geoms.size() == ranges.size());
+        assert(geoms.size() == primCounts.size());
+
+        for (size_t i = 0; i < geoms.size(); i++)
+        {
+            h = HashBytes(h, &geoms[i], sizeof(VkAccelerationStructureGeometryKHR));
+            h = HashBytes(h, &ranges[i], sizeof(VkAccelerationStructureBuildRangeInfoKHR));
+            h = HashBytes(h, &primCounts[i], sizeof(uint32_t));
+        }
+
+        return h;
+    }
+}
+
+
 // separate functions to make adding between Begin..Geometry() and Submit..Geometry() a bit clearer
 
 uint32_t ASManager::AddStaticGeometry(uint32_t frameIndex, const RgGeometryUploadInfo &info)
@@ -531,6 +631,14 @@ uint32_t ASManager::AddDynamicGeometry(uint32_t frameIndex, const RgGeometryUplo
             textureMgr->GetMaterialTextures(info.geomMaterial.layerMaterials[1]),
             textureMgr->GetMaterialTextures(info.geomMaterial.layerMaterials[2]),
         };
+
+        // remember the input of this geometry, so that SubmitDynamicGeometry
+        // can tell whether the previous BLAS is still up to date
+        const uint32_t filterID = VertexCollectorFilterTypeFlags_GetID(
+            VertexCollectorFilterTypeFlags_GetForGeometry(info));
+
+        dynBuildHash[frameIndex][filterID] =
+            HashDynamicGeometryInput(dynBuildHash[frameIndex][filterID], info);
 
         return collectorDynamic[frameIndex]->AddGeometry(frameIndex, info, materials);
     }
@@ -627,6 +735,11 @@ void ASManager::BeginDynamicGeometry(VkCommandBuffer cmd, uint32_t frameIndex)
     // dynamic AS must be recreated
     collectorDynamic[frameIndex]->Reset();
     collectorDynamic[frameIndex]->BeginCollecting(false);
+
+    for (uint64_t &h : dynBuildHash[frameIndex])
+    {
+        h = DYNAMIC_BUILD_HASH_SEED;
+    }
 }
 
 void ASManager::SubmitDynamicGeometry(VkCommandBuffer cmd, uint32_t frameIndex)
@@ -650,7 +763,44 @@ void ASManager::SubmitDynamicGeometry(VkCommandBuffer cmd, uint32_t frameIndex)
         // must be dynamic
         assert(dynamicBlas->GetFilter() & FT::CF_DYNAMIC);
 
-        toBuild |= SetupBLAS(*dynamicBlas, colDyn);
+        const VertexCollectorFilterTypeFlags filter = dynamicBlas->GetFilter();
+        const uint32_t filterID = VertexCollectorFilterTypeFlags_GetID(filter);
+
+        const uint32_t geomCount = (uint32_t)colDyn->GetASGeometries(filter).size();
+
+        // an empty BLAS is not added to the TLAS, so its count must be actual
+        // even if the building of the BLAS itself is skipped
+        dynamicBlas->SetGeometryCount(geomCount);
+
+        if (geomCount == 0)
+        {
+            dynBlasKeyValid[frameIndex][filterID] = false;
+            continue;
+        }
+
+        // The key is kept per frame slot: the AS that this slot builds into is the one that
+        // was built for the same slot MAX_FRAMES_IN_FLIGHT frames ago, so the comparison
+        // must be against the data of this slot, not against the last frame globally.
+        const uint64_t buildKey = HashDynamicBLASInput(
+            dynBuildHash[frameIndex][filterID], colDyn, filter, dynamicBlas->GetAS());
+
+        // skip the building if the AS already describes the collected geometry: the
+        // build input is the same, and the device local data that the AS refers to
+        // is written from the same staging data
+        if (dynBlasKeyValid[frameIndex][filterID] && dynBlasKey[frameIndex][filterID] == buildKey)
+        {
+            continue;
+        }
+
+        if (SetupBLAS(*dynamicBlas, colDyn))
+        {
+            toBuild = true;
+
+            // the AS might have been recreated inside SetupBLAS, and so have a new handle
+            dynBlasKey[frameIndex][filterID] = HashDynamicBLASInput(
+                dynBuildHash[frameIndex][filterID], colDyn, filter, dynamicBlas->GetAS());
+            dynBlasKeyValid[frameIndex][filterID] = true;
+        }
     }
     
     if (!toBuild)
@@ -954,8 +1104,17 @@ void ASManager::BuildTLAS(VkCommandBuffer cmd, uint32_t frameIndex, const TLASPr
     instData.arrayOfPointers = VK_FALSE;
     instData.data.deviceAddress = r.instanceCount > 0 ? instanceBuffer->GetDeviceAddress() : 0;
 
-    // get AS size and create buffer for AS
-    VkAccelerationStructureBuildSizesInfoKHR buildSizes = asBuilder->GetTopBuildSizes(&instGeom, r.instanceCount, false);
+    // get AS size and create buffer for AS. The sizes depend only on the instance
+    // count, and the device addresses are ignored by vkGetAccelerationStructureBuildSizesKHR,
+    // so the call is done only when the count changes
+    if (!tlasBuildSizesValid[frameIndex] || tlasBuildSizesInstanceCount[frameIndex] != r.instanceCount)
+    {
+        tlasBuildSizes[frameIndex] = asBuilder->GetTopBuildSizes(&instGeom, r.instanceCount, false);
+        tlasBuildSizesInstanceCount[frameIndex] = r.instanceCount;
+        tlasBuildSizesValid[frameIndex] = true;
+    }
+
+    const VkAccelerationStructureBuildSizesInfoKHR &buildSizes = tlasBuildSizes[frameIndex];
 
     // if previous buffer's size is not enough
     pCurrentTLAS->RecreateIfNotValid(buildSizes, allocator);

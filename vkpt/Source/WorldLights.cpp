@@ -46,6 +46,7 @@ void WorldLights::Upload(const RgWorldLightsUploadInfo &uploadInfo, UserPrint *p
 {
     CopyTable(uploadInfo.pClusterMins, uploadInfo.numClusters, clusterMins, "World lights: no cluster bounds");
     CopyTable(uploadInfo.pClusterMaxs, uploadInfo.numClusters, clusterMaxs, "World lights: no cluster bounds");
+    CopyTable(uploadInfo.pClusterFlags, uploadInfo.numClusters, clusterFlags, "World lights: no cluster flags");
     CopyTable(uploadInfo.pVisOffsets, uploadInfo.numClusters, visOffsets, "World lights: no PVS offsets");
     CopyTable(uploadInfo.pFaces, uploadInfo.numFaces, faces, "World lights: no face array");
     CopyTable(uploadInfo.pFaceVertices, uploadInfo.numFaceVertices, faceVertices, "World lights: no face vertex array");
@@ -79,6 +80,7 @@ const uint8_t *WorldLights::GetClusterVis(uint32_t cluster) const
 size_t WorldLights::GetMemoryBytes() const
 {
     return clusterMins.size() * sizeof(RgFloat3D) + clusterMaxs.size() * sizeof(RgFloat3D) +
+           clusterFlags.size() +
            faces.size() * sizeof(RgWorldLightFace) + faceVertices.size() * sizeof(RgVertex) +
            visData.size() + visOffsets.size() * sizeof(int32_t);
 }

@@ -59,6 +59,7 @@
 #include "Volumetric.h"
 #include "ShadowMap.h"
 #include "WorldLights.h"
+#include "ClusterLightLists.h"
 #include "GodRays.h"
 #include "RayStats.h"
 #include "PassTimings.h"
@@ -98,7 +99,13 @@ public:
     void UploadPolygonalLight(const RgPolygonalLightUploadInfo *pLightInfo);
     void UploadTexturedAreaLight(const RgTexturedAreaLightUploadInfo *pLightInfo);
 
-    void UploadClusterLightLists(const RgClusterLightListsUploadInfo *pInfo);
+    void UploadTexturedAreaLights(const RgTexturedAreaLightUploadInfo *pLightInfos, uint32_t count);
+
+    void UploadClusterLightSources(const RgClusterLightSourcesUploadInfo *pInfo);
+
+    void GetClusterLightStats(RgClusterLightStats *pStats);
+    void GetClusterLightGrants(uint32_t *pGranted, uint32_t *pDenied, uint32_t maxCount, uint32_t *pCount);
+    void GetClusterLightList(uint32_t cluster, uint64_t *pLightUniqueIds, uint32_t maxCount, uint32_t *pCount);
 
     void UploadWorldLights(const RgWorldLightsUploadInfo *pInfo);
 
@@ -214,6 +221,8 @@ private:
 
     // World tables of the current map (clusters, PVS, emissive faces), built by the host.
     std::shared_ptr<WorldLights>            worldLights;
+    // Per-cluster light lists, composed out of the registered sources and the tables above.
+    std::shared_ptr<ClusterLightLists>      clusterLightLists;
 
     LibraryConfig::Config                   libconfig;
     VkDebugUtilsMessengerEXT                debugMessenger;

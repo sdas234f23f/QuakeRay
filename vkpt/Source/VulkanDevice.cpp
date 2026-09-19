@@ -758,7 +758,15 @@ void VulkanDevice::Render(VkCommandBuffer cmd, const RgDrawFrameInfo &drawInfo)
             p.sunColor[2] = uniform->GetData()->skyColorDefault[2];
 
             float sunColor[3], sunDir[3], sunAngularRadius = 0.0047f;
-            if (scene->GetLightManager()->GetLastDirectionalLight(sunColor, sunDir, &sunAngularRadius))
+            // A directional light is uploaded only while the host has the sun
+            // light enabled (rt_sun > 0), so "no directional light" is what
+            // rt_sun 0 looks like from here. The sky then has no sun either:
+            // sunDirection.w is the amount of sun the sky shows, and at 0 the
+            // mie halo and the disc are dropped while the atmosphere itself
+            // keeps the tint from skyColorDefault above.
+            const bool hasSun = scene->GetLightManager()->GetLastDirectionalLight(sunColor, sunDir, &sunAngularRadius);
+            p.sunDirection[3] = hasSun ? 1.0f : 0.0f;
+            if (hasSun)
             {
                 // the directional light direction points FROM the sun toward the scene;
                 // the sky shader expects the direction TOWARD the sun
@@ -768,7 +776,8 @@ void VulkanDevice::Render(VkCommandBuffer cmd, const RgDrawFrameInfo &drawInfo)
             }
             else
             {
-                // no sun: fallback to a default elevation/azimuth (direction toward the sun)
+                // Only centres the rayleigh gradient, so it never shows as a sun,
+                // but it still has to be a normalized vector.
                 float d[3] = { 0.3f, 0.5f, 0.8f };
                 const float len = std::sqrt(d[0]*d[0] + d[1]*d[1] + d[2]*d[2]);
                 p.sunDirection[0] = d[0] / len;
@@ -834,7 +843,14 @@ void VulkanDevice::Render(VkCommandBuffer cmd, const RgDrawFrameInfo &drawInfo)
     {
         {
             auto lightManager = scene->GetLightManager();
-            lightManager->ResetLightStats(cmd, frameIndex, uniform->GetData()->frameId);
+
+            // rt_q2_lightstats 0 (Q2_LIGHT_STATS_DISABLED): the shaders neither accumulate nor read
+            // the cluster light statistics (see Q2LightLists.h), so clearing the slot is dead work.
+            if (uniform->GetData()->q2LightStatsMode != 0u)
+            {
+                lightManager->ResetLightStats(cmd, frameIndex, uniform->GetData()->frameId);
+            }
+
             lightManager->BarrierQ2ClusterLists(cmd, frameIndex);
         }
 
@@ -863,7 +879,7 @@ void VulkanDevice::Render(VkCommandBuffer cmd, const RgDrawFrameInfo &drawInfo)
         // draw decals on top of primary surface
         decalManager->Draw(cmd, frameIndex, uniform, framebuffers, textureManager);
 
-        passTimings->Mark(cmd, frameIndex, GPU_PASS_SHADOW_GODRAYS);
+        passTimings->Mark(cmd, frameIndex, GPU_PASS_GODRAYS);
 
         // volumetric sunlight: render the shadow map and ray march god rays
         bool godRaysActive = false;
@@ -888,32 +904,19 @@ void VulkanDevice::Render(VkCommandBuffer cmd, const RgDrawFrameInfo &drawInfo)
             // calibrated against; rt_sun, rt_brightness and the light tint now all
             // reach them through it, and gr_intensity scales them on top.
             constexpr float godRaysIntensityBase = 8.0f;
-            // What the sun colour carries that the shafts were calibrated without:
-            // RT_QUAKE_LIGHT_AREA_INTENSITY_FIX * rt_globallight_mult *
-            // RT_SUN_LIGHT_INTENSITY_SCALE (glquake.h), the same way the no-sun
-            // fallback below stands that colour in.
-            constexpr float sunColorFixup = 1600.0f * 5.0f * 0.1f;
             gr.godRaysIntensity = godRaysIntensityBase * godRaysIntensity;
             gr.godRaysEccentricity = 0.75f;
-            gr.godRaysEnabled = godRaysEnabled ? 1u : 0u;
 
-            float sunColor[3], sunDir[3], sunAngularRadius = 0.0047f;
-            if (!scene->GetLightManager()->GetLastDirectionalLight(sunColor, sunDir, &sunAngularRadius))
-            {
-                // No sun light (rt_sun 0): follow the sun that is visible in the
-                // procedural sky (same fallback as DrawProcedural), so the
-                // volumetric sun shafts match the visible sun (Q2RTX behavior).
-                // sunDir is the light direction (FROM the sun toward the scene),
-                // i.e. opposite of the sky's toward-sun fallback.
-                const float towardSun[3] = { 0.3f, 0.5f, 0.8f };
-                const float len = std::sqrt(towardSun[0]*towardSun[0] + towardSun[1]*towardSun[1] + towardSun[2]*towardSun[2]);
-                sunDir[0] = -towardSun[0] / len;
-                sunDir[1] = -towardSun[1] / len;
-                sunDir[2] = -towardSun[2] / len;
-                sunColor[0] = uniform->GetData()->skyColorDefault[0] * sunColorFixup;
-                sunColor[1] = uniform->GetData()->skyColorDefault[1] * sunColorFixup;
-                sunColor[2] = uniform->GetData()->skyColorDefault[2] * sunColorFixup;
-            }
+            float sunColor[3] = {}, sunDir[3] = {}, sunAngularRadius = 0.0047f;
+            const bool sunExists = scene->GetLightManager()->GetLastDirectionalLight(sunColor, sunDir, &sunAngularRadius);
+
+            // The shafts are inscattered sunlight, so with no directional light
+            // (rt_sun 0) there is nothing to scatter and the pass only clears the
+            // buffers: marching a sun the host never asked for is what made the
+            // shafts bright with rt_sun 0. The rt_volume_* light shafts are a
+            // different pass and are unaffected by this.
+            const bool godRaysOn = godRaysEnabled && sunExists;
+            gr.godRaysEnabled = godRaysOn ? 1u : 0u;
 
             float aabbMin[3], aabbMax[3];
             if (scene->HasAABB())
@@ -926,9 +929,9 @@ void VulkanDevice::Render(VkCommandBuffer cmd, const RgDrawFrameInfo &drawInfo)
                 const auto &staticCollector  = scene->GetASManager()->GetStaticCollector();
                 const auto &dynamicCollector = scene->GetASManager()->GetDynamicCollector(frameIndex);
 
-                if (!godRaysEnabled)
+                if (!godRaysOn)
                 {
-                    // Nothing to march: the pass only clears the buffers.
+                    // Nothing to scatter: the pass only clears the buffers.
                     godRays->Trace(cmd, frameIndex, gr, 0);
                     godRays->Filter(cmd, frameIndex);
                 }
@@ -1079,6 +1082,8 @@ void VulkanDevice::Render(VkCommandBuffer cmd, const RgDrawFrameInfo &drawInfo)
             accum = FramebufferImageIndex::FB_IMAGE_INDEX_UPSCALED_PING;
         }
 
+        passTimings->Mark(cmd, frameIndex, GPU_PASS_UPSCALE_BLIT);
+
         const RgExtent2D* pixelized = drawInfo.pRenderResolutionParams
                                           ? drawInfo.pRenderResolutionParams->pPixelizedRenderSize
                                           : nullptr;
@@ -1087,7 +1092,7 @@ void VulkanDevice::Render(VkCommandBuffer cmd, const RgDrawFrameInfo &drawInfo)
             cmd, frameIndex, accum, renderResolution.GetBlitFilter(), pixelized );
     }
 
-    passTimings->Mark(cmd, frameIndex, GPU_PASS_POST);
+    passTimings->Mark(cmd, frameIndex, GPU_PASS_SHARPEN);
 
 
     const CommonnlyUsedEffectArguments args = { cmd, frameIndex, framebuffers, uniform, renderResolution.UpscaledWidth(), renderResolution.UpscaledHeight(), (float)currentFrameTime };
@@ -1098,6 +1103,9 @@ void VulkanDevice::Render(VkCommandBuffer cmd, const RgDrawFrameInfo &drawInfo)
                 cmd, frameIndex, framebuffers, renderResolution.UpscaledWidth(), renderResolution.UpscaledHeight(), accum,
                 renderResolution.GetSharpeningTechnique(), renderResolution.GetSharpeningIntensity());
         }
+
+        passTimings->Mark(cmd, frameIndex, GPU_PASS_POST);
+
         if (enableBloom)
         {
             accum = bloom->Apply(cmd, frameIndex, uniform, renderResolution.UpscaledWidth(), renderResolution.UpscaledHeight(), accum);
@@ -1161,6 +1169,8 @@ void VulkanDevice::Render(VkCommandBuffer cmd, const RgDrawFrameInfo &drawInfo)
         accum = effectCrtDecode->Apply(args, accum);
     }
 
+
+    passTimings->Mark(cmd, frameIndex, GPU_PASS_SWAPBLIT);
 
     // blit result image to present on a surface
     framebuffers->PresentToSwapchain( cmd, frameIndex, swapchain, accum, VK_FILTER_NEAREST );
@@ -1232,12 +1242,10 @@ void VulkanDevice::DrawFrame(const RgDrawFrameInfo *drawInfo)
         rayStats->Reset(frameIndex);
     }
 
-    {
-        const double dt = std::max(currentFrameTime - previousFrameTime, 0.0001);
-        const float fps = static_cast<float>(1.0 / dt);
-        statsSmoothedFps = statsSmoothedFps <= 0.0f ? fps : statsSmoothedFps * 0.92f + fps * 0.08f;
-        statsFpsX10 = static_cast<uint32_t>(std::clamp(statsSmoothedFps * 10.0f, 0.0f, 99999.0f));
-    }
+    const double dt = std::max(currentFrameTime - previousFrameTime, 0.0001);
+    const float fps = static_cast<float>(1.0 / dt);
+    statsSmoothedFps = statsSmoothedFps <= 0.0f ? fps : statsSmoothedFps * 0.92f + fps * 0.08f;
+    statsFpsX10 = static_cast<uint32_t>(std::clamp(statsSmoothedFps * 10.0f, 0.0f, 99999.0f));
 
     renderResolution.Setup(drawInfo->pRenderResolutionParams,
                            swapchain->GetWidth(), swapchain->GetHeight(), nvDlss);
@@ -1583,19 +1591,79 @@ void vkpt::VulkanDevice::UploadTexturedAreaLight(const RgTexturedAreaLightUpload
     scene->UploadLight(currentFrameState.GetFrameIndex(), *pLightInfo, textureIndex);
 }
 
-void VulkanDevice::UploadClusterLightLists(const RgClusterLightListsUploadInfo *pInfo)
+void vkpt::VulkanDevice::UploadTexturedAreaLights(const RgTexturedAreaLightUploadInfo *pLightInfos, uint32_t count)
 {
-    if (pInfo == nullptr || pInfo->pOffsets == nullptr || pInfo->pLightUniqueIds == nullptr)
+    if (pLightInfos == nullptr)
     {
         throw RgException(RG_WRONG_ARGUMENT, "Argument is null");
     }
 
-    scene->GetLightManager()->SetClusterLightLists(
-        currentFrameState.GetFrameIndex(),
-        pInfo->numClusters,
-        pInfo->pOffsets,
-        pInfo->pLightUniqueIds,
-        pInfo->totalLightCount);
+    /* Lights of one batch share a handful of materials, so the lookup is cached per material. A
+       material index is a sum of texture indices, so the indices a batch holds are scattered over
+       the table's slots instead of filling them in order, and the table has to be wide enough that
+       a slot is unlikely to hold a different material than the one being looked up. */
+    const uint32_t materialCacheSize = 512;
+    uint32_t cachedMaterial[materialCacheSize];
+    uint32_t cachedTextureIndex[materialCacheSize];
+    bool     cachedValid[materialCacheSize] = {};
+
+    const uint32_t frameIndex = currentFrameState.GetFrameIndex();
+
+    for (uint32_t i = 0; i < count; i++)
+    {
+        const RgTexturedAreaLightUploadInfo *pLightInfo = pLightInfos + i;
+        const uint32_t slot = pLightInfo->material & (materialCacheSize - 1);
+        uint32_t textureIndex;
+
+        if (cachedValid[slot] && cachedMaterial[slot] == pLightInfo->material)
+        {
+            textureIndex = cachedTextureIndex[slot];
+        }
+        else
+        {
+            const MaterialTextures textures = textureManager->GetMaterialTextures(pLightInfo->material);
+            textureIndex = textures.indices[MATERIAL_ROUGHNESS_METALLIC_EMISSION_INDEX];
+
+            cachedMaterial[slot] = pLightInfo->material;
+            cachedTextureIndex[slot] = textureIndex;
+            cachedValid[slot] = true;
+        }
+
+        scene->UploadLight(frameIndex, *pLightInfo, textureIndex);
+    }
+}
+
+void VulkanDevice::UploadClusterLightSources(const RgClusterLightSourcesUploadInfo *pInfo)
+{
+    if (pInfo == nullptr)
+    {
+        throw RgException(RG_WRONG_ARGUMENT, "Argument is null");
+    }
+
+    clusterLightLists->SetSources(*worldLights, *pInfo, scene->GetLightManager().get(), userPrint.get(),
+                                  currentFrameState.GetFrameIndex());
+}
+
+void VulkanDevice::GetClusterLightStats(RgClusterLightStats *pStats)
+{
+    if (pStats == nullptr)
+    {
+        throw RgException(RG_WRONG_ARGUMENT, "Argument is null");
+    }
+
+    *pStats = clusterLightLists->GetStats();
+}
+
+void VulkanDevice::GetClusterLightGrants(uint32_t *pGranted, uint32_t *pDenied, uint32_t maxCount,
+                                         uint32_t *pCount)
+{
+    clusterLightLists->GetGrants(pGranted, pDenied, maxCount, pCount);
+}
+
+void VulkanDevice::GetClusterLightList(uint32_t cluster, uint64_t *pLightUniqueIds, uint32_t maxCount,
+                                       uint32_t *pCount)
+{
+    clusterLightLists->GetClusterList(cluster, pLightUniqueIds, maxCount, pCount);
 }
 
 void VulkanDevice::UploadWorldLights(const RgWorldLightsUploadInfo *pInfo)

@@ -67,13 +67,24 @@ void CommandBufferManager::PrepareForFrame(uint32_t frameIndex)
 {
     assert(cmdQueues[frameIndex].empty());
 
-    vkResetCommandPool(device, graphicsCmds[frameIndex].pool, 0);
-    vkResetCommandPool(device, computeCmds[frameIndex].pool, 0);
-    vkResetCommandPool(device, transferCmds[frameIndex].pool, 0);
+    // A pool that recorded no command buffer since the last reset has all its buffers in the
+    // initial state already, so resetting it is a driver call with no effect. Only the graphics
+    // pool is ever used: StartComputeCmd and StartTransferCmd have no callers.
+    AllocatedCmds *allocated[] =
+    {
+        &graphicsCmds[frameIndex],
+        &computeCmds[frameIndex],
+        &transferCmds[frameIndex],
+    };
 
-    graphicsCmds[frameIndex].curCount = 0;
-    computeCmds[frameIndex].curCount = 0;
-    transferCmds[frameIndex].curCount = 0;
+    for (AllocatedCmds *a : allocated)
+    {
+        if (a->curCount > 0)
+        {
+            vkResetCommandPool(device, a->pool, 0);
+            a->curCount = 0;
+        }
+    }
 
     currentFrameIndex = frameIndex;
 }

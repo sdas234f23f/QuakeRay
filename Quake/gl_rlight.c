@@ -361,6 +361,8 @@ extern cvar_t rt_materials_only;
 extern cvar_t rt_poi_trigger, rt_poi_func, rt_poi_weapon, rt_poi_pwrup, rt_poi_armor, rt_poi_key, rt_poi_health, rt_poi_ammo;
 extern cvar_t rt_poi_distthresh, rt_poi_distthresh_super;
 extern cvar_t rt_light_reach;
+extern cvar_t rt_light_reach_max;
+extern cvar_t rt_cluster_incremental;
 extern cvar_t rt_light_report_filter;
 
 
@@ -627,6 +629,13 @@ rt_elight_t *rt_elights = NULL;
 int          rt_elights_count = 0;
 int          rt_elights_allocated = 0;
 
+/* rt_elights indexed by lightstyle; RT_NearestStyledLightDistance only reads one style. */
+static int  rt_styled_elights[MAX_LIGHTSTYLES];
+static int  rt_styled_elight_counts[MAX_LIGHTSTYLES];
+static int *rt_styled_elight_index = NULL;
+static int  rt_styled_elight_revision = -1;
+static int  rt_elights_revision = 0;
+
 #define STRUCT_STATE_STRUCT_STARTED       1
 #define STRUCT_STATE_FOUND_LIGHTCLASSNAME 2
 #define STRUCT_STATE_FOUND_ORIGIN         4
@@ -639,6 +648,7 @@ int          rt_elights_allocated = 0;
 void RT_ParseElights ()
 {
 	rt_elights_count = 0;
+	rt_elights_revision++;
 
 	RT_ParsePointsOfInterest ();
 
@@ -762,16 +772,72 @@ qboolean RT_AllowFakeLights (void)
 	return !CVAR_TO_BOOL (rt_materials_only) && CVAR_TO_FLOAT (rt_truelight) < 2;
 }
 
-float RT_NearestStyledLightDistance (int style, const vec3_t point)
+static void RT_BuildStyledLightIndex (void)
 {
-	float nearest = -1.0f;
+	int starts[MAX_LIGHTSTYLES + 1];
+	int counts[MAX_LIGHTSTYLES];
+	int fill[MAX_LIGHTSTYLES];
+
+	memset (counts, 0, sizeof (counts));
 
 	for (int i = 0; i < rt_elights_count; i++)
 	{
 		const rt_elight_t *src = &rt_elights[i];
 
-		if (!(src->state & STRUCT_STATE_FOUND_LIGHTSTYLE) || src->lightstyle != style)
+		if (src->state & STRUCT_STATE_FOUND_LIGHTSTYLE)
+			counts[src->lightstyle]++;
+	}
+
+	starts[0] = 0;
+	for (int s = 0; s < MAX_LIGHTSTYLES; s++)
+	{
+		rt_styled_elights[s]       = starts[s];
+		rt_styled_elight_counts[s] = counts[s];
+		starts[s + 1]              = starts[s] + counts[s];
+	}
+
+	const int total = starts[MAX_LIGHTSTYLES];
+
+	if (total > 0)
+	{
+		rt_styled_elight_index = Mem_Realloc (rt_styled_elight_index, sizeof (int) * total);
+	}
+
+	memcpy (fill, starts, sizeof (fill));
+
+	/* Ascending source order: a style's list visits the entities the full scan used to. */
+	for (int i = 0; i < rt_elights_count; i++)
+	{
+		const rt_elight_t *src = &rt_elights[i];
+
+		if (!(src->state & STRUCT_STATE_FOUND_LIGHTSTYLE))
 			continue;
+
+		rt_styled_elight_index[fill[src->lightstyle]++] = i;
+	}
+
+	rt_styled_elight_revision = rt_elights_revision;
+}
+
+float RT_NearestStyledLightDistance (int style, const vec3_t point)
+{
+	if (style < 0 || style >= MAX_LIGHTSTYLES)
+	{
+		return -1.0f;
+	}
+
+	if (rt_styled_elight_revision != rt_elights_revision)
+	{
+		RT_BuildStyledLightIndex ();
+	}
+
+	const int start = rt_styled_elights[style];
+	const int count = rt_styled_elight_counts[style];
+	float     nearest = -1.0f;
+
+	for (int k = 0; k < count; k++)
+	{
+		const rt_elight_t *src = &rt_elights[rt_styled_elight_index[start + k]];
 
 		vec3_t delta;
 		VectorSubtract (src->origin, point, delta);
@@ -865,49 +931,32 @@ void RT_UploadAllElights ()
 			RgResult r = rgUploadSphericalLight (vulkan_globals.instance, &info);
 			RG_CHECK (r);
 
-			RT_ClusterLightAdd (info.uniqueID, info.position.data);
+			RT_ClusterLightAdd (info.uniqueID, info.position.data, RT_ClusterLightReach ());
 		}
 	}
 }
 
 #define RT_CLUSTER_MAX_LIGHTS    1024
-#define RT_CLUSTER_MAX_PER_LIST  64
-#define RT_CLUSTER_MAX_CLUSTERS  8192
-
-#define RT_CLUSTER_INVALID_LIGHT       (~0ull)
-#define RT_CLUSTER_TOPUP_LIGHTS        8
 
 typedef struct rt_cluster_light_s
 {
 	uint64_t uniqueID;
 	vec3_t   origin;
+	float    reach;   /* Quake units, zero when the light states no reach of its own */
 } rt_cluster_light_t;
 
 static rt_cluster_light_t rt_cluster_lights[RT_CLUSTER_MAX_LIGHTS];
 static int rt_cluster_light_count;
 static qboolean rt_cluster_dropped_warned;
-static qboolean rt_cluster_perlist_warned;
 
-static uint64_t *rt_cluster_slot_uids = NULL;
-static uint32_t *rt_cluster_slot_stamp = NULL;
-static float    *rt_cluster_slot_dist2 = NULL;
-static uint8_t  *rt_cluster_slot_fill = NULL;
-static int       rt_cluster_slot_alloc = 0;
+/* Slot a light's id was last registered at; the id comparison is what validates it. */
+#define RT_CLUSTER_UID_HINTS 4096
+static uint16_t rt_cluster_uid_hint[RT_CLUSTER_UID_HINTS];
 
-/* One bit per (cluster, light) pair, set while that light occupies a slot of the cluster's
-   list. The top-up pass below tests membership once per candidate light, and scanning the
-   slots for it cost more than everything else in the pass; 16 words per cluster keep all
-   1024 lights of one cluster inside two cache lines, so the pass reads them in order. */
-#define RT_CLUSTER_BITS_WORDS ((RT_CLUSTER_MAX_LIGHTS + 63) / 64)
-static uint64_t *rt_cluster_light_bits = NULL;
-static uint16_t *rt_cluster_slot_light = NULL;
-static int       rt_cluster_bits_alloc = 0;
-static int       rt_cluster_last_clusters = 0;
-static uint32_t  rt_cluster_frame_stamp = 0;
-static uint32_t *rt_cluster_offsets = NULL;
-static uint64_t *rt_cluster_list = NULL;
-static int       rt_cluster_list_alloc = 0;
-static vec3_t    rt_cluster_vieworg;
+static uint32_t RT_ClusterUidHint (uint64_t uniqueID)
+{
+	return (uint32_t) ((uniqueID * 0x9E3779B97F4A7C15ull) >> 52) & (RT_CLUSTER_UID_HINTS - 1);
+}
 
 typedef struct rt_light_diag_s
 {
@@ -919,30 +968,29 @@ typedef struct rt_light_diag_s
 } rt_light_diag_t;
 
 static rt_light_diag_t rt_light_diag[RT_CLUSTER_MAX_LIGHTS];
+
 static int rt_light_diag_count;
 static int rt_light_diag_unresolved;
 static int rt_light_diag_granted;
 static int rt_light_diag_denied;
 
-/* Cluster list cache, see RT_ClusterLightListsUpload. The diagnostics of the last rebuild are
-   kept aside, because RT_ClusterLightAdd resets them every frame and the light report would
-   otherwise claim that no light got a slot on every frame that skips the passes. They stay
-   meaningful on their own: every row and every count rt_light_report prints comes from this
-   array, not from the current frame's light list. */
-#define RT_CLUSTER_SIG_SEED  14695981039346656037ull
-#define RT_CLUSTER_SIG_PRIME 1099511628211ull
+static vec3_t rt_cluster_vieworg;
 
-static uint64_t  rt_cluster_lists_sig;
-static qboolean  rt_cluster_lists_cached;
-static uint32_t  rt_cluster_lists_total;
-static rt_light_diag_t rt_light_diag_cache[RT_CLUSTER_MAX_LIGHTS];
-static int       rt_light_diag_count_cache;
-static int       rt_light_diag_unresolved_cache;
-static int       rt_light_diag_granted_cache;
-static int       rt_light_diag_denied_cache;
-
-int rt_cluster_cache_hits;
-int rt_cluster_cache_misses;
+/* Mirror of the renderer's accounting, refreshed after every upload: the composition lives there
+   now, and these counters are the only numbers the host still has on it. */
+int rt_cluster_cache_hits;    /* frames that found the light set unchanged and reused the lists */
+int rt_cluster_cache_misses;  /* frames that composed the lists again */
+int rt_cluster_miss_set;      /* compositions set off by lights appearing or disappearing */
+int rt_cluster_miss_leaf;     /* compositions set off by lights that gained or lost their leaf */
+int rt_cluster_miss_geom;     /* compositions set off by lights that moved or changed their reach */
+int rt_cluster_last_grants;   /* (light, cluster) pairs the last composition granted */
+int rt_cluster_last_denied;   /* pairs it refused because the cluster had filled its slots */
+int rt_cluster_last_gated;    /* pairs it left out because the cluster stood beyond the light's reach */
+int rt_cluster_reg_attempts;  /* RT_ClusterLightAdd calls of the frame */
+int rt_cluster_reg_dropped;   /* additions refused by RT_CLUSTER_MAX_LIGHTS */
+int rt_cluster_last_lights;   /* lights in the registry of the last frame that uploaded */
+int rt_cluster_last_attempts; /* additions that frame attempted */
+int rt_cluster_last_dropped;  /* additions that frame lost to the cap */
 
 void RT_ClusterLightListsReset (void)
 {
@@ -951,13 +999,29 @@ void RT_ClusterLightListsReset (void)
 	rt_light_diag_unresolved = 0;
 	rt_light_diag_granted = 0;
 	rt_light_diag_denied = 0;
+	rt_cluster_reg_attempts = 0;
+	rt_cluster_reg_dropped = 0;
 	VectorCopy (r_refdef.vieworg, rt_cluster_vieworg);
 }
 
-void RT_ClusterLightAdd (uint64_t uniqueID, const vec3_t origin)
+/* The reach a light of a moving entity is registered with, from rt_light_reach_max: the distance
+   the host promises such a light does not reach past, in Quake units. A light that moves is what
+   makes the lists rebuild, so this is what keeps one entity from reaching every list of the map.
+   A light of the map itself is registered with zero instead, and reaches wherever its own leaf
+   sees, which is right for it: it stands where it stands every frame. */
+float RT_ClusterLightReach (void)
 {
+	return METRIC_TO_QUAKEUNIT (CVAR_TO_FLOAT (rt_light_reach_max));
+}
+
+void RT_ClusterLightAdd (uint64_t uniqueID, const vec3_t origin, float reach)
+{
+	rt_cluster_reg_attempts++;
+
 	if (rt_cluster_light_count >= RT_CLUSTER_MAX_LIGHTS)
 	{
+		rt_cluster_reg_dropped++;
+
 		if (!rt_cluster_dropped_warned)
 		{
 			Con_DWarning ("RT: light count exceeded RT_CLUSTER_MAX_LIGHTS (%i), "
@@ -968,14 +1032,40 @@ void RT_ClusterLightAdd (uint64_t uniqueID, const vec3_t origin)
 		return;
 	}
 
+	/* A light that registers twice in one frame keeps its slot, but not the position or the
+	   reach it was first seen at: a flame that is drawn by two passes, or a light that the
+	   frame registers again after it moved, must be handed to the lists where it stands now. */
+	/* The slot only says where to look; the comparison below says whether to trust it. */
+	const uint32_t hint = RT_ClusterUidHint (uniqueID);
+
+	if (rt_cluster_uid_hint[hint] < rt_cluster_light_count &&
+	    rt_cluster_lights[rt_cluster_uid_hint[hint]].uniqueID == uniqueID)
+	{
+		const int i = rt_cluster_uid_hint[hint];
+
+		VectorCopy (origin, rt_cluster_lights[i].origin);
+		rt_cluster_lights[i].reach = reach;
+		VectorCopy (origin, rt_light_diag[i].origin);
+		return;
+	}
+
 	for (int i = 0; i < rt_cluster_light_count; i++)
 	{
 		if (rt_cluster_lights[i].uniqueID == uniqueID)
+		{
+			VectorCopy (origin, rt_cluster_lights[i].origin);
+			rt_cluster_lights[i].reach = reach;
+			VectorCopy (origin, rt_light_diag[i].origin);
+			rt_cluster_uid_hint[hint] = (uint16_t) i;
 			return;
+		}
 	}
+
+	rt_cluster_uid_hint[hint] = (uint16_t) rt_cluster_light_count;
 
 	rt_cluster_lights[rt_cluster_light_count].uniqueID = uniqueID;
 	VectorCopy (origin, rt_cluster_lights[rt_cluster_light_count].origin);
+	rt_cluster_lights[rt_cluster_light_count].reach = reach;
 
 	rt_light_diag[rt_cluster_light_count].uniqueID = uniqueID;
 	VectorCopy (origin, rt_light_diag[rt_cluster_light_count].origin);
@@ -1021,298 +1111,37 @@ int RT_ResolvePointCluster (const vec3_t p)
 	if (!leaf)
 		return 0;
 
-	return (int)(leaf - cl.worldmodel->leafs);
+	return RT_MapWorldCluster ((int)(leaf - cl.worldmodel->leafs));
 }
 
-static float RT_ClusterDist2ToBounds (const vec3_t o, const float *minmaxs)
+/* Sources of the frame, handed to the renderer. It composes the per-cluster lists out of them,
+   so the slot table, the PVS cache and the top-up grid that used to live here are gone: what is
+   left on this side is the registry and the two things the renderer cannot derive from the map,
+   the leaf each origin resolved into and the reach of the light. */
+static RgClusterLightSource rt_cluster_sources[RT_CLUSTER_MAX_LIGHTS];
+
+/* The leaf a light last resolved into. The walk is a function of the origin and the map, so a
+   light that stands where it stood last frame resolves to the leaf it resolved to then, which is
+   most of them: the map's lights, the entity lights of a world that is not moving and the dlights
+   of a paused one. The identity is the light's id, never the slot, because a slot is reused by
+   whatever registers into it next. */
+typedef struct rt_leaf_cache_s
 {
-	float d2 = 0.0f;
+	uint64_t uniqueID;
+	vec3_t   origin;
+	int      leafIndex;  /* -1 when that origin resolved to no leaf at all */
+	qboolean valid;
+} rt_leaf_cache_t;
 
-	for (int a = 0; a < 3; a++)
-	{
-		float d = 0.0f;
+static rt_leaf_cache_t rt_leaf_cache[RT_CLUSTER_MAX_LIGHTS];
 
-		if (o[a] < minmaxs[a])
-			d = minmaxs[a] - o[a];
-		else if (o[a] > minmaxs[3 + a])
-			d = o[a] - minmaxs[3 + a];
-		d2 += d * d;
-	}
-
-	return d2;
-}
-
-/* Same test as RT_ClusterDist2ToBounds, but abandons the candidate as soon as the running
-   sum passes the reach: most (light, cluster) pairs of the top-up pass are rejections, and
-   they are rejected on the first axis often enough to matter. The exact distance is only
-   needed for the candidates that survive, which recompute it with RT_ClusterDist2ToBounds. */
-static qboolean RT_ClusterWithinReach (const vec3_t o, const float *minmaxs, const float reachSq)
-{
-	float d2 = 0.0f;
-
-	for (int a = 0; a < 3; a++)
-	{
-		float d = 0.0f;
-
-		if (o[a] < minmaxs[a])
-			d = minmaxs[a] - o[a];
-		else if (o[a] > minmaxs[3 + a])
-			d = o[a] - minmaxs[3 + a];
-
-		d2 += d * d;
-
-		if (d2 > reachSq)
-			return false;
-	}
-
-	return true;
-}
-
-// Coarse uniform grid over the light origins. The per-leaf top-up pass below
-// walks every light of the map for every leaf, which is O(leaves * lights) and
-// dominated the frame on large maps; the grid restricts it to the lights that
-// can actually be inside the leaf bounds expanded by the top-up reach.
-#define RT_LIGHT_GRID_MIN_CELL  16.0f
-#define RT_LIGHT_GRID_MAX_CELLS 262144
-
-static int   *rt_light_grid_head = NULL;
-static int   *rt_light_grid_next = NULL;
-static int    rt_light_grid_head_alloc = 0;
-static int    rt_light_grid_next_alloc = 0;
-static int    rt_light_grid_dims[3] = { 1, 1, 1 };
-static float  rt_light_grid_mins[3] = { 0.0f, 0.0f, 0.0f };
-static float  rt_light_grid_cell = 1.0f;
-
-static int RT_LightGridAxis (const int axis, const float v)
-{
-	int i = (int)floorf ((v - rt_light_grid_mins[axis]) / rt_light_grid_cell);
-
-	if (i < 0)
-		i = 0;
-	else if (i >= rt_light_grid_dims[axis])
-		i = rt_light_grid_dims[axis] - 1;
-
-	return i;
-}
-
-static int RT_LightGridCell (const int x, const int y, const int z)
-{
-	return (z * rt_light_grid_dims[1] + y) * rt_light_grid_dims[0] + x;
-}
-
-// cellSize is the top-up reach: a light closer to a leaf than that reach lies
-// inside the leaf bounds expanded by it, so visiting the cells overlapping that
-// box never misses a candidate. Returns false if there is nothing to index.
-static qboolean RT_LightGridBuild (const qmodel_t *wm, const float cellSize, const int lightCount)
-{
-	if (lightCount <= 0)
-		return false;
-
-	float cell = (cellSize > RT_LIGHT_GRID_MIN_CELL) ? cellSize : RT_LIGHT_GRID_MIN_CELL;
-	float extent[3];
-	int   dims[3] = { 1, 1, 1 };
-
-	for (int a = 0; a < 3; a++)
-	{
-		rt_light_grid_mins[a] = wm->mins[a];
-		extent[a] = wm->maxs[a] - wm->mins[a];
-		if (extent[a] < 0.0f)
-			extent[a] = 0.0f;
-	}
-
-	for (;;)
-	{
-		int64_t cells = 1;
-
-		for (int a = 0; a < 3; a++)
-		{
-			dims[a] = (int)(extent[a] / cell) + 1;
-			if (dims[a] < 1)
-				dims[a] = 1;
-			cells *= dims[a];
-		}
-
-		if (cells <= RT_LIGHT_GRID_MAX_CELLS)
-			break;
-
-		cell *= 2.0f;
-	}
-
-	const int cellCount = dims[0] * dims[1] * dims[2];
-
-	if (cellCount > rt_light_grid_head_alloc)
-	{
-		rt_light_grid_head = (int *)Mem_Realloc (rt_light_grid_head, sizeof (int) * cellCount);
-		rt_light_grid_head_alloc = cellCount;
-	}
-
-	if (lightCount > rt_light_grid_next_alloc)
-	{
-		rt_light_grid_next = (int *)Mem_Realloc (rt_light_grid_next, sizeof (int) * lightCount);
-		rt_light_grid_next_alloc = lightCount;
-	}
-
-	rt_light_grid_cell = cell;
-	for (int a = 0; a < 3; a++)
-		rt_light_grid_dims[a] = dims[a];
-
-	for (int i = 0; i < cellCount; i++)
-		rt_light_grid_head[i] = -1;
-
-	for (int li = 0; li < lightCount; li++)
-	{
-		if (!rt_light_diag[li].resolved)
-			continue;
-
-		const int ci = RT_LightGridCell (
-			RT_LightGridAxis (0, rt_cluster_lights[li].origin[0]),
-			RT_LightGridAxis (1, rt_cluster_lights[li].origin[1]),
-			RT_LightGridAxis (2, rt_cluster_lights[li].origin[2]));
-
-		rt_light_grid_next[li] = rt_light_grid_head[ci];
-		rt_light_grid_head[ci] = li;
-	}
-
-	return true;
-}
-
-/* Pass 1 walks every (light, cluster) pair of the light PVS exactly once per frame, and the
-   fills are cleared at the start of the frame, so there is nothing to deduplicate here. */
-static qboolean RT_ClusterAppendSlot (int c, int li, uint64_t uid, const vec3_t origin, const float *minmaxs)
-{
-	uint64_t *cuids = rt_cluster_slot_uids + c * RT_CLUSTER_MAX_PER_LIST;
-	uint32_t *cstamp = rt_cluster_slot_stamp + c * RT_CLUSTER_MAX_PER_LIST;
-	float    *cdist2 = rt_cluster_slot_dist2 + c * RT_CLUSTER_MAX_PER_LIST;
-	uint16_t *clight = rt_cluster_slot_light + c * RT_CLUSTER_MAX_PER_LIST;
-	uint64_t *cbits = rt_cluster_light_bits + c * RT_CLUSTER_BITS_WORDS;
-	const float d2 = RT_ClusterDist2ToBounds (origin, minmaxs);
-	const int   cfill = rt_cluster_slot_fill[c];
-
-	if (cfill < RT_CLUSTER_MAX_PER_LIST)
-	{
-		cuids[cfill] = uid;
-		cstamp[cfill] = rt_cluster_frame_stamp;
-		cdist2[cfill] = d2;
-		clight[cfill] = (uint16_t)li;
-		cbits[li >> 6] |= 1ull << (li & 63);
-		rt_cluster_slot_fill[c] = (uint8_t)(cfill + 1);
-		return true;
-	}
-
-	int   farthest = 0;
-	float farthestD2 = cdist2[0];
-
-	for (int s = 1; s < RT_CLUSTER_MAX_PER_LIST; s++)
-	{
-		if (cdist2[s] > farthestD2)
-		{
-			farthestD2 = cdist2[s];
-			farthest = s;
-		}
-	}
-
-	if (d2 < farthestD2)
-	{
-		const int evicted = clight[farthest];
-
-		/* the evicted light is no longer sampled by this cluster, so its bit must not
-		   keep claiming the opposite to the top-up pass */
-		cbits[evicted >> 6] &= ~(1ull << (evicted & 63));
-		cbits[li >> 6] |= 1ull << (li & 63);
-
-		cuids[farthest] = uid;
-		cstamp[farthest] = rt_cluster_frame_stamp;
-		cdist2[farthest] = d2;
-		clight[farthest] = (uint16_t)li;
-		return true;
-	}
-
-	if (!rt_cluster_perlist_warned)
-	{
-		Con_DWarning ("RT: a cluster reached the %i distinct-light limit, "
-			"new lights are not sampled by the RT renderer.\n",
-			RT_CLUSTER_MAX_PER_LIST);
-		rt_cluster_perlist_warned = true;
-	}
-
-	return false;
-}
-
-static void RT_ClusterLightDiagSave (void)
-{
-	memcpy (rt_light_diag_cache, rt_light_diag, sizeof (rt_light_diag));
-	rt_light_diag_count_cache = rt_light_diag_count;
-	rt_light_diag_unresolved_cache = rt_light_diag_unresolved;
-	rt_light_diag_granted_cache = rt_light_diag_granted;
-	rt_light_diag_denied_cache = rt_light_diag_denied;
-}
-
-static void RT_ClusterLightDiagRestore (void)
-{
-	memcpy (rt_light_diag, rt_light_diag_cache, sizeof (rt_light_diag));
-	rt_light_diag_count = rt_light_diag_count_cache;
-	rt_light_diag_unresolved = rt_light_diag_unresolved_cache;
-	rt_light_diag_granted = rt_light_diag_granted_cache;
-	rt_light_diag_denied = rt_light_diag_denied_cache;
-}
-
-static uint64_t RT_ClusterSigBytes (const void *data, const size_t size, uint64_t h)
-{
-	const unsigned char *p = (const unsigned char *)data;
-
-	for (size_t i = 0; i < size; i++)
-	{
-		h ^= p[i];
-		h *= RT_CLUSTER_SIG_PRIME;
-	}
-
-	return h;
-}
-
-/* Every input the two passes read: the map (pointer, leaf array, leaf count, bounds), the top-up
-   reach and the registered lights with their origins. The camera is deliberately not part of it:
-   pass 1 walks the light PVS and pass 2 the leaf bounds, both fixed once the map is loaded, so
-   the lists do not depend on where the player looks. */
-static uint64_t RT_ClusterListsSignature (const qmodel_t *wm, const float reach, const int numClusters)
-{
-	uint64_t h = RT_CLUSTER_SIG_SEED;
-
-	h = RT_ClusterSigBytes (&wm, sizeof (wm), h);
-	h = RT_ClusterSigBytes (wm->leafs, sizeof (wm->leafs), h);
-	h = RT_ClusterSigBytes (&numClusters, sizeof (numClusters), h);
-	h = RT_ClusterSigBytes (&wm->numsurfaces, sizeof (wm->numsurfaces), h);
-	h = RT_ClusterSigBytes (wm->mins, sizeof (wm->mins), h);
-	h = RT_ClusterSigBytes (wm->maxs, sizeof (wm->maxs), h);
-	h = RT_ClusterSigBytes (&reach, sizeof (reach), h);
-	h = RT_ClusterSigBytes (&rt_cluster_light_count, sizeof (rt_cluster_light_count), h);
-
-	/* Order-independent on purpose: turning the camera around only shuffles the order in which
-	   the visible lists hand their lights over, and that is not a new light set. Lights at
-	   exactly the same distance are the only place where the order reaches the result, and the
-	   tie is irrelevant -- both candidates are equally valid. */
-	uint64_t lights = 0;
-	for (int i = 0; i < rt_cluster_light_count; i++)
-	{
-		uint64_t e = RT_CLUSTER_SIG_PRIME;
-		e = RT_ClusterSigBytes (&rt_cluster_lights[i].uniqueID, sizeof (uint64_t), e);
-		e = RT_ClusterSigBytes (rt_cluster_lights[i].origin, sizeof (vec3_t), e);
-		lights += e;
-	}
-
-	return h ^ lights;
-}
-
-static void RT_ClusterLightListsUploadGpu (const uint32_t numClusters, const uint32_t total)
-{
-	RgClusterLightListsUploadInfo info = {
-		.numClusters = numClusters,
-		.pOffsets = rt_cluster_offsets,
-		.pLightUniqueIds = rt_cluster_list,
-		.totalLightCount = total,
-	};
-	RgResult r = rgUploadClusterLightLists (vulkan_globals.instance, &info);
-	RG_CHECK (r);
-}
+/* What the cached leaves are leaves of. A new level can land on the very addresses the old one
+   had, so the map is identified by its parse as well, which every map load does afresh. */
+static qboolean  rt_leaf_cache_map_valid;
+static qmodel_t *rt_leaf_cache_wm;
+static mleaf_t  *rt_leaf_cache_leafs;
+static int       rt_leaf_cache_numleafs;
+static int       rt_leaf_cache_revision;
 
 void RT_ClusterLightListsUpload (void)
 {
@@ -1320,229 +1149,128 @@ void RT_ClusterLightListsUpload (void)
 	if (!wm || wm->type != mod_brush || !wm->leafs || wm->numleafs < 2)
 		return;
 
-	const int numClusters = wm->numleafs;
-	if (numClusters > RT_CLUSTER_MAX_CLUSTERS)
-		return;
+	/* The registry is what the lists are built from, so how many lights were accepted, how many
+	   additions were attempted and how many fell off the cap explain most of the churn. */
+	rt_cluster_last_lights = rt_cluster_light_count;
+	rt_cluster_last_attempts = rt_cluster_reg_attempts;
+	rt_cluster_last_dropped = rt_cluster_reg_dropped;
 
-	const int slotCount = numClusters * RT_CLUSTER_MAX_PER_LIST;
-	if (numClusters != rt_cluster_last_clusters)
+	if (!rt_leaf_cache_map_valid || rt_leaf_cache_wm != wm || rt_leaf_cache_leafs != wm->leafs ||
+	    rt_leaf_cache_numleafs != wm->numleafs || rt_leaf_cache_revision != rt_elights_revision)
 	{
-		if (slotCount > rt_cluster_slot_alloc)
-		{
-			rt_cluster_slot_uids = (uint64_t *)Mem_Realloc (rt_cluster_slot_uids, sizeof (uint64_t) * slotCount);
-			rt_cluster_slot_stamp = (uint32_t *)Mem_Realloc (rt_cluster_slot_stamp, sizeof (uint32_t) * slotCount);
-			rt_cluster_slot_dist2 = (float *)Mem_Realloc (rt_cluster_slot_dist2, sizeof (float) * slotCount);
-			rt_cluster_slot_fill = (uint8_t *)Mem_Realloc (rt_cluster_slot_fill, sizeof (uint8_t) * numClusters);
-			rt_cluster_slot_alloc = slotCount;
-		}
-		if (numClusters > rt_cluster_bits_alloc)
-		{
-			rt_cluster_light_bits = (uint64_t *)Mem_Realloc (rt_cluster_light_bits, sizeof (uint64_t) * RT_CLUSTER_BITS_WORDS * numClusters);
-			rt_cluster_slot_light = (uint16_t *)Mem_Realloc (rt_cluster_slot_light, sizeof (uint16_t) * slotCount);
-			rt_cluster_bits_alloc = numClusters;
-		}
-		memset (rt_cluster_slot_fill, 0, sizeof (uint8_t) * numClusters);
-		memset (rt_cluster_light_bits, 0, sizeof (uint64_t) * RT_CLUSTER_BITS_WORDS * numClusters);
-		memset (rt_cluster_slot_stamp, 0, sizeof (uint32_t) * slotCount);
-		memset (rt_cluster_slot_dist2, 0, sizeof (float) * slotCount);
-		rt_cluster_last_clusters = numClusters;
-		rt_cluster_lists_cached = false;
+		rt_leaf_cache_map_valid = true;
+		rt_leaf_cache_wm = wm;
+		rt_leaf_cache_leafs = wm->leafs;
+		rt_leaf_cache_numleafs = wm->numleafs;
+		rt_leaf_cache_revision = rt_elights_revision;
+
+		for (int i = 0; i < RT_CLUSTER_MAX_LIGHTS; i++)
+			rt_leaf_cache[i].valid = false;
 	}
 
-	rt_cluster_frame_stamp++;
-
-	if (numClusters > rt_cluster_list_alloc)
-	{
-		rt_cluster_offsets = (uint32_t *)Mem_Realloc (rt_cluster_offsets, sizeof (uint32_t) * (numClusters + 1));
-		rt_cluster_list = (uint64_t *)Mem_Realloc (rt_cluster_list, sizeof (uint64_t) * numClusters * RT_CLUSTER_MAX_PER_LIST);
-		rt_cluster_list_alloc = numClusters;
-		rt_cluster_lists_cached = false;
-	}
-
-	const float reach = METRIC_TO_QUAKEUNIT (CVAR_TO_FLOAT (rt_light_reach));
-	const float reachSq = reach * reach;
-	const uint64_t sig = RT_ClusterListsSignature (wm, reach, numClusters);
-
-	if (rt_cluster_lists_cached && sig == rt_cluster_lists_sig)
-	{
-		rt_cluster_cache_hits++;
-		RT_ClusterLightDiagRestore ();
-
-		double prof_upload = RT_Prof_Begin ();
-		RT_ClusterLightListsUploadGpu ((uint32_t)numClusters, rt_cluster_lists_total);
-		RT_Prof_End (RT_PROF_CLUSTERS_UPLOAD, prof_upload);
-		return;
-	}
-
-	rt_cluster_cache_misses++;
-
-	/* A rebuild starts from scratch: a slot holds a light only while that light's PVS covers
-	   the cluster it belongs to. Keeping stale slots around made every cluster grow to the
-	   full RT_CLUSTER_MAX_PER_LIST and stay there. */
-	memset (rt_cluster_slot_fill, 0, sizeof (uint8_t) * numClusters);
-	memset (rt_cluster_light_bits, 0, sizeof (uint64_t) * RT_CLUSTER_BITS_WORDS * numClusters);
-
-	double prof_start = RT_Prof_Begin ();
+	const double prof_resolve = RT_Prof_Begin ();
 
 	for (int li = 0; li < rt_cluster_light_count; li++)
 	{
-		rt_light_diag_t *diag = &rt_light_diag[li];
+		rt_leaf_cache_t *cached = &rt_leaf_cache[li];
+		int              leafIndex;
 
-		mleaf_t *leaf = RT_ResolveLightLeaf (rt_cluster_lights[li].origin, wm);
-		if (!leaf)
+		if (cached->valid && cached->uniqueID == rt_cluster_lights[li].uniqueID &&
+		    VectorCompare (cached->origin, rt_cluster_lights[li].origin))
 		{
+			leafIndex = cached->leafIndex;
+		}
+		else
+		{
+			mleaf_t *leaf = RT_ResolveLightLeaf (rt_cluster_lights[li].origin, wm);
+			leafIndex = leaf ? (int)(leaf - wm->leafs) : -1;
+
+			cached->valid = true;
+			cached->uniqueID = rt_cluster_lights[li].uniqueID;
+			VectorCopy (rt_cluster_lights[li].origin, cached->origin);
+			cached->leafIndex = leafIndex;
+		}
+
+		rt_cluster_sources[li].uniqueID = rt_cluster_lights[li].uniqueID;
+		VectorCopy (rt_cluster_lights[li].origin, rt_cluster_sources[li].origin.data);
+		rt_cluster_sources[li].cluster = (leafIndex >= 0)
+			? (uint32_t)RT_MapWorldCluster (leafIndex)
+			: (uint32_t)RG_CLUSTER_LIGHT_NO_CLUSTER;
+		rt_cluster_sources[li].reach = rt_cluster_lights[li].reach;
+
+		rt_light_diag[li].resolved = (leafIndex >= 0);
+
+		if (leafIndex < 0)
 			rt_light_diag_unresolved++;
-			continue;
-		}
-		diag->resolved = true;
-
-		const uint64_t uid = rt_cluster_lights[li].uniqueID;
-		const byte    *vis = leaf->compressed_vis ? Mod_LeafPVS (leaf, wm) : NULL;
-
-		if (vis)
-		{
-			for (int j = 0; j < (numClusters + 7) / 8; j++)
-			{
-				if (!vis[j])
-					continue;
-				for (int k = 0; k < 8; k++)
-				{
-					if (!(vis[j] & (1u << k)))
-						continue;
-					const int c = (j << 3) + k + 1;
-					if (c >= numClusters)
-						continue;
-
-					if (RT_ClusterAppendSlot (c, li, uid, rt_cluster_lights[li].origin, wm->leafs[c].minmaxs))
-						diag->granted++;
-					else
-						diag->denied++;
-				}
-			}
-		}
 	}
 
-	RT_Prof_End (RT_PROF_CLUSTERS1, prof_start);
+	if (prof_resolve != 0.0)
+		RT_Prof_End (RT_PROF_CLUSTERS_RESOLVE, prof_resolve);
 
-	prof_start = RT_Prof_Begin ();
+	const RgClusterLightSourcesUploadInfo info = {
+		.numLights = (uint32_t)rt_cluster_light_count,
+		.pLights = rt_cluster_sources,
+		.topUpReach = METRIC_TO_QUAKEUNIT (CVAR_TO_FLOAT (rt_light_reach)),
+		.allowIncremental = CVAR_TO_BOOL (rt_cluster_incremental) ? 1 : 0,
+	};
 
-	if (rt_cluster_light_count > 0 && RT_LightGridBuild (wm, reach, rt_cluster_light_count))
-	for (int c = 1; c < numClusters; c++)
+	RgResult r = rgUploadClusterLightSources (vulkan_globals.instance, &info);
+	RG_CHECK (r);
+
+	RgClusterLightStats st;
+	memset (&st, 0, sizeof (st));
+
+	if (rgGetClusterLightStats (vulkan_globals.instance, &st) == RG_SUCCESS)
 	{
-		const mleaf_t *cleaf = &wm->leafs[c];
-		if (cleaf->contents == CONTENTS_SOLID)
-			continue;
+		rt_cluster_last_grants = (int)st.grants;
+		rt_cluster_last_denied = (int)st.denied;
+		rt_cluster_last_gated = (int)st.reachGated;
+		rt_light_diag_granted = (int)st.grants;
+		rt_light_diag_denied = (int)st.denied;
 
-		const uint64_t *cbits = rt_cluster_light_bits + c * RT_CLUSTER_BITS_WORDS;
+		if (st.reusedFrames)
+			rt_cluster_cache_hits++;
 
-		uint16_t best[RT_CLUSTER_TOPUP_LIGHTS];
-		float    bestD2[RT_CLUSTER_TOPUP_LIGHTS];
-		int      bestN = 0;
-
-		const int cellLo[3] = {
-			RT_LightGridAxis (0, cleaf->minmaxs[0] - reach),
-			RT_LightGridAxis (1, cleaf->minmaxs[1] - reach),
-			RT_LightGridAxis (2, cleaf->minmaxs[2] - reach),
-		};
-		const int cellHi[3] = {
-			RT_LightGridAxis (0, cleaf->minmaxs[3] + reach),
-			RT_LightGridAxis (1, cleaf->minmaxs[4] + reach),
-			RT_LightGridAxis (2, cleaf->minmaxs[5] + reach),
-		};
-
-		for (int zc = cellLo[2]; zc <= cellHi[2]; zc++)
-		for (int yc = cellLo[1]; yc <= cellHi[1]; yc++)
-		for (int xc = cellLo[0]; xc <= cellHi[0]; xc++)
-		for (int li = rt_light_grid_head[RT_LightGridCell (xc, yc, zc)]; li >= 0; li = rt_light_grid_next[li])
+		if (st.composedFrames)
 		{
-			if ((cbits[li >> 6] & (1ull << (li & 63))) != 0)
-				continue;	/* the PVS pass already gave this light a slot in this cluster */
+			rt_cluster_cache_misses++;
 
-			if (!RT_ClusterWithinReach (rt_cluster_lights[li].origin, cleaf->minmaxs, reachSq))
-				continue;
-
-			const float d2 = RT_ClusterDist2ToBounds (rt_cluster_lights[li].origin, cleaf->minmaxs);
-
-			if (bestN < RT_CLUSTER_TOPUP_LIGHTS)
-			{
-				int p = bestN++;
-				while (p > 0 && bestD2[p - 1] > d2)
-				{
-					bestD2[p] = bestD2[p - 1];
-					best[p] = best[p - 1];
-					p--;
-				}
-				bestD2[p] = d2;
-				best[p] = (uint16_t)li;
-			}
-			else if (d2 < bestD2[RT_CLUSTER_TOPUP_LIGHTS - 1])
-			{
-				int p = RT_CLUSTER_TOPUP_LIGHTS - 1;
-				while (p > 0 && bestD2[p - 1] > d2)
-				{
-					bestD2[p] = bestD2[p - 1];
-					best[p] = best[p - 1];
-					p--;
-				}
-				bestD2[p] = d2;
-				best[p] = (uint16_t)li;
-			}
-		}
-
-		const int want = bestN;
-		for (int b = 0; b < want; b++)
-		{
-			const int li = best[b];
-			if (RT_ClusterAppendSlot (c, li, rt_cluster_lights[li].uniqueID, rt_cluster_lights[li].origin, cleaf->minmaxs))
-				rt_light_diag[li].granted++;
+			if (st.addedSources || st.removedSources)
+				rt_cluster_miss_set++;
+			else if (st.movedSources)
+				rt_cluster_miss_leaf++;
 			else
-				rt_light_diag[li].denied++;
+				rt_cluster_miss_geom++;
 		}
+
+		/* The passes run inside the renderer, so their cost is reported rather than measured here:
+		   vis is the PVS walk, topup the reach pass, fill the compaction of the slots into the
+		   lists, upload the publication of them to the light manager. */
+		RT_Prof_Sample (RT_PROF_CLUSTERS_VIS, st.visMs);
+		RT_Prof_Sample (RT_PROF_CLUSTERS2, st.topUpMs);
+		RT_Prof_Sample (RT_PROF_CLUSTERS_FILL, st.fillMs);
+		RT_Prof_Sample (RT_PROF_CLUSTERS_UPLOAD, st.publishMs);
 	}
 
-	RT_Prof_End (RT_PROF_CLUSTERS2, prof_start);
+	/* Per-light slot accounting, already back on the order this frame registered the lights in,
+	   so that rt_light_report can print it next to the light it belongs to. */
+	static uint32_t diagGranted[RT_CLUSTER_MAX_LIGHTS];
+	static uint32_t diagDenied[RT_CLUSTER_MAX_LIGHTS];
+	uint32_t        diagCount = 0;
 
-	rt_light_diag_granted = 0;
-	rt_light_diag_denied = 0;
-	for (int li = 0; li < rt_light_diag_count; li++)
+	if (rgGetClusterLightGrants (vulkan_globals.instance, diagGranted, diagDenied,
+			(uint32_t)countof (diagGranted), &diagCount) == RG_SUCCESS)
 	{
-		rt_light_diag_granted += rt_light_diag[li].granted;
-		rt_light_diag_denied += rt_light_diag[li].denied;
-	}
+		const int n = (diagCount < (uint32_t)rt_light_diag_count) ? (int)diagCount : rt_light_diag_count;
 
-	prof_start = RT_Prof_Begin ();
-
-	uint32_t total = 0;
-	for (int c = 0; c < numClusters; c++)
-	{
-		rt_cluster_offsets[c] = total;
-		total += (uint32_t)rt_cluster_slot_fill[c];
-	}
-	rt_cluster_offsets[numClusters] = total;
-
-	for (int c = 0; c < numClusters; c++)
-	{
-		const int cfill = rt_cluster_slot_fill[c];
-		uint64_t *dst = rt_cluster_list + rt_cluster_offsets[c];
-		uint64_t *cuids = rt_cluster_slot_uids + c * RT_CLUSTER_MAX_PER_LIST;
-		uint32_t *cstamp = rt_cluster_slot_stamp + c * RT_CLUSTER_MAX_PER_LIST;
-		for (int s = 0; s < cfill; s++)
+		for (int i = 0; i < n; i++)
 		{
-			dst[s] = (cstamp[s] == rt_cluster_frame_stamp) ? cuids[s] : RT_CLUSTER_INVALID_LIGHT;
+			rt_light_diag[i].granted = (int)diagGranted[i];
+			rt_light_diag[i].denied = (int)diagDenied[i];
 		}
 	}
-
-	RT_Prof_End (RT_PROF_CLUSTERS_FILL, prof_start);
-
-	rt_cluster_lists_sig = sig;
-	rt_cluster_lists_total = total;
-	rt_cluster_lists_cached = true;
-	RT_ClusterLightDiagSave ();
-
-	prof_start = RT_Prof_Begin ();
-	RT_ClusterLightListsUploadGpu ((uint32_t)numClusters, total);
-	RT_Prof_End (RT_PROF_CLUSTERS_UPLOAD, prof_start);
 }
+
 
 static void RT_FormatLightId (char *out, size_t outSize, uint64_t uid)
 {
@@ -1580,11 +1308,17 @@ static float RT_LightDiagDist (const rt_light_diag_t *d)
 	return sqrtf (dx * dx + dy * dy + dz * dz);
 }
 
+/* Slots rt_light_report prints of one cluster list. It follows the renderer's
+   Q2_LIGHT_LIST_MAX_PER_CELL, which is 128, so a whole list is printed; a longer list is still
+   reported as truncated rather than silently cut. */
+#define RT_CLUSTER_REPORT_SLOTS 128
+
+
 void RT_ClusterLightReport_f (void)
 {
 	const int maxLines = (Cmd_Argc () > 1) ? atoi (Cmd_Argv (1)) : 64;
 
-	if (rt_cluster_last_clusters <= 0 || !rt_cluster_slot_fill)
+	if (rt_light_diag_count <= 0)
 	{
 		Con_Printf ("RT lights: no cluster light state yet - load a map and look at the world first.\n");
 		return;
@@ -1593,34 +1327,37 @@ void RT_ClusterLightReport_f (void)
 	Con_Printf ("RT lights: %i registered, %i dropped (no open leaf), %i cluster slots granted, %i denied\n",
 		rt_cluster_light_count, rt_light_diag_unresolved, rt_light_diag_granted, rt_light_diag_denied);
 
-	int             viewCluster = -1;
-	int             viewFill = 0;
-	const uint64_t *viewUids = NULL;
+	int      viewCluster = -1;
+	int      viewFill = 0;
+	uint64_t viewUids[RT_CLUSTER_REPORT_SLOTS];
+	uint32_t viewCount = 0;
 
 	if (cl.worldmodel && cl.worldmodel->type == mod_brush)
 	{
 		mleaf_t *viewleaf = Mod_PointInLeaf (rt_cluster_vieworg, cl.worldmodel);
+
 		if (viewleaf && viewleaf != cl.worldmodel->leafs)
 		{
 			viewCluster = (int)(viewleaf - cl.worldmodel->leafs);
-			viewFill = rt_cluster_slot_fill[viewCluster];
-			viewUids = rt_cluster_slot_uids + viewCluster * RT_CLUSTER_MAX_PER_LIST;
+
+			if (rgGetClusterLightList (vulkan_globals.instance, (uint32_t)viewCluster,
+					viewUids, (uint32_t)countof (viewUids), &viewCount) != RG_SUCCESS)
+			{
+				viewCount = 0;
+			}
+
+			viewFill = (int)viewCount;
 		}
 	}
 
 	if (viewCluster < 0)
+	{
 		Con_Printf ("camera cluster: unavailable (camera is not in the world)\n");
+	}
 	else
 	{
-		int live = 0;
-		for (int s = 0; s < viewFill; s++)
-		{
-			if (viewUids[s] != RT_CLUSTER_INVALID_LIGHT)
-				live++;
-		}
-		Con_Printf ("camera cluster %i: %i/%i slots used, %i accepted this frame%s\n", viewCluster, viewFill,
-			RT_CLUSTER_MAX_PER_LIST, live,
-			(viewFill >= RT_CLUSTER_MAX_PER_LIST) ? "  *** FULL: further lights are dropped here ***" : "");
+		Con_Printf ("camera cluster %i: %i lights sampled%s\n", viewCluster, viewFill,
+			(viewFill >= RT_CLUSTER_REPORT_SLOTS) ? "  *** the read stopped at the slot count above ***" : "");
 	}
 
 	Con_Printf ("%-3s %5s %5s %8s  %-34s %s\n", "cls", "pvs", "no!", "dist", "light", "verdict");
@@ -1642,6 +1379,7 @@ void RT_ClusterLightReport_f (void)
 		}
 		order[order_num++] = li;
 	}
+
 
 	for (int i = 1; i < order_num; i++)
 	{

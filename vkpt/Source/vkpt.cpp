@@ -21,10 +21,16 @@
 #include "VulkanDevice.h"
 #include "RgException.h"
 
+#include <atomic>
+
 using namespace vkpt;
 
 constexpr uint32_t MAX_DEVICE_COUNT = 8;
 static rgl::unordered_map<RgInstance, std::unique_ptr<VulkanDevice>> G_DEVICES;
+
+// Counted in Call<> below and reported by rgGetFrameStatsEx: the entry points the host calls per
+// frame. Some of them end in a driver round trip, so this is a piece of the fixed per-frame cost.
+static std::atomic<uint32_t> G_EntryPointCalls{ 0 };
 
 static RgInstance GetNextID()
 {
@@ -116,6 +122,8 @@ static auto Call(RgInstance rgInstance, Func f, Args&&... args)
     {
         VulkanDevice &dev = GetDevice(rgInstance);
 
+        G_EntryPointCalls.fetch_add(1, std::memory_order_relaxed);
+
         if (dev.IsSuspended())
         {
             return RG_SUCCESS;
@@ -142,6 +150,8 @@ static auto Call(RgInstance rgInstance, Func f, Args&&... args)
     try
     {
         VulkanDevice &dev = GetDevice(rgInstance);
+
+        G_EntryPointCalls.fetch_add(1, std::memory_order_relaxed);
 
         if (!dev.IsSuspended())
         {
@@ -226,9 +236,32 @@ RgResult rgUploadTexturedAreaLight(RgInstance rgInstance, const RgTexturedAreaLi
     return Call(rgInstance, &VulkanDevice::UploadTexturedAreaLight, pUploadInfo);
 }
 
-RgResult rgUploadClusterLightLists(RgInstance rgInstance, const RgClusterLightListsUploadInfo *pUploadInfo)
+RgResult rgUploadTexturedAreaLights(RgInstance rgInstance, const RgTexturedAreaLightUploadInfo *pUploadInfos,
+                                    uint32_t count)
 {
-    return Call(rgInstance, &VulkanDevice::UploadClusterLightLists, pUploadInfo);
+    return Call(rgInstance, &VulkanDevice::UploadTexturedAreaLights, pUploadInfos, count);
+}
+
+RgResult rgUploadClusterLightSources(RgInstance rgInstance, const RgClusterLightSourcesUploadInfo *pUploadInfo)
+{
+    return Call(rgInstance, &VulkanDevice::UploadClusterLightSources, pUploadInfo);
+}
+
+RgResult rgGetClusterLightStats(RgInstance rgInstance, RgClusterLightStats *pStats)
+{
+    return Call(rgInstance, &VulkanDevice::GetClusterLightStats, pStats);
+}
+
+RgResult rgGetClusterLightGrants(RgInstance rgInstance, uint32_t *pGranted, uint32_t *pDenied,
+                                 uint32_t maxCount, uint32_t *pCount)
+{
+    return Call(rgInstance, &VulkanDevice::GetClusterLightGrants, pGranted, pDenied, maxCount, pCount);
+}
+
+RgResult rgGetClusterLightList(RgInstance rgInstance, uint32_t cluster, uint64_t *pLightUniqueIds,
+                               uint32_t maxCount, uint32_t *pCount)
+{
+    return Call(rgInstance, &VulkanDevice::GetClusterLightList, cluster, pLightUniqueIds, maxCount, pCount);
 }
 
 RgResult rgUploadWorldLights(RgInstance rgInstance, const RgWorldLightsUploadInfo *pUploadInfo)
@@ -276,6 +309,9 @@ RgResult rgDestroyCubemap(RgInstance rgInstance, RgCubemap cubemap)
 
 RgResult rgStartFrame(RgInstance rgInstance, const RgStartFrameInfo *pStartInfo)
 {
+    // Frame boundary for the call counter that rgGetFrameStatsEx reports.
+    G_EntryPointCalls.store(0, std::memory_order_relaxed);
+
     return Call(rgInstance, &VulkanDevice::StartFrame, pStartInfo);
 }
 
@@ -301,7 +337,14 @@ RgResult rgGetFrameStats(RgInstance rgInstance, uint32_t *pRays, uint32_t *pFpsX
 
 RgResult rgGetFrameStatsEx(RgInstance rgInstance, RgFrameStats *pStats)
 {
-    return Call(rgInstance, &VulkanDevice::GetFrameStatsEx, pStats);
+    RgResult r = Call(rgInstance, &VulkanDevice::GetFrameStatsEx, pStats);
+
+    if (r == RG_SUCCESS && pStats != nullptr)
+    {
+        pStats->apiCalls = G_EntryPointCalls.load(std::memory_order_relaxed);
+    }
+
+    return r;
 }
 
 const char *rgGetGpuPassName(uint32_t passIndex)

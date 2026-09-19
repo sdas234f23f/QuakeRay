@@ -51,6 +51,7 @@ set(vkpt_SOURCES
     Source/BlueNoise.cpp
     Source/ImageComposition.cpp
     Source/Tonemapping.cpp
+    Source/ClusterLightLists.cpp
     Source/LightManager.cpp
     Source/AutoBuffer.cpp
     Source/ASComponent.cpp

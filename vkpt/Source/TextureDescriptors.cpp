@@ -149,16 +149,23 @@ void TextureDescriptors::UpdateTextureDesc(uint32_t frameIndex, uint32_t texture
 {
     assert(view != VK_NULL_HANDLE);
 
-    if  (currentWriteCount >= writeInfos.size())
-    {
-        assert(0);
-        return;
-    }
-
     // don't update if already is set to given parameters
     if (IsCached(frameIndex, textureIndex, view, samplerHandle))
     {
         return;
+    }
+
+    if  (currentWriteCount >= writeInfos.size())
+    {
+        // the batch is full: flush it and start a new one. The desc set receives exactly the same
+        // writes, they are just split between several vkUpdateDescriptorSets calls.
+        FlushDescWrites();
+
+        if (currentWriteCount >= writeInfos.size())
+        {
+            assert(0);
+            return;
+        }
     }
 
     VkDescriptorImageInfo &imageInfo = writeImageInfos[currentWriteCount];
