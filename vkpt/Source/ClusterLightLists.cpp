@@ -764,6 +764,7 @@ void ClusterLightLists::DropTopUpSlots(uint32_t cluster)
                 slotUids[base + kept] = slotUids[base + s];
                 slotDist2[base + kept] = slotDist2[base + s];
                 slotSource[base + kept] = slotSource[base + s];
+                slotTopUp[base + kept] = slotTopUp[base + s];
             }
 
             kept++;
