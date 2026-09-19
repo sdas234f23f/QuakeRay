@@ -141,7 +141,7 @@ void vkpt::ImageComposition::ApplyTonemapping( VkCommandBuffer      cmd,
     VkDescriptorSet sets[] = {
         framebuffers->GetDescSet( frameIndex ),
         uniform->GetDescSet( frameIndex ),
-        tonemapping->GetDescSet(),
+        tonemapping->GetDescSet( frameIndex ),
         descSet,
         volumetric->GetDescSet( frameIndex ),
     };

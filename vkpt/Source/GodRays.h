@@ -95,12 +95,14 @@ private:
     std::shared_ptr<const BlueNoise> blueNoise;
     std::shared_ptr<const ShadowMap> shadowMap;
 
-    Buffer paramsBuffer;
-    void *mappedParams = nullptr;
+    // One params buffer per frame in flight: the host writes the params for
+    // frame N while the GPU may still be reading frame N-1's copy.
+    Buffer paramsBuffer[MAX_FRAMES_IN_FLIGHT];
+    void *mappedParams[MAX_FRAMES_IN_FLIGHT] = {};
 
     VkDescriptorSetLayout paramsDescSetLayout = VK_NULL_HANDLE;
     VkDescriptorPool      paramsDescPool      = VK_NULL_HANDLE;
-    VkDescriptorSet       paramsDescSet       = VK_NULL_HANDLE;
+    VkDescriptorSet       paramsDescSet[MAX_FRAMES_IN_FLIGHT] = {};
 
     VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
     VkPipeline       tracePipeline  = VK_NULL_HANDLE;

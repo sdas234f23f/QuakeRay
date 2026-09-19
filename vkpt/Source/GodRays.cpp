@@ -49,12 +49,14 @@ vkpt::GodRays::GodRays(VkDevice _device, std::shared_ptr<MemoryAllocator> &_allo
 
 vkpt::GodRays::~GodRays()
 {
-    if (mappedParams)
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
     {
-        paramsBuffer.TryUnmap();
+        if (mappedParams[i])
+        {
+            paramsBuffer[i].TryUnmap();
+        }
+        paramsBuffer[i].Destroy();
     }
-
-    paramsBuffer.Destroy();
 
     vkDestroyDescriptorPool(device, paramsDescPool, nullptr);
     vkDestroyDescriptorSetLayout(device, paramsDescSetLayout, nullptr);
@@ -65,17 +67,20 @@ vkpt::GodRays::~GodRays()
 
 void vkpt::GodRays::CreateParamsBuffer()
 {
-    paramsBuffer.Init(
-        allocator,
-        sizeof(Params),
-        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-        "God rays params buffer");
-
-    mappedParams = paramsBuffer.Map();
-    if (mappedParams)
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
     {
-        memset(mappedParams, 0, sizeof(Params));
+        paramsBuffer[i].Init(
+            allocator,
+            sizeof(Params),
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+            "God rays params buffer");
+
+        mappedParams[i] = paramsBuffer[i].Map();
+        if (mappedParams[i])
+        {
+            memset(mappedParams[i], 0, sizeof(Params));
+        }
     }
 }
 
@@ -101,11 +106,11 @@ void vkpt::GodRays::CreateDescriptors()
 
     VkDescriptorPoolSize poolSize = {};
     poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    poolSize.descriptorCount = 1;
+    poolSize.descriptorCount = MAX_FRAMES_IN_FLIGHT;
 
     VkDescriptorPoolCreateInfo poolInfo = {};
     poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    poolInfo.maxSets = 1;
+    poolInfo.maxSets = MAX_FRAMES_IN_FLIGHT;
     poolInfo.poolSizeCount = 1;
     poolInfo.pPoolSizes = &poolSize;
 
@@ -114,31 +119,40 @@ void vkpt::GodRays::CreateDescriptors()
 
     SET_DEBUG_NAME(device, paramsDescPool, VK_OBJECT_TYPE_DESCRIPTOR_POOL, "God rays params desc pool");
 
+    VkDescriptorSetLayout layouts[MAX_FRAMES_IN_FLIGHT];
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+    {
+        layouts[i] = paramsDescSetLayout;
+    }
+
     VkDescriptorSetAllocateInfo allocInfo = {};
     allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
     allocInfo.descriptorPool = paramsDescPool;
-    allocInfo.descriptorSetCount = 1;
-    allocInfo.pSetLayouts = &paramsDescSetLayout;
+    allocInfo.descriptorSetCount = MAX_FRAMES_IN_FLIGHT;
+    allocInfo.pSetLayouts = layouts;
 
-    r = vkAllocateDescriptorSets(device, &allocInfo, &paramsDescSet);
+    r = vkAllocateDescriptorSets(device, &allocInfo, paramsDescSet);
     VK_CHECKERROR(r);
 
-    SET_DEBUG_NAME(device, paramsDescSet, VK_OBJECT_TYPE_DESCRIPTOR_SET, "God rays params desc set");
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+    {
+        SET_DEBUG_NAME(device, paramsDescSet[i], VK_OBJECT_TYPE_DESCRIPTOR_SET, "God rays params desc set");
 
-    VkDescriptorBufferInfo bfInfo = {};
-    bfInfo.buffer = paramsBuffer.GetBuffer();
-    bfInfo.offset = 0;
-    bfInfo.range = VK_WHOLE_SIZE;
+        VkDescriptorBufferInfo bfInfo = {};
+        bfInfo.buffer = paramsBuffer[i].GetBuffer();
+        bfInfo.offset = 0;
+        bfInfo.range = VK_WHOLE_SIZE;
 
-    VkWriteDescriptorSet write = {};
-    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    write.dstSet = paramsDescSet;
-    write.dstBinding = 0;
-    write.descriptorCount = 1;
-    write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    write.pBufferInfo = &bfInfo;
+        VkWriteDescriptorSet write = {};
+        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        write.dstSet = paramsDescSet[i];
+        write.dstBinding = 0;
+        write.descriptorCount = 1;
+        write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        write.pBufferInfo = &bfInfo;
 
-    vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+        vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+    }
 }
 
 void vkpt::GodRays::CreatePipelineLayout()
@@ -220,9 +234,9 @@ void vkpt::GodRays::Trace(VkCommandBuffer cmd, uint32_t frameIndex, const Params
 {
     CmdLabel label(cmd, passIndex == 0 ? "God rays" : "God rays (reflections)");
 
-    if (mappedParams)
+    if (mappedParams[frameIndex])
     {
-        memcpy(mappedParams, &params, sizeof(Params));
+        memcpy(mappedParams[frameIndex], &params, sizeof(Params));
     }
 
     using FI = FramebufferImageIndex;
@@ -239,7 +253,7 @@ void vkpt::GodRays::Trace(VkCommandBuffer cmd, uint32_t frameIndex, const Params
 
     VkDescriptorSet sets[] = {
         shadowMap->GetDescSet(),              // 0
-        paramsDescSet,                        // 1
+        paramsDescSet[frameIndex],            // 1
         framebuffers->GetDescSet(frameIndex), // 2
         uniform->GetDescSet(frameIndex),      // 3
         blueNoise->GetDescSet(),              // 4
@@ -275,7 +289,7 @@ void vkpt::GodRays::Filter(VkCommandBuffer cmd, uint32_t frameIndex)
 
     VkDescriptorSet sets[] = {
         shadowMap->GetDescSet(),              // 0 (unused by the filter)
-        paramsDescSet,                        // 1 (unused by the filter)
+        paramsDescSet[frameIndex],            // 1 (unused by the filter)
         framebuffers->GetDescSet(frameIndex), // 2
         uniform->GetDescSet(frameIndex),      // 3
         blueNoise->GetDescSet(),              // 4 (unused by the filter)

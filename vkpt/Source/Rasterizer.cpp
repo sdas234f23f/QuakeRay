@@ -271,7 +271,7 @@ void Rasterizer::DrawToFinalImage( VkCommandBuffer                          cmd,
     VkDescriptorSet sets[] = {
         textureManager->GetDescSet( frameIndex ),
         uniform->GetDescSet( frameIndex ),
-        tonemapping->GetDescSet(),
+        tonemapping->GetDescSet( frameIndex ),
         volumetric->GetDescSet( frameIndex ),
     };
 
