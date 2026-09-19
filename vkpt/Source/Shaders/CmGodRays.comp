@@ -68,16 +68,11 @@ float GetShadow(vec3 worldPos)
 
     float depthOpaque = textureLod(texShadowMap, uvz.xy, 0).x;
 
-    // EXACT Q2RTX comparison (god_rays.comp GetShadow):
-    //   return depthOpaque > uvzShadow.z ? 1 : 0;
-    // The shadow map stores window-space depth while uvz.z is clip-space z in
-    // [0,1] (the ortho projection maps the world box to clip z in [0,1], see
-    // create_orthographic_matrix). Comparing them directly is intentional: the
-    // window-vs-clip mismatch acts as a large built-in toward-sun bias, which
-    // is what keeps sun-facing surfaces from self-shadowing - that is why
-    // Q2RTX needs no explicit depth bias here. Do NOT "fix" this to a
-    // window-consistent comparison ((uvz.z+1)*0.5): it was tried and produces
-    // self-shadowing acne ("fog only past the geometry").
+    // Q2RTX comparison (god_rays.comp GetShadow): depthOpaque > uvz.z.
+    // The ortho projection maps the world box to clip z in [0,1] and the
+    // shadow map stores that same [0,1] depth, so this is an exact comparison
+    // (no built-in bias). The anti-acne offset is applied by the caller via
+    // the shadowBias sample offset.
     return depthOpaque > uvz.z ? 1.0 : 0.0;
 }
 
@@ -290,24 +285,30 @@ void main()
     while (true)
     {
         density = getDensity(currentPos);
-        const float stepLength = getStep(offset, density);
+        float stepLength = getStep(offset, density);
 
+        // Clamp the final step so the march ends exactly at the surface instead
+        // of stopping up to stepLength short of it (which left a dark band at
+        // the end of each ray).
+        stepLength = min(stepLength, rayDistance - offset);
         offset += stepLength;
-        if (offset >= rayDistance)
-            break;
 
         currentPos = originalPos + direction * offset;
 
-        // EXACT Q2RTX bias (god_rays.comp):
-        //   const vec3 shadowBias = -global_ubo.sun_direction * 20;
-        // i.e. the sample is moved 20 units AWAY from the sun. sunDirection
-        // here points TOWARD the sun (same convention as Q2RTX).
-        const vec3 shadowBias = -godRaysParams.sunDirection.xyz * 20.0;
+        // Move the sample slightly TOWARD the sun. Q2RTX used -sunDirection*20
+        // (away from the sun), which pushed samples near the surface behind it
+        // and left a dark gap between the god rays and the floor/walls. A small
+        // toward-sun offset keeps those samples in front of the surface (no gap)
+        // while still avoiding self-shadowing acne.
+        const vec3 shadowBias = godRaysParams.sunDirection.xyz * 1.0;
         const float shadow = GetShadow(currentPos + shadowBias);
 
         const vec3 differentialInscatter = (shadow * phase * stepLength * density) * through;
         inscatter += differentialInscatter;
         through *= exp(-(stepLength * density) * extinctionFactors);
+
+        if (offset >= rayDistance)
+            break;
     }
 
     vec3 inscatterColor = inscatter * godRaysParams.sunColor.rgb * godRaysParams.godRaysIntensity * 0.0001;
