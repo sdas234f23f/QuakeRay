@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.10.1
+
+### Fixed
+- **The light shafts reach the surface again** — the god rays stopped a hand's width short of the floor and the walls they fell on, leaving a dark gap between the shaft and the geometry it hit. The shadow-map bias in the shaft march was applied away from the sun (`-sunDirection * 20`), but `sunDirection` points toward the sun while the shadow map's depth grows away from it, so the bias pushed the samples just in front of a surface behind that surface and the last stretch of every ray read as shadowed. The bias now points toward the sun (a small `+1` unit offset, enough to clear the surface's own depth without letting the light bleed through thin walls), and the final march step is clamped so the ray ends exactly on the surface instead of stopping up to a full step short of it.
+
 ## v0.10.0
 
 ### Added
