@@ -805,7 +805,10 @@ void vkpt::LightManager::BarrierQ2ClusterLists(VkCommandBuffer cmd, uint32_t fra
     for (uint32_t i = 0; i < std::size(buffers); i++)
     {
         barriers[i].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
-        barriers[i].srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+        // The list buffers are written by transfer (copy from staging) and the
+        // stats slot by vkCmdFillBuffer (transfer); the stats slot the frame reads
+        // was accumulated by the previous frame's ray tracing shaders (atomicAdd).
+        barriers[i].srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT | VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR;
         barriers[i].srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT;
         barriers[i].dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR;
         barriers[i].dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
