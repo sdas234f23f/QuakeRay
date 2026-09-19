@@ -783,7 +783,7 @@ void SCR_DrawRTProf (cb_context_t *cbx, int x, int y)
 		SCR_DrawRTStatsString (cbx, x + rt_stats_col, row, st, rt_stats_scale, &color_detail, &color_shadow);
 		row += rt_stats_step;
 
-		sprintf (st, "clust miss  set %i leaf %i geom %i", rep->clusterMissSet, rep->clusterMissLeaf, rep->clusterMissGeom);
+		sprintf (st, "clust miss  set %i move %i other %i", rep->clusterMissSet, rep->clusterMissMove, rep->clusterMissOther);
 		SCR_DrawRTStatsString (cbx, x + rt_stats_col, row, st, rt_stats_scale, &color_detail, &color_shadow);
 		row += rt_stats_step;
 

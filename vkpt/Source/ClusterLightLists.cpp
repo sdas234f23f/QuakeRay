@@ -257,9 +257,10 @@ void ClusterLightLists::SetSources(const WorldLights &worldLightsRef,
             // The counters are back on the frame's own light order, so nothing maps them.
             frameToSource.clear();
         }
-        /* Else the lists are the ones of the composition and the frame's own lights stand in
-           them, so the next frame is compared against the origins these lights are at now
-           rather than against the ones the composition was built from. */
+        /* Else the lists are the ones of the composition and the lights of the frame are the
+           ones they were built for: the origins their slots were granted from stay in the
+           records, and the next frame is compared against them so that a light that walks is
+           granted its slots again once it has walked out of its quantum. */
     }
     else if (composeable && sameSet && compositionOrder && uploadInfo.allowIncremental != 0 &&
              UpdateMovedSources(worldLightsRef, pUserPrint))
@@ -770,16 +771,32 @@ void ClusterLightLists::MarkDirty(uint32_t cluster)
     dirtyClusters.push_back(cluster);
 }
 
-/* Takes the origins, the leaves and the reaches this frame registered over the sources the
-   lists were composed from, in the place each of them already stands in. Where a light stands
-   is what the frame is compared against, so a frame that hands the lists on to the next one
-   has to leave the origins of the lights it was given behind in them. */
+/* Takes the origins, the leaves and the reaches this frame registered over the sources of the
+   lights that were granted their slots again on it, in the place each of them already stands in.
+
+   A light is measured against the origin its slots were granted from, so a record is only moved
+   forward by a grant. A frame that hands the lists on leaves behind where the slots of each
+   light were built, and not where the light happens to stand: a light that walks is granted its
+   slots again once it has left the quantum it was granted them in, instead of collecting the
+   drift of every frame of the walk under the record of the last grant, which would keep the
+   lists of a light that walks forever out of step with where it stands. */
 bool ClusterLightLists::UpdateSourceRecords()
 {
     if (frameToSource.size() != incoming.size())
     {
         return false;
     }
+
+    // Nothing was granted on this frame, so there is no record to move forward and the lists
+    // stand on the records the composition left.
+    if (movedIndices.empty())
+    {
+        return true;
+    }
+
+    const uint32_t noSource = std::numeric_limits<uint32_t>::max();
+
+    sourceToFrame.assign(sources.size(), noSource);
 
     for (uint32_t j = 0; j < uint32_t(incoming.size()); j++)
     {
@@ -790,11 +807,25 @@ bool ClusterLightLists::UpdateSourceRecords()
             return false;
         }
 
-        sources[i].origin[0] = incoming[j].origin[0];
-        sources[i].origin[1] = incoming[j].origin[1];
-        sources[i].origin[2] = incoming[j].origin[2];
-        sources[i].cluster = incoming[j].cluster;
-        sources[i].reach = incoming[j].reach;
+        sourceToFrame[i] = j;
+    }
+
+    for (uint32_t m = 0; m < uint32_t(movedIndices.size()); m++)
+    {
+        const uint32_t i = movedIndices[m];
+
+        if (i >= sourceToFrame.size() || sourceToFrame[i] == noSource)
+        {
+            return false;
+        }
+
+        const Source &grantedSource = incoming[sourceToFrame[i]];
+
+        sources[i].origin[0] = grantedSource.origin[0];
+        sources[i].origin[1] = grantedSource.origin[1];
+        sources[i].origin[2] = grantedSource.origin[2];
+        sources[i].cluster = grantedSource.cluster;
+        sources[i].reach = grantedSource.reach;
     }
 
     return true;
@@ -807,7 +838,9 @@ bool ClusterLightLists::UpdateSourceRecords()
    still right: a light that stayed inside one source quantum of the origin its slots were
    granted from stands inside the margin the grant was made with.
 
-   Returns false for a frame this cannot be done for, which is a frame the caller composes. */
+   Returns false for a frame this cannot be done for, which is a frame the caller composes: one
+   where most of the lights moved, because taking a light's slots back costs a walk over every
+   cluster of the map while the composition costs one PVS row per light. */
 bool ClusterLightLists::UpdateMovedSources(const WorldLights &worldLightsRef, UserPrint *pUserPrint)
 {
     if (movedIndices.empty() || sources.size() != incoming.size() || granted.size() != sources.size() ||
@@ -816,8 +849,13 @@ bool ClusterLightLists::UpdateMovedSources(const WorldLights &worldLightsRef, Us
         return false;
     }
 
-    // The lights stand where this frame registered them, and the order of the sources is left
-    // alone: every slot names its light by its place in it.
+    if (movedIndices.size() * 2 >= sources.size())
+    {
+        return false;
+    }
+
+    // The record of a light that moved is moved forward to where this frame registered it, and
+    // the order of the sources is left alone: every slot names its light by its place in it.
     if (!UpdateSourceRecords())
     {
         return false;
@@ -1164,8 +1202,8 @@ bool ClusterLightLists::WithinReach(const float *pOrigin, uint32_t cluster, floa
    reshuffles the order in which the visible lights are registered, which is not a new light
    set, and must not be paid for with a composition. What is a change is a light that appeared,
    a light that disappeared, a light that had no leaf and gained one or lost the one it had,
-   and a light that moved far enough that the reach it stated for itself no longer describes
-   where it stands.
+   and a light that moved far enough from the origin its slots were granted from that the reach
+   it states for itself no longer describes where it stands.
 
    The leaf a light resolved into is not what the lists are made of, and taking it for a change
    is what made them churn: a light that crossed a leaf boundary re-ran the whole map -- every

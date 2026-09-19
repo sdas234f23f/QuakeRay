@@ -139,9 +139,12 @@ task_handle_t prev_end_rendering_task = INVALID_TASK_HANDLE;
 	   them. */ \
 	CVAR_DEF_T (rt_light_reach_max, "10") \
 	CVAR_DEF_T (rt_cluster_dlights, "1") \
-	/* 0 keeps the cluster lists all or nothing: a light that moves takes every list of the \
-	   scene with it, which is what a lava ball was measured to cost. */ \
-	CVAR_DEF_T (rt_cluster_incremental, "0") \
+	/* 1 takes back only the slots of the lights that moved and hands them out again from where \
+	   those lights stand now: every other list of the scene keeps what the composition left, so \
+	   a moving lamp costs the lists by the rooms it covers rather than by the map. 0 keeps the \
+	   lists all or nothing, a light that moves takes every list of the scene with it, which is \
+	   what a lava ball was measured to cost. */ \
+	CVAR_DEF_T (rt_cluster_incremental, "1") \
 	CVAR_DEF_T (rt_truelight, "1") \
 	CVAR_DEF_T (rt_materials_only, "0") \
 	CVAR_DEF_T (rt_light_styles, "1") \
@@ -367,8 +370,8 @@ void RT_Prof_Update (void)
 		rt_cluster_cache_hits = 0;
 		rt_cluster_cache_misses = 0;
 		rt_cluster_miss_set = 0;
-		rt_cluster_miss_leaf = 0;
-		rt_cluster_miss_geom = 0;
+		rt_cluster_miss_move = 0;
+		rt_cluster_miss_other = 0;
 		return;
 	}
 
@@ -384,8 +387,8 @@ void RT_Prof_Update (void)
 		rt_cluster_cache_hits = 0;
 		rt_cluster_cache_misses = 0;
 		rt_cluster_miss_set = 0;
-		rt_cluster_miss_leaf = 0;
-		rt_cluster_miss_geom = 0;
+		rt_cluster_miss_move = 0;
+		rt_cluster_miss_other = 0;
 		return;
 	}
 
@@ -410,8 +413,8 @@ void RT_Prof_Update (void)
 	rt_prof_report.clusterCacheHits = rt_cluster_cache_hits;
 	rt_prof_report.clusterCacheMisses = rt_cluster_cache_misses;
 	rt_prof_report.clusterMissSet = rt_cluster_miss_set;
-	rt_prof_report.clusterMissLeaf = rt_cluster_miss_leaf;
-	rt_prof_report.clusterMissGeom = rt_cluster_miss_geom;
+	rt_prof_report.clusterMissMove = rt_cluster_miss_move;
+	rt_prof_report.clusterMissOther = rt_cluster_miss_other;
 	rt_prof_report.clusterGrants = rt_cluster_last_grants;
 	rt_prof_report.clusterDenied = rt_cluster_last_denied;
 	rt_prof_report.clusterGated = rt_cluster_last_gated;
@@ -423,8 +426,8 @@ void RT_Prof_Update (void)
 	rt_cluster_cache_hits = 0;
 	rt_cluster_cache_misses = 0;
 	rt_cluster_miss_set = 0;
-	rt_cluster_miss_leaf = 0;
-	rt_cluster_miss_geom = 0;
+	rt_cluster_miss_move = 0;
+	rt_cluster_miss_other = 0;
 	memset (rt_prof_ms, 0, sizeof (rt_prof_ms));
 	rt_prof_frames = 0;
 }
@@ -661,8 +664,8 @@ static void RT_StatsDumpWrite (FILE *f, const rt_stats_dump_job_t *job)
 		fprintf (f, "%-11s %-17s %i\n", "cpu.cluster", "cache hits", snap->profile.clusterCacheHits);
 		fprintf (f, "%-11s %-17s %i\n", "cpu.cluster", "cache misses", snap->profile.clusterCacheMisses);
 		fprintf (f, "%-11s %-17s %i\n", "cpu.cluster", "miss set", snap->profile.clusterMissSet);
-		fprintf (f, "%-11s %-17s %i\n", "cpu.cluster", "miss leaf", snap->profile.clusterMissLeaf);
-		fprintf (f, "%-11s %-17s %i\n", "cpu.cluster", "miss geom", snap->profile.clusterMissGeom);
+		fprintf (f, "%-11s %-17s %i\n", "cpu.cluster", "miss move", snap->profile.clusterMissMove);
+		fprintf (f, "%-11s %-17s %i\n", "cpu.cluster", "miss other", snap->profile.clusterMissOther);
 		fprintf (f, "%-11s %-17s %i\n", "cpu.cluster", "grants", snap->profile.clusterGrants);
 		fprintf (f, "%-11s %-17s %i\n", "cpu.cluster", "denied", snap->profile.clusterDenied);
 		fprintf (f, "%-11s %-17s %i\n", "cpu.cluster", "gated", snap->profile.clusterGated);
