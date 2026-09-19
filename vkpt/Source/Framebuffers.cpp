@@ -35,11 +35,18 @@ FramebufferImageIndex Framebuffers::FrameIndexToFBIndex(FramebufferImageIndex fr
     assert(frameIndex < FRAMEBUFFERS_HISTORY_LENGTH);
     assert(framebufferImageIndex >= 0 && framebufferImageIndex < ShFramebuffers_Count);
 
-    // if framubuffer with given index can be swapped,
+    // if framebuffer with given index can be swapped,
     // use one that is currently in use
     if (ShFramebuffers_Bindings[framebufferImageIndex] != ShFramebuffers_BindingsSwapped[framebufferImageIndex])
     {
-        return (FramebufferImageIndex)(framebufferImageIndex + frameIndex);
+        // Apply the actual swap permutation instead of a linear increment.
+        // `+frameIndex` is only correct for the first (current) index of each
+        // swapped pair; for the `_Prev` (second) index it pointed at the next,
+        // unrelated framebuffer (e.g. Q2_VIEW_DEPTH_PREV + 1 == Q2_BASE_COLOR),
+        // so barriers and image-handle lookups hit the wrong image.
+        return frameIndex == 0
+            ? (FramebufferImageIndex)ShFramebuffers_Bindings[framebufferImageIndex]
+            : (FramebufferImageIndex)ShFramebuffers_BindingsSwapped[framebufferImageIndex];
     }
 
     return framebufferImageIndex;
