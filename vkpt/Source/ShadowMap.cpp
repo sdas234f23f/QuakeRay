@@ -367,13 +367,13 @@ void ShadowMap::CreatePipelines(const ShaderManager *shaderManager)
     rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
     rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
     rasterizer.lineWidth = 1.0f;
-    // Q2RTX culls front faces here because Q2 BSP geometry has a consistent
-    // winding. The Q1 geometry upload has unreliable winding (the rasterizer
-    // uses VK_CULL_MODE_NONE for the same reason), so culling would punch
-    // spurious holes into the shadow map and the god rays would shine through
-    // random walls. Render all faces: the depth test still keeps the nearest
-    // (sun-facing) side, which is what a shadow map needs.
-    rasterizer.cullMode = VK_CULL_MODE_NONE;
+    // Match Q2RTX exactly: cull front (sun-facing) faces and store only the
+    // back (sun-away) faces. Back-face depth makes the 20-unit away-from-sun
+    // bias in the god-ray march robust: samples pushed behind a wall still
+    // compare against the far side, so shafts neither leak through geometry
+    // nor leave a dark gap next to surfaces. Q1 BSP surfaces are consistently
+    // wound (CCW from the front), so the same cull/front-face settings work.
+    rasterizer.cullMode = VK_CULL_MODE_FRONT_BIT;
     rasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
     rasterizer.depthClampEnable = VK_FALSE;
     rasterizer.rasterizerDiscardEnable = VK_FALSE;
