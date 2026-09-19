@@ -59,6 +59,14 @@ constexpr float kSourceMargin = 32.0f;        // Quake units
 
 static_assert(kSourceMargin >= kSourceQuantum * 1.7320508f, "the source margin must cover a whole quantum");
 
+/* Places of lights that left the scene that a frame may keep instead of composing. Keeping them
+   is what lets the lights that stay keep the places their slots name them by until a light
+   appears to take them, and it costs a bit of the membership set and a word of the grid that a
+   composition takes back. A set that keeps a quarter of its lights in places of lights that are
+   gone is the one that composes, and the handful is what keeps a set of a few lights from
+   composing over the couple of places a light that flickers leaves behind. */
+constexpr uint32_t kMaxTombstones = 16;
+
 constexpr uint8_t kVisUnknown = 0;
 constexpr uint8_t kVisDecoded = 1;
 constexpr uint8_t kVisMissing = 2;
@@ -158,6 +166,10 @@ void ClusterLightLists::Reset()
     clusterDirty.clear();
     dirtyClusters.clear();
     movedIndices.clear();
+    addedIndices.clear();
+    removedIndices.clear();
+    changedIndices.clear();
+    tombstoneIndices.clear();
     frameToSource.clear();
     compositionOrder = false;
     gridHead.clear();
@@ -228,12 +240,16 @@ void ClusterLightLists::SetSources(const WorldLights &worldLightsRef,
         }
 
         incoming[i].reach = reach;
+        incoming[i].tombstone = false;
     }
 
     CountSourceChanges();
 
-    const bool sameSet = stats.addedSources == 0 && stats.removedSources == 0 &&
-                         sources.size() == incoming.size();
+    /* The set is the one the lists were built for when the frame brought no light they do not
+       hold and left out none of the lights they hold: the two counts are a uid comparison, so
+       they say that much, and they are what says it because the sources also hold the places of
+       the lights that left and are longer than the frame for it. */
+    const bool sameSet = stats.addedSources == 0 && stats.removedSources == 0;
     const bool sameReach = std::abs(topUpReach - uploadInfo.topUpReach) < 0.001f;
     const bool composeable = listsValid && sameReach && numClusters > 0;
 
@@ -254,6 +270,10 @@ void ClusterLightLists::SetSources(const WorldLights &worldLightsRef,
             ReorderStats();
             sources.swap(incoming); // the frame's own set is what the manager and the getters see
             compositionOrder = false;
+            /* The places the sources kept of the lights that left are not places of this frame:
+               the counters go with the set the swap just took away. */
+            granted.resize(sources.size());
+            denied.resize(sources.size());
             // The counters are back on the frame's own light order, so nothing maps them.
             frameToSource.clear();
         }
@@ -262,12 +282,13 @@ void ClusterLightLists::SetSources(const WorldLights &worldLightsRef,
            records, and the next frame is compared against them so that a light that walks is
            granted its slots again once it has walked out of its quantum. */
     }
-    else if (composeable && sameSet && compositionOrder && uploadInfo.allowIncremental != 0 &&
-             UpdateMovedSources(worldLightsRef, pUserPrint))
+    else if (composeable && compositionOrder && uploadInfo.allowIncremental != 0 &&
+             UpdateSourceSet(worldLightsRef, pUserPrint))
     {
-        /* The light set is the one the lists were built for and the only lights that changed are
-           lights that moved: their own slots are all a frame of this shape has to look at, and
-           every other list of the scene is the one the composition left. */
+        /* The light set the lists were built for is the frame's but for the lights that changed
+           on it -- the ones that moved, the ones that appeared and the ones that disappeared --
+           and the lists are wrong only where those lights reach: every other list of the scene
+           is the one the composition left. */
         stats.reusedFrames = 1;
     }
     else
@@ -831,38 +852,84 @@ bool ClusterLightLists::UpdateSourceRecords()
     return true;
 }
 
-/* The lights that moved are the only ones whose own lists changed, so the frame takes their
-   slots back, hands them out again from where those lights stand now, and lets the clusters
-   that lost a slot, or that a moved light can now reach, choose their top-up set again from the
-   lights they hold. Every other slot of the scene is the one the composition left, and it is
-   still right: a light that stayed inside one source quantum of the origin its slots were
-   granted from stands inside the margin the grant was made with.
+/* Placed the lights that changed -- the ones that moved, the ones that appeared and the ones
+   that disappeared -- on the lists the composition left, and leaves every other list of the
+   scene where it is.
+
+   A light that moved takes its slots back, because the clusters its leaf and its reach cover
+   are not the ones it was granted, and it is granted again from where it stands now. A light
+   that disappeared takes its slots back too, and the place it held becomes a place no pass looks
+   at and no slot names, which is kept all the same: the lights the frame holds keep the places
+   their slots name them by, and every index of the frame stands where the frame before it stood.
+   Those places are what the lights that appear are given, the ones a light left on a frame
+   before this one first and the ones this frame's own lights leave after them, which is what
+   keeps the sources from growing with the lights that pass through them: only a set that keeps
+   more of them than it hands out grows past the lights it holds.
+
+   Only the clusters the changes reach are looked at again, by pass one for the lights that
+   changed and by pass two for the clusters a changed light can reach: a cluster whose own PVS
+   hides a light that just appeared still has to see it, and the top-up pass is what puts it
+   there. The grid that pass reads is rebuilt for those clusters, which is the cost this shape
+   carries that a composition spreads over the whole map: it buckets every light of the set,
+   whatever the frame changed.
 
    Returns false for a frame this cannot be done for, which is a frame the caller composes: one
-   where most of the lights moved, because taking a light's slots back costs a walk over every
-   cluster of the map while the composition costs one PVS row per light. */
-bool ClusterLightLists::UpdateMovedSources(const WorldLights &worldLightsRef, UserPrint *pUserPrint)
+   where the lights that changed are a large part of the set, because taking a light's slots
+   back costs a walk over every cluster of the map while the composition costs one PVS row per
+   light, and one whose tombstones have grown out of proportion to the lights that are left. */
+bool ClusterLightLists::UpdateSourceSet(const WorldLights &worldLightsRef, UserPrint *pUserPrint)
 {
-    if (movedIndices.empty() || sources.size() != incoming.size() || granted.size() != sources.size() ||
-        frameToSource.size() != incoming.size())
+    const uint32_t added = stats.addedSources;
+    const uint32_t removed = stats.removedSources;
+    const uint32_t moved = uint32_t(movedIndices.size());
+    const uint32_t changed = added + removed + moved;
+    const uint32_t liveSources = uint32_t(prevUidIndex.size());
+
+    if (granted.size() != sources.size() || frameToSource.size() != incoming.size() ||
+        addedIndices.size() != added || removedIndices.size() != removed)
     {
         return false;
     }
 
-    if (movedIndices.size() * 2 >= sources.size())
+    /* The frame holds every place the sources hold that holds a light, but for the ones that left
+       it and the ones it brought past them, which is what the comparison above and the two lists
+       of places say: a frame that comes out anywhere else is not one the places below can be
+       handed on for. */
+    if (liveSources + added != uint32_t(incoming.size()) + removed || changed == 0)
     {
         return false;
     }
 
-    // The record of a light that moved is moved forward to where this frame registered it, and
-    // the order of the sources is left alone: every slot names its light by its place in it.
-    if (!UpdateSourceRecords())
+    /* What a frame of this shape saves is one PVS row per light that did not change, and what it
+       costs that a composition does not is the walk over every cluster of the map that taking a
+       light's slots back is, once per cluster and not once per light; the composition is the
+       cheaper of the two once the lights that changed are half of the frame. */
+    if (changed * 2 >= uint32_t(incoming.size()))
+    {
+        return false;
+    }
+
+    /* The places the lights that appear are given: the ones kept of the frames before this one,
+       which hold no light, and the ones this frame's own lights give up. What the frame hands out
+       nothing for is what the set carries beyond the frame, and a composition is what takes that
+       back: it is a quarter of the frame's lights in places of lights that are gone, or more than
+       a handful of them, that is composed instead. The handful is what keeps a set of a few
+       hundred lights from composing over the places a couple of lights leave behind. */
+    const uint32_t freePlaces = uint32_t(tombstoneIndices.size()) + removed;
+    const uint32_t appended = (added > freePlaces) ? (added - freePlaces) : 0;
+    const uint32_t kept = freePlaces - added + appended;
+
+    if (kept > kMaxTombstones && kept * 4 > uint32_t(incoming.size()))
     {
         return false;
     }
 
     const float  reach = topUpReach;
     const double tVis = NowMs();
+
+    /* The membership set is laid out again before a bit is written to it: its stride is one word
+       per sixty four places, and a place past the old stride moves every bit of every cluster. */
+    ResizeSlotBits(std::max(1u, (uint32_t(sources.size()) + appended + 63) / 64));
 
     stats.walkedSources = 0;
     stats.cachedSources = 0;
@@ -872,10 +939,67 @@ bool ClusterLightLists::UpdateMovedSources(const WorldLights &worldLightsRef, Us
     std::fill(clusterDirty.begin(), clusterDirty.end(), 0);
     dirtyClusters.clear();
 
-    /* Pass one for the lights that moved: the slots they held are the ones that stopped being
-       right, so they are taken back first and the light is given the clusters its new leaf and
-       its own reach cover now. */
-    for (uint32_t m = 0; m < uint32_t(movedIndices.size()); m++)
+    /* The lights the frame let go of give back every slot they hold, and the clusters that held
+       one queue themselves as they do. The place each of them held is left holding no light, and
+       it is one of the places the lights below are given. */
+    for (uint32_t r = 0; r < removed; r++)
+    {
+        const uint32_t li = removedIndices[r];
+
+        granted[li] = 0;
+        denied[li] = 0;
+        sources[li].tombstone = true;
+
+        VacateSource(li);
+    }
+
+    /* A light that appears takes a place that holds no light, one kept of the frames before this
+       one first and then one of the places this frame gave up, and only a frame with more lights
+       to place than places to put them in grows by the difference. The place it takes holds no
+       slot, so the record it held -- of the light that left it -- is this light's from here on
+       and no list of the scene changes for it. */
+    uint32_t fromKept = 0;
+    uint32_t fromGiven = 0;
+
+    for (uint32_t a = 0; a < added; a++)
+    {
+        const uint32_t frameLight = addedIndices[a];
+        uint32_t       place;
+
+        if (fromKept < uint32_t(tombstoneIndices.size()))
+        {
+            place = tombstoneIndices[fromKept++];
+        }
+        else if (fromGiven < removed)
+        {
+            place = removedIndices[fromGiven++];
+        }
+        else
+        {
+            place = uint32_t(sources.size());
+            granted.push_back(0);
+            denied.push_back(0);
+            sources.resize(place + 1);
+        }
+
+        sources[place] = incoming[frameLight];
+        frameToSource[frameLight] = place;
+    }
+
+    /* A record is only moved forward by a grant, and only the lights that moved are granted
+       again here, so this comes before the grants below and leaves the records of the lights
+       that appeared as they were just taken: there is nothing to move forward on a place that
+       has never been granted. */
+    if (!UpdateSourceRecords())
+    {
+        return false;
+    }
+
+    /* Pass one for the lights that changed: the slots a light that moved held are the ones that
+       stopped being right, so they are taken back before it is granted the clusters its new leaf
+       and its own reach cover now. A light that appeared holds no slot, and the place it was
+       just given is granted from where it stands. */
+    for (uint32_t m = 0; m < moved; m++)
     {
         const uint32_t li = movedIndices[m];
 
@@ -891,22 +1015,40 @@ bool ClusterLightLists::UpdateMovedSources(const WorldLights &worldLightsRef, Us
         GrantSource(li);
     }
 
+    for (uint32_t a = 0; a < added; a++)
+    {
+        const uint32_t li = frameToSource[addedIndices[a]];
+
+        if (li < uint32_t(sources.size()))
+        {
+            GrantSource(li);
+        }
+    }
+
     const double tTopUp = NowMs();
     stats.visMs = float(tTopUp - tVis);
 
-    /* A cluster can gain a moved light in one of two ways: pass one has just handed it out to
-       every cluster the light's leaf sees, and the top-up pass can hand it to every cluster
-       within the gate of where the light stands now. The second set is what decides which
-       clusters have to look at their top-up set again; the first one is the set pass one wrote
-       to, and the ones that lost a slot to the move queued themselves as they did. */
-    for (uint32_t m = 0; m < uint32_t(movedIndices.size()); m++)
-    {
-        const uint32_t li = movedIndices[m];
+    /* A cluster can gain a light that changed in one of two ways: pass one has just handed it
+       out to every cluster the light's leaf sees, and the top-up pass can hand it to every
+       cluster within the gate of where the light stands now. The second set is what decides
+       which clusters have to look at their top-up set again; the first one is the set pass one
+       wrote to, and the clusters that lost a slot to the changes queued themselves as they
+       did. */
+    changedIndices.assign(movedIndices.begin(), movedIndices.end());
 
-        if (li >= uint32_t(sources.size()))
+    for (uint32_t a = 0; a < added; a++)
+    {
+        const uint32_t li = frameToSource[addedIndices[a]];
+
+        if (li < uint32_t(sources.size()))
         {
-            continue;
+            changedIndices.push_back(li);
         }
+    }
+
+    for (uint32_t i = 0; i < uint32_t(changedIndices.size()); i++)
+    {
+        const uint32_t li = changedIndices[i];
 
         if (sources[li].cluster == RG_CLUSTER_LIGHT_NO_CLUSTER || sources[li].cluster >= numClusters)
         {
@@ -943,6 +1085,11 @@ bool ClusterLightLists::UpdateMovedSources(const WorldLights &worldLightsRef, Us
 
     for (uint32_t li = 0; li < uint32_t(sources.size()); li++)
     {
+        if (sources[li].tombstone)
+        {
+            continue; // a place the frame let go of is no light of this frame
+        }
+
         if (sources[li].cluster == RG_CLUSTER_LIGHT_NO_CLUSTER || sources[li].cluster >= numClusters)
         {
             stats.unresolved++;
@@ -958,9 +1105,38 @@ bool ClusterLightLists::UpdateMovedSources(const WorldLights &worldLightsRef, Us
 
     stats.fillMs = float(NowMs() - tFill);
     stats.clusters = numClusters;
-    stats.sources = uint32_t(sources.size());
+    stats.sources = uint32_t(incoming.size());
 
     return true;
+}
+
+/* Lays the membership set out again with a new stride, which is one word per sixty four places.
+   The set is only ever widened here, and only when the frame brought more lights than the places
+   it had for them, so a word of the old layout is a word of the new one with the bits of the same
+   sixty four places in it. The words are copied through storage of their own: the two layouts
+   overlap, and a word of the new one is read only after the whole old one has been. */
+void ClusterLightLists::ResizeSlotBits(uint32_t newWords)
+{
+    if (newWords <= bitsWords || numClusters == 0)
+    {
+        return; // the stride in hand already reaches every place of the frame
+    }
+
+    std::vector<uint64_t> grown(size_t(numClusters) * newWords, 0);
+
+    for (uint32_t c = 0; c < numClusters; c++)
+    {
+        const uint64_t *pOld = &slotBits[size_t(c) * bitsWords];
+        uint64_t       *pNew = &grown[size_t(c) * newWords];
+
+        for (uint32_t w = 0; w < bitsWords; w++)
+        {
+            pNew[w] = pOld[w];
+        }
+    }
+
+    slotBits.swap(grown);
+    bitsWords = newWords;
 }
 
 /* Appends a light to the list of a cluster, evicting the farthest light when the list is full
@@ -1077,6 +1253,11 @@ bool ClusterLightLists::BuildGrid(const WorldLights &worldLightsRef, float reach
 
     for (uint32_t li = 0; li < uint32_t(sources.size()); li++)
     {
+        if (sources[li].tombstone)
+        {
+            continue; // a place that holds no light holds no slot the top-up pass could hand out
+        }
+
         if (sources[li].cluster == RG_CLUSTER_LIGHT_NO_CLUSTER || sources[li].cluster >= numClusters)
         {
             continue; // a light with no cluster has no slot to take part in the top-up pass with
@@ -1205,6 +1386,10 @@ bool ClusterLightLists::WithinReach(const float *pOrigin, uint32_t cluster, floa
    and a light that moved far enough from the origin its slots were granted from that the reach
    it states for itself no longer describes where it stands.
 
+   The comparison also leaves behind the two answers a frame whose set changed is placed by: the
+   places of the lights the frame let go of, and the lights of the frame the sources hold no place
+   for, which are the lights those places are given to.
+
    The leaf a light resolved into is not what the lists are made of, and taking it for a change
    is what made them churn: a light that crossed a leaf boundary re-ran the whole map -- every
    light, every PVS row -- while the lists it came out with were the ones of the frame before
@@ -1215,12 +1400,22 @@ void ClusterLightLists::CountSourceChanges()
 {
     prevUidIndex.clear();
     curUidIndex.clear();
+    tombstoneIndices.clear();
 
     prevUidIndex.reserve(sources.size());
     curUidIndex.reserve(incoming.size());
 
     for (uint32_t i = 0; i < uint32_t(sources.size()); i++)
     {
+        // A place the frame before this one let go of is a place, not a light: nothing matches on
+        // it, and the light that takes it later is a light that was not there before this frame.
+        // It is one of the places this frame's own lights are given, so the walk collects them.
+        if (sources[i].tombstone)
+        {
+            tombstoneIndices.push_back(i);
+            continue;
+        }
+
         prevUidIndex.emplace_back(sources[i].uid, i);
     }
 
@@ -1237,6 +1432,8 @@ void ClusterLightLists::CountSourceChanges()
     stats.movedSources = 0;
 
     movedIndices.clear();
+    addedIndices.clear();
+    removedIndices.clear();
     frameToSource.assign(incoming.size(), 0);
 
     size_t prev = 0;
@@ -1247,7 +1444,10 @@ void ClusterLightLists::CountSourceChanges()
         if (cur >= curUidIndex.size() ||
             (prev < prevUidIndex.size() && prevUidIndex[prev].first < curUidIndex[cur].first))
         {
+            // The place the light held is one of the places this frame hands to the lights it
+            // brought, and it is a place no list is made of once its slots are given back.
             stats.removedSources++;
+            removedIndices.push_back(prevUidIndex[prev].second);
             prev++;
             continue;
         }
@@ -1255,6 +1455,7 @@ void ClusterLightLists::CountSourceChanges()
         if (prev >= prevUidIndex.size() || curUidIndex[cur].first < prevUidIndex[prev].first)
         {
             stats.addedSources++;
+            addedIndices.push_back(curUidIndex[cur].second);
             cur++;
             continue;
         }
@@ -1341,27 +1542,20 @@ void ClusterLightLists::ReorderStats()
     denied.swap(newDenied);
 }
 
-/* The counters are kept in the order the lists stand in. A frame that was handed the lists of
+/* The counters are kept in the order the lists stand in, which is the composition order for as
+   long as the lights keep the places they were composed in. A frame that was handed the lists of
    the previous one keeps the lights where they were composed, and the caller asks for its own
-   light order: the map this frame's lights stand in says which counter belongs to which of
-   them, and it is empty on a frame that put the counters back on the frame's own order. */
+   light order: the map this frame's lights stand in says which counter belongs to which of them,
+   and it is empty on a frame that put the counters back on the frame's own order. */
 void ClusterLightLists::GetGrants(uint32_t *pGranted, uint32_t *pDenied, uint32_t maxCount, uint32_t *pCount) const
 {
-    const uint32_t count = std::min(maxCount, uint32_t(granted.size()));
+    const bool     mapped = !frameToSource.empty();
+    const uint32_t lights = mapped ? uint32_t(frameToSource.size()) : uint32_t(granted.size());
+    const uint32_t count = std::min(maxCount, lights);
 
     for (uint32_t i = 0; i < count; i++)
     {
-        uint32_t from = i;
-
-        if (i < frameToSource.size())
-        {
-            from = frameToSource[i];
-
-            if (from >= granted.size())
-            {
-                continue;
-            }
-        }
+        const uint32_t from = mapped ? frameToSource[i] : i;
 
         if (pGranted != nullptr)
         {
@@ -1376,7 +1570,7 @@ void ClusterLightLists::GetGrants(uint32_t *pGranted, uint32_t *pDenied, uint32_
 
     if (pCount != nullptr)
     {
-        *pCount = uint32_t(granted.size());
+        *pCount = lights;
     }
 }
 

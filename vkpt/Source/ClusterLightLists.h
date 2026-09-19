@@ -37,19 +37,30 @@ class WorldLights;
 // everything else the composition is made of -- the map PVS, the cluster bounds -- comes from
 // WorldLights, so the lists are a function of the map and the registered light set alone.
 //
-// That is what makes the composition reusable: while no light appears, disappears, or moves
-// far enough that the reach it stated for itself no longer describes where it stands, the
-// lists of the previous frame are still exactly right, and the frame only pays for handing
-// them to the light manager again. A frame that does compose runs the same two passes the
-// host used to run: one light reaches every cluster its leaf's PVS marks visible and that its
-// own reach covers, a cluster keeps the closest of them in a fixed number of slots, and a
-// second pass tops a cluster up with the lights its own PVS hides but that the top-up reach
-// brings close enough.
+// That is what makes the composition reusable: while the light set is the one the lists were
+// composed from and no light moves far enough that the reach it stated for itself no longer
+// describes where it stands, the lists of the previous frame are still exactly right, and the
+// frame only pays for handing them to the light manager again. A frame that does compose runs
+// the same two passes the host used to run: one light reaches every cluster its leaf's PVS
+// marks visible and that its own reach covers, a cluster keeps the closest of them in a fixed
+// number of slots, and a second pass tops a cluster up with the lights its own PVS hides but
+// that the top-up reach brings close enough.
 //
 // Between the two stands the frame in which the light set is unchanged but for lights that
 // moved: a light that stays inside one source quantum of the origin its slots were granted
 // from left its lists right, and the margin its reach was granted with is what lets the frame
 // show the moved light where it stands now without walking a single other PVS row.
+//
+// The frame whose light set itself changed is the third shape, and it is not one the whole map
+// has to be composed for either: a light that appeared, a light that disappeared or one that
+// moved is a handful out of the set, and the lists the composition left are wrong only where
+// those lights reach. A light the frame still holds keeps the place it holds in the sources, and
+// with that place every slot that names it; the place a light that disappeared held is kept as a
+// tombstone, which holds no slot and is the place the next light that appears is given, so that
+// no slot of any other light moves and a set that churns does not grow; and a light that appears
+// is granted the clusters it reaches from where it stands. Only the clusters the changes reach are
+// composed again, and the composition stays the answer wherever that cannot be proved right, which
+// is also what it does with the tombstones: it compacts them.
 class ClusterLightLists
 {
 public:
@@ -65,8 +76,8 @@ public:
 
     const RgClusterLightStats &GetStats() const { return stats; }
 
-    // Slot accounting of every source of the last composition, in its order, and one cluster
-    // list as that composition left it.
+    // Slot accounting of the lights of the last frame, in the order the frame registered them,
+    // and one cluster list as the lists were left for it.
     void GetGrants(uint32_t *pGranted, uint32_t *pDenied, uint32_t maxCount, uint32_t *pCount) const;
     void GetClusterList(uint32_t cluster, uint64_t *pUniqueIds, uint32_t maxCount, uint32_t *pCount) const;
 
@@ -83,6 +94,11 @@ private:
         // is clamped to the top-up reach when the sources are taken: the two passes have to
         // agree on where a light stops mattering.
         float    reach;
+        /* Set on a place a light left behind, which is kept as a place that holds no light and
+           that no pass reads, so that the lights that stayed keep the places their slots name
+           them by. It is the place the next light that appears is given, and no slot is made of
+           it while it holds none. */
+        bool     tombstone;
     };
 
     void PrepareTables(const WorldLights &worldLights);
@@ -92,15 +108,19 @@ private:
     // Pass two for one cluster, as the composition runs it for every cluster.
     void TopUpCluster(const WorldLights &worldLights, uint32_t cluster, float reach);
     // Takes back the slots a light holds and the top-up slots of every cluster that holds one
-    // of them, so that the moved light can be placed again without composing the lists of a
-    // cluster whose own lights did not change.
+    // of them, so that a light that changed can be placed again without composing the lists of
+    // a cluster whose own lights did not change.
     void VacateSource(uint32_t sourceIndex);
     void DropTopUpSlots(uint32_t cluster);
     void MarkDirty(uint32_t cluster);
     void FillLists(UserPrint *pUserPrint);
-    // Places the lights that moved, and returns false when the frame is not one this can be
-    // done for and the caller has to compose.
-    bool UpdateMovedSources(const WorldLights &worldLights, UserPrint *pUserPrint);
+    // Places the lights that changed -- the ones that moved, the ones that appeared and the ones
+    // that disappeared -- and returns false when the frame is not one this can be done for and
+    // the caller has to compose.
+    bool UpdateSourceSet(const WorldLights &worldLights, UserPrint *pUserPrint);
+    // Lays the membership set out again with a new stride, keeping the bit of every source where
+    // the place it names stands. The stride grows only when the set of places does.
+    void ResizeSlotBits(uint32_t newWords);
     // Takes the origins, the leaves and the reaches of this frame's lights over the sources the
     // lists were composed from, leaving their order alone. False when the frame is not made of
     // the lights the lists hold.
@@ -154,10 +174,20 @@ private:
     std::vector<uint64_t> slotBits;
     uint32_t              bitsWords = 0;
     // Clusters whose top-up set has to be looked at again on this frame, and the lights that
-    // moved on it. Both are left over between frames only as capacity.
+    // changed on it. All of them are left over between frames only as capacity.
     std::vector<uint8_t>  clusterDirty;   // one per cluster
     std::vector<uint32_t> dirtyClusters;
-    std::vector<uint32_t> movedIndices;
+    std::vector<uint32_t> movedIndices;   // places in the sources
+    std::vector<uint32_t> addedIndices;   // lights of the frame
+    std::vector<uint32_t> removedIndices; // places in the sources
+    std::vector<uint32_t> changedIndices; // places in the sources, moved and added together
+    /* Places of the sources whose light left the scene, which hold no slot and are granted to no
+       other light for as long as they are kept: every slot names its light by the place it holds,
+       and a place that is kept names a light that is gone. They are kept because the lights that
+       stay keep the places their slots name them by, and they are given back to the lights that
+       appear, so that a set that churns neither grows nor has to be composed; the set is
+       compacted by a composition once they outgrow the lights that are left. */
+    std::vector<uint32_t> tombstoneIndices; // places in the sources
     /* Where each light of the frame stands in the sources: false while the sources are the
        frame's own lights in the frame's own order, true while they are the lights the lists
        were composed in. The counters are indexed by the latter. */
@@ -188,9 +218,10 @@ private:
     bool warnedAboutFullList = false;
     bool warnedAboutClusterClamp = false;
 
-    // Sorted (uid, index) pairs of the composition and of the frame being registered, used to
+    // Sorted (uid, index) pairs of the live sources and of the frame being registered, used to
     // tell a light that moved from one that appeared or disappeared, and to put the per-light
-    // counters of the composition back on the frame's own light order.
+    // counters of the composition back on the frame's own light order. The tombstones of the
+    // sources are not in them: they are not lights of any frame.
     std::vector<std::pair<uint64_t, uint32_t>> prevUidIndex;
     std::vector<std::pair<uint64_t, uint32_t>> curUidIndex;
 };

@@ -1247,9 +1247,13 @@ void RT_ClusterLightListsUpload (void)
 
 		/* The passes run inside the renderer, so their cost is reported rather than measured here:
 		   vis is the PVS walk, topup the reach pass, fill the compaction of the slots into the
-		   lists, upload the publication of them to the light manager. */
+		   lists, upload the publication of them to the light manager. totalMs is the whole of
+		   SetSources, the publication included, so the row that carries it holds the four rows
+		   below it and says what the lists cost on their own rather than inside the whole
+		   bracket. */
+		RT_Prof_Sample (RT_PROF_CLUSTERS_LISTS, st.totalMs);
 		RT_Prof_Sample (RT_PROF_CLUSTERS_VIS, st.visMs);
-		RT_Prof_Sample (RT_PROF_CLUSTERS2, st.topUpMs);
+		RT_Prof_Sample (RT_PROF_CLUSTERS_TOPUP, st.topUpMs);
 		RT_Prof_Sample (RT_PROF_CLUSTERS_FILL, st.fillMs);
 		RT_Prof_Sample (RT_PROF_CLUSTERS_UPLOAD, st.publishMs);
 	}
