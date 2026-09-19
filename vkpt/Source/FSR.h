@@ -46,12 +46,16 @@ namespace vkpt
             void OnFramebuffersSizeChange(const ResolutionState& resolutionState) override;
 
             FramebufferImageIndex Apply(
-                VkCommandBuffer cmd, uint32_t frameIndex,
+                VkCommandBuffer cmd,
+                uint32_t frameIndex,
                 const std::shared_ptr<Framebuffers>& framebuffers,
                 const RenderResolutionHelper& renderResolution,
                 RgFloat2D jitterOffset,
                 float timeDelta,
-                float nearPlane, float farPlane, float fovVerticalRad);
+                float nearPlane,
+                float farPlane,
+                float fovVerticalRad,
+                bool resetAccumulation);
 
             static RgFloat2D GetJitter(const ResolutionState& resolutionState, uint32_t frameId);
             static bool IsUpscaleVersionAvailable(RgRenderUpscaleTechnique technique);
