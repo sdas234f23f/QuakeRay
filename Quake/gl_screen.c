@@ -737,9 +737,9 @@ void SCR_DrawRTProf (cb_context_t *cbx, int x, int y)
 		const char *label;
 	} right[] = {
 		{ RT_PROF_ELIGHTS, "elights" }, { RT_PROF_WMODEL_LIGHTS, "wmodel lights" }, { RT_PROF_TELEPORTS, "teleports" },
-		{ RT_PROF_CLUSTERS, "clusters" }, { RT_PROF_CLUSTERS1, "clust pvs" },
+		{ RT_PROF_CLUSTERS, "clusters" }, { RT_PROF_CLUSTERS_LISTS, "clust lists" },
 		{ RT_PROF_CLUSTERS_RESOLVE, "clust resolve" }, { RT_PROF_CLUSTERS_VIS, "clust vis" },
-		{ RT_PROF_CLUSTERS_WALK, "clust walk" }, { RT_PROF_CLUSTERS2, "clust topup" },
+		{ RT_PROF_CLUSTERS_TOPUP, "clust topup" },
 		{ RT_PROF_CLUSTERS_FILL, "clust fill" }, { RT_PROF_CLUSTERS_UPLOAD, "clust upload" },
 	};
 
