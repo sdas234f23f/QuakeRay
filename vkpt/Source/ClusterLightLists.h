@@ -163,6 +163,9 @@ private:
        were composed in. The counters are indexed by the latter. */
     bool                  compositionOrder = false;
     std::vector<uint32_t> frameToSource;
+    // Where each light of the composition stands in the frame, the map the slots that were
+    // granted again on it are read through. Left over between frames only as capacity.
+    std::vector<uint32_t> sourceToFrame;
 
     std::vector<int32_t> gridHead;
     std::vector<int32_t> gridNext;

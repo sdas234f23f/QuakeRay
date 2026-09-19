@@ -981,8 +981,10 @@ static vec3_t rt_cluster_vieworg;
 int rt_cluster_cache_hits;    /* frames that found the light set unchanged and reused the lists */
 int rt_cluster_cache_misses;  /* frames that composed the lists again */
 int rt_cluster_miss_set;      /* compositions set off by lights appearing or disappearing */
-int rt_cluster_miss_leaf;     /* compositions set off by lights that gained or lost their leaf */
-int rt_cluster_miss_geom;     /* compositions set off by lights that moved or changed their reach */
+int rt_cluster_miss_move;     /* compositions set off by lights that moved, changed their reach,
+                                 or resolved into a different leaf */
+int rt_cluster_miss_other;    /* compositions with neither of those: a new map, a new top-up
+                                 reach, or a frame the incremental path turned down */
 int rt_cluster_last_grants;   /* (light, cluster) pairs the last composition granted */
 int rt_cluster_last_denied;   /* pairs it refused because the cluster had filled its slots */
 int rt_cluster_last_gated;    /* pairs it left out because the cluster stood beyond the light's reach */
@@ -1238,9 +1240,9 @@ void RT_ClusterLightListsUpload (void)
 			if (st.addedSources || st.removedSources)
 				rt_cluster_miss_set++;
 			else if (st.movedSources)
-				rt_cluster_miss_leaf++;
+				rt_cluster_miss_move++;
 			else
-				rt_cluster_miss_geom++;
+				rt_cluster_miss_other++;
 		}
 
 		/* The passes run inside the renderer, so their cost is reported rather than measured here:

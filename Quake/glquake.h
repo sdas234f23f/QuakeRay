@@ -386,11 +386,13 @@ extern int rt_cluster_cache_hits;
 extern int rt_cluster_cache_misses;
 
 // Why the cluster light lists were rebuilt, counted per rebuild. The set of registered lights
-// changed, a light gained or lost the leaf it resolved into, or a light moved or changed the
-// reach it states for itself.
+// changed; or a light moved or changed the reach it states for itself, which is what the composer
+// compares (an origin it drifted more than a source quantum away from, a reach that differs, or
+// the leaf it resolves into appearing or going away); or neither of the two, which is a new map,
+// a new top-up reach, or a frame the incremental path turned down.
 extern int rt_cluster_miss_set;
-extern int rt_cluster_miss_leaf;
-extern int rt_cluster_miss_geom;
+extern int rt_cluster_miss_move;
+extern int rt_cluster_miss_other;
 
 // Slots granted and refused by the last composition, reported by panel 3 of rt_stats. A non-zero
 // deny count means clusters are hitting the renderer's per-list limit and dropping lights. The
@@ -633,9 +635,11 @@ typedef struct
 	float    ms[RT_PROF_COUNT];
 	int      clusterCacheHits;   // frames of the window that reused the cached cluster light lists
 	int      clusterCacheMisses; // frames that had to rebuild them
-	int      clusterMissSet;     // rebuilds caused by a new set of registered lights
-	int      clusterMissLeaf;    // rebuilds caused by lights that gained or lost their leaf
-	int      clusterMissGeom;    // rebuilds caused by moved origins or changed reaches
+	int      clusterMissSet;     // rebuilds caused by lights appearing or disappearing
+	int      clusterMissMove;    // rebuilds set off by a light that moved, changed its reach or
+	                             // resolved into a different leaf
+	int      clusterMissOther;   // rebuilds with neither of those, i.e. a new map, a new top-up
+	                             // reach, or a frame the incremental path turned down
 	int      clusterGrants;      // slots granted by the last rebuild
 	int      clusterDenied;      // slots refused by the last rebuild
 	int      clusterGated;       // candidate slots refused for standing beyond the light's reach
