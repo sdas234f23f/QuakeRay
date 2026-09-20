@@ -108,7 +108,7 @@ task_handle_t prev_end_rendering_task = INVALID_TASK_HANDLE;
 	CVAR_DEF_T (rt_sun_bounce_range, "2000") \
 	CVAR_DEF_T (rt_sun_bounce_scale, "1.0") \
 	CVAR_DEF_T (rt_godrays, "1") \
-	CVAR_DEF_T (gr_intensity, "1") /* Q2RTX's god ray strength, hence the name */ \
+	CVAR_DEF_T (rt_godrays_intensity, "1") /* Q2RTX's gr_intensity: strength of the sun shafts */ \
 	CVAR_DEF_T (rt_denoiser, "1") \
 	CVAR_DEF_T (rt_no_textures, "0") \
 	CVAR_DEF_T (rt_antifirefly, "1") \
@@ -1875,7 +1875,7 @@ static void GL_EndRenderingTask (end_rendering_parms_t *parms)
 		.skyNee = CVAR_TO_FLOAT (rt_sky_nee) > 0.0f,
 		.skyViewerPosition = RT_VEC3 (r_origin),
 		.godRaysEnabled = CVAR_TO_BOOL (rt_godrays),
-		.godRaysIntensity = CVAR_TO_FLOAT (gr_intensity),
+		.godRaysIntensity = CVAR_TO_FLOAT (rt_godrays_intensity),
 		.godRaysFromSkyTexture = 0,
 		.godRaysSkyDirection = {{0.0f, 0.0f, 0.0f}},
 		.godRaysSkyColor = {{0.0f, 0.0f, 0.0f}},
