@@ -671,8 +671,14 @@ typedef struct RgTexturedAreaLightUploadInfo
     float           area;
     int             numVerts;
     RgFloat2D       uvVerts[MAX_TEXTURED_AREA_LIGHT_VERTS];
+    // Emission texture of the light. RG_NO_MATERIAL when the whole polygon glows evenly,
+    // and then meanEmiss is the emission. With a material the light samples the mask of
+    // that texture at the point it picks, and meanEmiss is the mean of that mask.
     RgMaterial      material;
     float           meanEmiss;
+    // Whether A/B/C are a fit of the surface's own uv. Recorded by the host for its own
+    // bookkeeping and not sent to the renderer: the shader always places its point as
+    // C + A * u + B * v, whatever the fit was.
     int             fit;
     int             isStatic;
 } RgTexturedAreaLightUploadInfo;

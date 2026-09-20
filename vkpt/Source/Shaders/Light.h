@@ -461,6 +461,10 @@ LightSample sampleTexturedAreaLight(const TexturedAreaLight l, const vec3 surfPo
 
     vec2 uv = sampleConvexPolygon(l.uvVerts, l.numVerts, pointRnd.x, pointRnd.y);
 
+    // The point is drawn uniformly over the light's polygon, so the emission is taken as it is
+    // there: reading the mask and also scaling by the mean emission would count the mask twice,
+    // and drawing the point from the CDF LUT would need that density divided out here to stay
+    // unbiased. A mask that reads black is a valid zero sample, not a miss.
     float mask = 1.0;
     float emiss = l.meanEmiss;
 
@@ -468,30 +472,6 @@ LightSample sampleTexturedAreaLight(const TexturedAreaLight l, const vec3 surfPo
     {
         mask = getTextureSampleLod(textureIndex, uv, 0.0).b;
         emiss = 1.0;
-
-        const uint cdfSeed = wellonsLowBias32(
-            floatBitsToUint(pointRnd.x) ^ floatBitsToUint(pointRnd.y));
-
-        vec2 cdfUv;
-        if (getTalCdfUv(textureIndex,
-                        rnd16(cdfSeed, 0u),
-                        vec2(rnd16(cdfSeed, 1u), rnd16(cdfSeed, 2u)),
-                        cdfUv))
-        {
-            vec2 tileMin, tileMax;
-            getTalUvTiles(l, tileMin, tileMax);
-
-            const vec2 tileSpan = tileMax - tileMin + 1.0;
-            const vec2 tileRnd = vec2(rnd16(cdfSeed, 3u), rnd16(cdfSeed, 4u));
-            const vec2 tiledUv = cdfUv + tileMin + min(floor(tileRnd * tileSpan), tileSpan - 1.0);
-
-            if (isUvInsideConvexPolygon(l.uvVerts, l.numVerts, tiledUv))
-            {
-                uv = tiledUv;
-                mask = 1.0;
-                emiss = l.meanEmiss;
-            }
-        }
     }
 
     r.position = texturedAreaLightWorldPos(l, uv);
