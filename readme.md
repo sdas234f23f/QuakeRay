@@ -1,69 +1,39 @@
 # QuakeRay
 
-QuakeRay **0.10.1** adds a path tracing renderer to id Software's [Quake](https://en.wikipedia.org/wiki/Quake_(video_game)).
-
-The renderer is a Q2RTX-style ray tracer (ported from [Q2RTX](https://github.com/NVIDIA/Q2RTX)) — it is **vendored into this repository** in the `vkpt/` folder (source + shaders + KTX/FidelityFX) and built as a static library linked straight into `quakeray.exe`. There is no external renderer library dependency.
-
-QuakeRay is based on the [vkQuake](https://github.com/Novum/vkQuake) — a port of QuakeSpasm to Vulkan API.
+QuakeRay is Ray Tracing engine for Quake 1, with a Q2RTX-style partial path traced features and a Vulkan backend.
 
 ## Features
 
 ### Path traced renderer
 
-* Q2RTX-style path traced lighting: NEE direct light (per-BSP-cluster light lists, light-selection CDF + adaptive shadow statistics), NEE indirect light with a second diffuse bounce, and explicit sun/sky light sampling combined with the traced bounce by multiple importance sampling
-* Per-BSP-cluster light lists — the world model's BSP leaves are used as clusters and the PVS is used for cluster visibility, exactly like Q2RTX (no distance-based cutoffs, occluded lights excluded per cluster). They are not rebuilt from scratch every frame: `rt_cluster_incremental` (on by default) reuses the lists as they stand while the frame registers the same lights and none of them has walked out of the quantum its slots were granted in, and a frame in which lights did move hands back only their own slots and gives them out again from where those lights stand now; `0` is Q2RTX's behaviour and composes the whole map on any change, which is the switch to try if a moving light ever leaves a spot of its own light behind
-* Indirect lighting in four levels (`rt_gi_level`, also in the video menu): off, half-resolution, one bounce, and a second diffuse bounce; how far sun light reaches into an indirect bounce is bounded by `rt_sun_bounce_range` and scaled by `rt_sun_bounce_scale`
-* Animated light entities (`rt_light_styles`) make their own fixture flicker, kept on the fixture by `rt_light_styles_reach`
-* Dynamic lights (torches, muzzle flashes, explosions) and map `light` entities as RT light sources, each class with its own intensity and radius knob
-* Point-of-interest lighting: lights near pickups, weapons, keys, ammo, armour and triggers are force-included in the light lists, so items never stand in the dark
-* Emissive surfaces: Q2RTX `.mat` emissives and classic fullbright textures (buttons, switches, light panels, runes, lava) emit light and tint nearby walls with their color
-* Emissive geometry sampled as textured area lights with a per-surface CDF, with its own intensity, blend mode, screen-color ceiling, sharp mask and mip boost knobs
-* A flashlight (`rt_flashlight`) with configurable muzzle offsets
-* ASVGF denoiser (Q2RTX), firefly suppression (`rt_antifirefly`) and a roughness floor for specular sampling (`rt_roughmin`)
-* `rt_debugflags` diagnostic views (raw unfiltered direct/indirect/specular, gradients, etc.)
+* Ray tracing with ReSTIR direct light sampling
+* FSR 2.0 and 3.1 support
+* TAL (Texture Area Lights) system: all emissive surfaces are sampled as textured area lights with a per-surface light, with its own intensity, blend mode, screen-color ceiling, sharp mask and mip boost knobs.
+* True Light Mode (opt-in): All light sources are TAL, which means all emissive textures are actual light sources.
+* Q2RTX-style path traced lighting.
+* ASVGF denoiser.
+* RT Global Illumination
+* NEE (Next Event Estimation) for the sun, emissives and dynamic lights.
+* per-BSP-cluster light lists.
+* Animated light entities (`rt_light_styles`) make their own fixture flicker, in accordance with the original light style, to preserve the original Quake 1 lighting design.
+* Full material system with per-brush and per-model metalness/roughness, normal map strength and texture-driven gloss maps, plus ray-traced water with animated wave normals and refraction.
 
-### Materials and surfaces
+## Graphics
 
-* Q2RTX-style materials: `.mat` definitions + `.pkz` archives mounted as native search paths, automatic detection from HD texture pack suffixes (`_gloss`, `_luma`, `_glow`)
-* `materials/*.yaml` (loose files or inside a `.pkz`) plus a per-map `materials/<mapname>.yaml` override list, re-read on map change, and an `rt_mat` console command
-* Per-brush and per-model metalness/roughness, normal map strength and texture-driven gloss maps
-* Ray-traced water with animated wave normals (speed, strength, sharpness, scale) and refraction with its own index of refraction; separate glass refraction, and a refraction depth for the multi-bounce reflection/refraction pass with an early-out for pixels that cannot see through
-* Split-path (reflection/refraction) surfaces resolve their two halves on alternating checkerboard fields and reconstruct the missing field from the four neighbours — Q2RTX's checkerboard composition
-* Classic turbulent-surface warp on lava and teleport textures, evaluated per hit in the ray tracer (`rt_turb_warp`), and the mirrored RT portal effect on teleport surfaces (`rt_teleport_portals`)
-* Alpha-cutout and alpha-blend materials
+* Dynamic HDR Tone mapping: overall brightness, exposure bias in EV, contrast as a mix of the fixed and the auto-exposure adapted curve
+* Procedural sky with a physical sky model
+* God rays — volumetric sun shafts
+* Volumetric fog
+* Bloom
+* Post-processing: chromatic aberration, and a configurable LUT for colour grading
 
-### Sky, atmosphere and effects
+## Roadmap
 
-* Procedural sky with a physical sky model, cloud layer (on/off, coverage, density, speed, composite color), a tintable sun disc, sun presets, and NEE sampling of the sky as an explicit light
-* Sun with its own intensity, pitch, yaw and preset, coloured by the sky and through the same radiometric fixup as the other lights
-* God rays — volumetric sun shafts (`rt_godrays`, `gr_intensity`) marched through a shadow map
-* Volumetric fog in three modes (off / simple / sky) with scattering, distance falloff, ambient term and an anisotropy-controlled artificial light source
-* Classic level fog from the map's `fog` key and the `fog <density> <r> <g> <b>` console command (what Arcane Dimensions' `globalfog.qc` drives at runtime), applied with the original `exp(-(density * distance)²)` falloff, its `skyfog` sky blend, and an on/off switch in `rt_level_fog`
-* Media-aware camera: underwater/slime/lava tint, acid fog, and a damage-driven screen flash with its transition
-* Bloom (`rt_bloom`) with its own multiplier for emissive surfaces
-* Tone mapping: overall brightness, exposure bias in EV, contrast as a mix of the fixed and the auto-exposure adapted curve
-* Screen effects: CRT curvature, chromatic aberration, screen waves, and the "vintage" modes (off / CRT / 200p / 480p / 720p) that render at low internal resolution
-
-### Image quality and video
-
-* Upscalers in the video menu: AMD FSR 3.1 (the default, Quality preset), AMD FSR 2.0, Nvidia DLSS (needs a build configured with `RG_WITH_NVIDIA_DLSS`), and Q2RTX's temporal TAAU upscaler, used together with a nearest-neighbour fallback when all three are off; the FSR path sharpens with AMD CAS
-* Render scale, sharpening (none / naive / AMD CAS), texture filtering (smooth / classic), particle style (none / circle / classic)
-* A minimal ray-traced HUD with configurable padding, and separate viewmodel FOV/width scaling
-* Field of view, vertical sync, max FPS, on-screen FPS
-* On-screen diagnostics: one `rt_stats` command with three panels (ray counters, per-pass GPU timings, CPU frame profile), plus the debug views above
-
-### Engine
-
-* Quake 1 game data (registered or shareware) and its two mission packs, plus mods through gamedirs and `.pak` files
-* Map formats: BSP29, BSP2 (`2PSB`/`BSP2`) and Quake 64 BSP, LordHavoc-style coloured lightmaps (`.lit`) and external entity files (`.ent`)
-* Raised limits for large mods: edicts up to 32000, 2048 models, sounds and particle types, 64 light styles, 64 KB network messages
-* vkQuake's QuakeC extensions (extra builtins and autocvars, gated by `pr_checkextension`)
-* Networking: UDP client/server, dedicated server, co-op and deathmatch; demo recording/playback and savegames
-* Audio: SDL2 output, CD music, and MP3/Ogg Vorbis/FLAC/Opus/WAV/XMP/UMX music files
-* Input: keyboard, mouse and SDL2 game controllers (with `gamecontrollerdb.txt` loaded from the base dir)
-* Windowed and fullscreen video modes with resolution and display selection
-
-The ray tracer is the only renderer — there is no classic (non-RT) fallback and no renderer switch. The engine's own lighting (lightmaps and dynamic-light marking) no longer runs: the ray tracer produces all the lighting, the Q2RTX way.
+* In-game light editor for emissive surfaces and dynamic lights.
+* Arcane Dimensions support (the original Quake 1 expansion pack)
+* Quake Remastered (2021) support (the official remaster of Quake 1)
+* Mixed rasterization and ray tracing for better performance on older GPUs (the current renderer is RT only, so it is limited to GPUs with ray tracing support).
+* Full physically correct path tracing.
 
 ## Changelog
 
