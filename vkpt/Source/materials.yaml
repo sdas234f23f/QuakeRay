@@ -359,27 +359,30 @@ materials:
     light_color: fff393
     light_brightness: 0.2
     is_light: true
+  - name: textures/tlight01_2
+    is_light: false
   - name: textures/tlight02
     texture_emissive: textures/tlight02_luma.png
     light_color: fff7c7
     light_brightness: 0.3
     is_light: true
   - name: textures/tlight03
+    texture_emissive: textures/tlight03_luma.png
     light_color: ffffdd
-    light_brightness: 0.05
+    light_brightness: 0.2
     is_light: true
   - name: textures/tlight04
     light_color: ffffdd
-    light_brightness: 0.05
+    light_brightness: 0.2
     is_light: true
   - name: textures/tlight05
     texture_emissive: textures/tlight05_luma.png
     light_color: b0b0ff
-    light_brightness: 0.05
+    light_brightness: 0.2
     is_light: true
   - name: textures/tlight06
     light_color: ffffdd
-    light_brightness: 0.05
+    light_brightness: 0.2
     is_light: true
   - name: textures/tlight07
     texture_emissive: textures/tlight07_luma.png
@@ -391,7 +394,7 @@ materials:
   - name: textures/tlight09
     texture_emissive: textures/tlight07_luma.png
     light_color: ffec15
-    light_brightness: 0.04
+    light_brightness: 0.1
     is_light: true
   - name: textures/tlight10
     texture_emissive: textures/tlight10_luma.png
@@ -468,7 +471,7 @@ materials:
   - name: textures/ceil1_1
     texture_emissive: textures/ceil1_1_luma.png
     light_color: bdf1ff
-    light_brightness: 0.03
+    light_brightness: 0.2
     is_light: true
   - name: textures/light1_5
     light_color: 7a7667
@@ -521,7 +524,7 @@ materials:
   - name: textures/switch_1
     color_emissive: d70000
     color_emissive_threshold: 0.16
-    light_brightness: 0.1
+    light_brightness: 0.05
     is_light: true
   - name: textures/+0light01
     texture_emissive: textures/+0light01_luma.png
@@ -617,7 +620,7 @@ materials:
     is_light: false
   - name: textures/z_exit
     texture_emissive: textures/z_exit_luma.png
-    light_brightness: 0.03
+    light_brightness: 0.05
     is_light: true
   - name: textures/+0planet
     texture_emissive: textures/+0planet_luma.png
@@ -642,7 +645,12 @@ materials:
   - name: textures/comp1_6
     texture_emissive: textures/comp1_6_luma.png
     light_color: ff0000
-    light_brightness: 0.03
+    light_brightness: 0.05
+    is_light: true
+  - name: textures/tech06_2
+    texture_emissive: textures/tech06_2_luma.png
+    light_color: ff0000
+    light_brightness: 0.05
     is_light: true
   - name: textures/twall1_1
     texture_emissive: textures/twall1_1_luma.png
