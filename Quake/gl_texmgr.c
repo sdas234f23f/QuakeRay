@@ -368,7 +368,14 @@ static void TexMgr_RT_SpecialFullbright (unsigned width, unsigned height, uint32
 void TexMgr_RT_SpecialEnd ()
 {
 	assert (rtspecial_started);
-	assert (rtspecial_target != NULL && rtspecial_info_albedoAlpha != NULL);
+
+	if (rtspecial_target == NULL || rtspecial_info_albedoAlpha == NULL)
+	{
+		/* nothing was saved: the albedo image could not be read back */
+		rtspecial_target = NULL;
+		rtspecial_started = false;
+		return;
+	}
 
 	if (!rtspecial_foundfullbright && rtspecial_target->rtmaterial == RG_NULL_HANDLE)
 	{
@@ -1760,20 +1767,55 @@ void TexMgr_ReloadNobrightImages (void)
 
 /*
 ================
+TexMgr_FindFullbrightTexture -- the glow/luma sidecar of a two-pass base texture
+
+The sidecar is loaded from "<base file>_glow" or "<base file>_luma", which is what
+its own source file is set to, so comparing both names pairs them up.
+================
+*/
+static gltexture_t *TexMgr_FindFullbrightTexture (const gltexture_t *base)
+{
+	gltexture_t *glt;
+	const size_t baselen = strlen (base->source_file);
+
+	if (!baselen || base->source_offset)
+		return NULL;
+
+	for (glt = active_gltextures; glt; glt = glt->next)
+	{
+		const char *suffix;
+
+		if (!(glt->flags & TEXPREF_RT_IS_EMISSIVE))
+			continue;
+		if (strlen (glt->source_file) <= baselen)
+			continue;
+		if (q_strncasecmp (glt->source_file, base->source_file, baselen))
+			continue;
+
+		suffix = glt->source_file + baselen;
+		if (!q_strcasecmp (suffix, "_glow") || !q_strcasecmp (suffix, "_luma"))
+			return glt;
+	}
+
+	return NULL;
+}
+
+/*
+================
 TexMgr_ReloadAllImages
 
 Reloads every reloadable image texture so that material properties baked in
 at load time (emissive colour, light brightness, ...) are re-applied from a
 fresh materials.yaml. Called by vid_restart.
 
-Skips lightmaps / surface-indices (they never carry a material) and the
-auxiliary fullbright texture of the two-pass load (TEXPREF_RT_IS_EMISSIVE),
-which has no material of its own -- the base texture holds the combined one.
+Skips lightmaps / surface-indices (they never carry a material) and reloads the
+auxiliary fullbright texture of the two-pass load together with its base
+texture, because the emission mask of the base material is derived from it.
 ================
 */
 void TexMgr_ReloadAllImages (void)
 {
-	gltexture_t *glt;
+	gltexture_t *glt, *fullbright;
 
 	for (glt = active_gltextures; glt; glt = glt->next)
 	{
@@ -1784,7 +1826,22 @@ void TexMgr_ReloadAllImages (void)
 		if (!glt->source_file[0] && !glt->source_offset)
 			continue;
 
+		fullbright = TexMgr_FindFullbrightTexture (glt);
+		if (!fullbright)
+		{
+			TexMgr_ReloadImage (glt, -1, -1);
+			continue;
+		}
+
+		/* Glow/luma textures are built in two passes: the base pass stores the
+		   albedo, the fullbright pass turns the sidecar into the emission mask of
+		   that albedo (see TexMgr_RT_SpecialFullbright). Both are needed, or the
+		   reload would drop the mask and the whole map would lose its emission. */
+		TexMgr_RT_SpecialStart (CVAR_TO_FLOAT (rt_brush_rough), CVAR_TO_FLOAT (rt_brush_metal));
 		TexMgr_ReloadImage (glt, -1, -1);
+		if (rtspecial_target != NULL)
+			TexMgr_ReloadImage (fullbright, -1, -1);
+		TexMgr_RT_SpecialEnd ();
 	}
 }
 

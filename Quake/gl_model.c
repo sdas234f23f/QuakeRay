@@ -655,9 +655,10 @@ static void Mod_LoadTextureTask (int i, load_texture_task_args_t *args)
 
 			if (data)
 			{
+				// the glow/luma file is the source, so that vid_restart can read it back
 				tx->fullbright = TexMgr_LoadImage (
 					NULL,
-					mod, filename2, fwidth, fheight, SRC_RGBA, data, filename, 0, 
+					mod, filename2, fwidth, fheight, SRC_RGBA, data, filename2, 0, 
 					TEXPREF_RT_IS_EMISSIVE | TEXPREF_MIPMAP | extraflags);
 			}
 		}
