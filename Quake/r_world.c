@@ -3387,7 +3387,7 @@ int RT_MapWorldCluster (int leaf_index)
 	if (rt_worldclusters.model != cl.worldmodel || !rt_worldclusters.leaf_cluster)
 		RT_BuildWorldClusters ();
 
-	if (leaf_index <= 0 || leaf_index >= rt_worldclusters.num_leafs)
+	if (leaf_index <= 0 || leaf_index > rt_worldclusters.num_leafs)
 		return 0;
 
 	return rt_worldclusters.leaf_cluster[leaf_index];
@@ -3455,7 +3455,7 @@ static void RT_ProjectVisRow (const uint8_t *p_compressed, int in_avail, int lea
 				const int leaf = (b << 3) + k + 1;
 				int32_t   cluster;
 
-				if (!(bits & (1u << k)) || leaf >= num_leafs)
+				if (!(bits & (1u << k)) || leaf > num_leafs)
 					continue;
 
 				cluster = p_leaf_cluster[leaf] - 1;
@@ -3514,16 +3514,27 @@ static int RT_CompressVisRow (const uint8_t *p_row, int row_bytes, uint8_t *p_ou
 static void RT_BuildWorldClustersIdentity (qmodel_t *model)
 {
 	const int num_leafs = model->numleafs;
+	// Cluster i is leaf i, and cluster 0 is reserved for the solid leaf and geometry that has no
+	// leaf of its own, so the table holds one cluster per leaf plus the reserved cluster 0.
+	const int num_clusters = num_leafs + 1;
 	const int row_bytes = (num_leafs + 31) / 8;
 
 	rt_worldclusters.num_leafs = num_leafs;
-	rt_worldclusters.leaf_cluster = (int32_t *)Mem_Alloc (sizeof (int32_t) * num_leafs);
+	rt_worldclusters.leaf_cluster = (int32_t *)Mem_Alloc (sizeof (int32_t) * num_clusters);
 	rt_worldclusters.pvs_row_bytes = (uint32_t)row_bytes;
 	rt_worldclusters.model = model;
 
-	RT_AllocClusterTables (num_leafs);
+	RT_AllocClusterTables (num_clusters);
 
-	for (int i = 0; i < num_leafs; i++)
+	/* Cluster 0 is the hole: the whole map, solid, no PVS row. An invalid or solid leaf maps to
+	   it, and it never names itself in a row. */
+	rt_worldclusters.leaf_cluster[0] = 0;
+	VectorCopy (model->mins, rt_worldclusters.cluster_mins[0].data);
+	VectorCopy (model->maxs, rt_worldclusters.cluster_maxs[0].data);
+	rt_worldclusters.cluster_flags[0] = RG_WORLD_CLUSTER_SOLID_BIT;
+	rt_worldclusters.vis_offsets[0] = -1;
+
+	for (int i = 1; i <= num_leafs; i++)
 	{
 		const mleaf_t *leaf = &model->leafs[i];
 		int32_t        offset = -1;
@@ -3583,7 +3594,8 @@ static void RT_BuildWorldClustersGrid (qmodel_t *model, const float *map_mins, c
 	uint8_t *row = (uint8_t *)Mem_Alloc (cluster_row_bytes);
 
 	rt_worldclusters.num_leafs = num_leafs;
-	rt_worldclusters.leaf_cluster = (int32_t *)Mem_Alloc (sizeof (int32_t) * num_leafs);
+	rt_worldclusters.leaf_cluster = (int32_t *)Mem_Alloc (sizeof (int32_t) * (num_leafs + 1));
+	rt_worldclusters.leaf_cluster[0] = 0;
 	rt_worldclusters.is_grid = 1;
 	rt_worldclusters.pvs_row_bytes = (uint32_t)cluster_row_bytes;
 	rt_worldclusters.model = model;
@@ -3617,7 +3629,7 @@ static void RT_BuildWorldClustersGrid (qmodel_t *model, const float *map_mins, c
 
 	rt_worldclusters.vis_offsets[0] = -1;
 
-	for (int i = 0; i < num_leafs; i++)
+	for (int i = 1; i <= num_leafs; i++)
 	{
 		const mleaf_t *leaf = &model->leafs[i];
 		float          center[3];
@@ -3655,7 +3667,7 @@ static void RT_BuildWorldClustersGrid (qmodel_t *model, const float *map_mins, c
 
 	cell_start[num_cells] = running;
 
-	for (int i = 0; i < num_leafs; i++)
+	for (int i = 1; i <= num_leafs; i++)
 	{
 		int cell;
 
@@ -3747,9 +3759,11 @@ void RT_BuildWorldClusters (void)
 	if (!model || !model->leafs || model->numleafs < 2)
 		return;
 
-	if (model->numleafs <= RT_WORLD_CLUSTER_MAX || !CVAR_TO_BOOL (rt_worldclusters_grid))
+	/* The identity table needs one cluster per leaf plus the reserved cluster 0, so it fits the
+	   renderer's table when the leaves do. */
+	if (model->numleafs < RT_WORLD_CLUSTER_MAX || !CVAR_TO_BOOL (rt_worldclusters_grid))
 	{
-		if (model->numleafs > RT_WORLD_CLUSTER_MAX)
+		if (model->numleafs >= RT_WORLD_CLUSTER_MAX)
 		{
 			/* Leaf indices go to the renderer as they are, and the renderer's tables hold
 			   RT_WORLD_CLUSTER_MAX of them, so what lies past that is not addressed at all. */
@@ -3762,8 +3776,9 @@ void RT_BuildWorldClusters (void)
 	}
 
 	/* The grid has to hold the leafs a light or a view can stand in, and the solid leafs reach
-	   all around the map, so the open ones are what its box is measured from. */
-	for (int i = 0; i < model->numleafs; i++)
+	   all around the map, so the open ones are what its box is measured from. Leaf 0 is the solid
+	   leaf and is skipped; the real leafs are leafs[1..numleafs]. */
+	for (int i = 1; i <= model->numleafs; i++)
 	{
 		const mleaf_t *leaf = &model->leafs[i];
 
@@ -3891,7 +3906,7 @@ static void RT_BuildClusterSkyVisibility (void)
 			everything = true;
 		}
 
-		for (int leaf = 1; !everything && leaf < num_leafs; leaf++)
+		for (int leaf = 1; !everything && leaf <= num_leafs; leaf++)
 		{
 			const int      c = rt_worldclusters.leaf_cluster[leaf];
 			const uint8_t *prow;
@@ -3956,7 +3971,7 @@ static void RT_BuildClusterSkyVisibility (void)
 				break;
 			}
 
-			// Bit b of the row is leaf b of the map, and the cluster table names that leaf.
+			// Bit b of the row names leaf b + 1, and the cluster table names that leaf.
 			for (b = 0; b < leaf_row_bytes * 8 && b < num_leafs; b++)
 			{
 				int target;
@@ -3964,7 +3979,7 @@ static void RT_BuildClusterSkyVisibility (void)
 				if (!(row[b >> 3] & (1u << (b & 7))))
 					continue;
 
-				target = rt_worldclusters.leaf_cluster[b];
+				target = rt_worldclusters.leaf_cluster[b + 1];
 
 				if (target > 0 && target < num_clusters)
 					rt_worldclusters.sky_vis[target >> 3] |= (uint8_t)(1u << (target & 7));
