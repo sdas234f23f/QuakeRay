@@ -296,7 +296,7 @@ void ShadowMap::CreatePipelineLayout()
     VkPushConstantRange pushRange = {};
     pushRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
     pushRange.offset = 0;
-    pushRange.size = 16 * sizeof(float);
+    pushRange.size = 32 * sizeof(float);
 
     VkPipelineLayoutCreateInfo layoutInfo = {};
     layoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
@@ -647,6 +647,8 @@ bool ShadowMap::Render(VkCommandBuffer cmd,
 
 void ShadowMap::DrawGeometry(VkCommandBuffer cmd, const VertexCollector::GeometryDrawInfo &draw)
 {
+    vkCmdPushConstants(cmd, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 16 * sizeof(float), 16 * sizeof(float), draw.model);
+
     const VkDeviceSize vertexOffset = 0;
     vkCmdBindVertexBuffers(cmd, 0, 1, &draw.vertexBuffer, &vertexOffset);
 

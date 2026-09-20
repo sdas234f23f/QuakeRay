@@ -829,9 +829,10 @@ std::vector<VertexCollector::GeometryDrawInfo> VertexCollector::GetGeometryDrawI
         return result;
     }
 
-    const VkDeviceAddress vertexBase = vertBuffer->GetAddress() + offsetof(ShVertex, position);
-    const VkDeviceAddress indexBase  = indexBuffer->GetAddress();
-    const uint32_t        stride     = sizeof(ShVertex);
+    const VkDeviceAddress vertexBase     = vertBuffer->GetAddress() + offsetof(ShVertex, position);
+    const VkDeviceAddress indexBase      = indexBuffer->GetAddress();
+    const VkDeviceAddress transformsBase = transformsBuffer->GetAddress();
+    const uint32_t        stride         = sizeof(ShVertex);
 
     for (const auto &[filter, f] : filters)
     {
@@ -868,6 +869,20 @@ std::vector<VertexCollector::GeometryDrawInfo> VertexCollector::GetGeometryDrawI
             {
                 info.firstIndex = 0;
             }
+
+            // Recover the transform index for this geometry from its device
+            // address in the transforms buffer, then convert the CPU-side
+            // RgTransform (kept up to date for movable/dynamic geometry) into
+            // the same column-major model matrix the RT shaders apply.
+            const VkDeviceAddress transformAddr = tr.transformData.deviceAddress;
+            const uint32_t        transformIndex =
+                (transformsBase != 0 && transformAddr >= transformsBase)
+                    ? static_cast<uint32_t>((transformAddr - transformsBase) / sizeof(VkTransformMatrixKHR))
+                    : 0;
+
+            const RgTransform &t =
+                reinterpret_cast<const RgTransform &>(mappedTransformData[transformIndex]);
+            Matrix::ToMat4Transposed(info.model, t);
 
             result.push_back(info);
         }
