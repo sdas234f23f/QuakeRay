@@ -66,7 +66,10 @@
 #define Q2_FLT_ATROUS_NORMAL_HF 16.0
 #define Q2_FLT_ATROUS_NORMAL_SPEC 1.0
 #define Q2_FLT_ATROUS_LUM_HF 16.0
-#define Q2_FLT_ATROUS_DEFLICKER_LF 0.75 // Q2RTX flt_atrous_deflicker_lf is 2.0 here; lower = stronger firefly/flat-LF clamp
+// Used only by the disabled LF deflicker pass (CmQ2AtrousLF.comp). It clamps a pixel to
+// K * the mean of its 8 neighbours, so K >= 1 leaves flat regions untouched. Q2RTX uses
+// flt_atrous_deflicker_lf = 2.0; the value below is what darkened flat regions.
+#define Q2_FLT_ATROUS_DEFLICKER_LF 0.75
 
 // Lower clamp for fwidth_depth: the reciprocal of the per-pixel depth change of
 // the pixel footprint (Q2RTX path_tracer_rgen.h). Same value as upstream, in

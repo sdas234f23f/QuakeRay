@@ -221,6 +221,14 @@ Q2SH interpolate_lf(sampler2D img_lf_shY, sampler2D img_lf_CoCg, ivec2 ipos)
         ivec2 p_lowres = ivec2(pos_ld) + off[i];
         ivec2 p_hires = p_lowres * Q2_GRAD_DWN + ivec2(1);
 
+        // Out-of-range taps are skipped rather than fetched with a zero weight: an
+        // out-of-range texelFetch is undefined, and a NaN would survive the weights.
+        // It also rejects the low-res texels that main() never writes when the render
+        // size is not a multiple of Q2_GRAD_DWN.
+        if(any(lessThan(p_hires, ivec2(0)))
+                || any(greaterThanEqual(p_hires, ivec2(globalUniform.renderWidth, globalUniform.renderHeight))))
+            continue;
+
         float p_depth = texelFetch(framebufQ2ViewDepth_Sampler, p_hires, 0).r;
         vec3 p_geo_normal = texelFetchNormalGeometry(p_hires);
 

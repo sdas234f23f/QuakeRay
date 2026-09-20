@@ -178,7 +178,7 @@ main()
         {
             ivec2 p = ivec2(pos_ld) + off[i];
 
-            if(p.x < field_left || p.x >= field_right || p.y >= height)
+            if(p.x < field_left || p.x >= field_right || p.y >= height || p.y < 0)
                 continue;
 
             if (sample_across_fields)
