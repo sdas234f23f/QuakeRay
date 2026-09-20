@@ -170,6 +170,7 @@ task_handle_t prev_end_rendering_task = INVALID_TASK_HANDLE;
 	CVAR_DEF_T (rt_poi_key, "1") \
 	\
 	CVAR_DEF_T (rt_sun, "1") \
+	CVAR_DEF_T (rt_sun_color, "255 255 255") \
 	CVAR_DEF_T (rt_sun_pitch, "140") \
 	CVAR_DEF_T (rt_sun_yaw, "120") \
 	CVAR_DEF_T (rt_sun_preset, "0") \
@@ -1203,6 +1204,7 @@ typedef struct
 typedef enum
 {
 	RT_COLOR_SKY,
+	RT_COLOR_SUN,
 	RT_COLOR_CLOUDS,
 	RT_COLOR_LIGHT,
 	RT_COLOR_GLOBALLIGHT,
@@ -1212,6 +1214,7 @@ typedef enum
 
 static rt_color_t rt_colors[RT_COLOR_COUNT] = {
 	[RT_COLOR_SKY]         = {.cvar = &rt_sky_color,        .fallback = {32 / 255.0f, 0.0f, 64 / 255.0f}, .dirty = true},
+	[RT_COLOR_SUN]         = {.cvar = &rt_sun_color,        .fallback = {1.0f, 1.0f, 1.0f},                .dirty = true},
 	[RT_COLOR_CLOUDS]      = {.cvar = &rt_sky_clouds_color, .fallback = {0.0f, 0.0f, 0.0f},                .dirty = true},
 	[RT_COLOR_LIGHT]       = {.cvar = &rt_light_color,      .fallback = {1.0f, 1.0f, 1.0f},                .dirty = true},
 	[RT_COLOR_GLOBALLIGHT] = {.cvar = &rt_globallight,      .fallback = {1.0f, 1.0f, 1.0f},                .dirty = true},
@@ -1294,6 +1297,11 @@ static void RT_ColorGet (rt_color_t *c, float *out)
 void RT_GetSkyColor (float color[3])
 {
 	RT_ColorGet (&rt_colors[RT_COLOR_SKY], color);
+}
+
+void RT_GetSunColor (float color[3])
+{
+	RT_ColorGet (&rt_colors[RT_COLOR_SUN], color);
 }
 
 void RT_GetSkyCloudsColor (float color[3])
@@ -1864,11 +1872,15 @@ static void GL_EndRenderingTask (end_rendering_parms_t *parms)
 		sky_base_color[0] = sky_base_color[1] = sky_base_color[2] = 0.0f;
 	}
 
+	vec3_t sun_disc_color;
+	RT_GetSunColor (sun_disc_color);
+
 	RgDrawFrameSkyParams sky_params = {
 		.skyType = CVAR_TO_BOOL (r_fastsky) ? RG_SKY_TYPE_COLOR
 		         : usePhysicalSky ? RG_SKY_TYPE_PROCEDURAL
 		         : RG_SKY_TYPE_RASTERIZED_GEOMETRY,
 		.skyColorDefault = RT_VEC3 (sky_base_color),
+		.sunDiscColor = RT_VEC3 (sun_disc_color),
 		.skyColorMultiplier = materials_only ? 0.0f : (usePhysicalSky ? skyBrightness : skyMult * skyBrightness),
 		.skyColorSaturation = CVAR_TO_FLOAT (rt_sky_tint),
 		.skyAmbientLod = CVAR_TO_FLOAT (rt_sky_ambient_lod),
@@ -1897,7 +1909,10 @@ static void GL_EndRenderingTask (end_rendering_parms_t *parms)
 
 		if (Sky_GetBrightestPoint (cl.time, brightest_dir, brightest_color))
 		{
-			RT_APPLY_SKY_COLOR (brightest_color);
+			// The brightest point of a rasterized sky stands in for the sun, so
+			// it takes the sun's colour like the directional light does -- and
+			// the same fraction of the light fixup.
+			RT_APPLY_SUN_COLOR (brightest_color);
 			RT_FIXUP_LIGHT_INTENSITY (brightest_color, true);
 			VectorScale (brightest_color, RT_SUN_LIGHT_INTENSITY_SCALE, brightest_color);
 
@@ -1913,7 +1928,7 @@ static void GL_EndRenderingTask (end_rendering_parms_t *parms)
 	RT_VEC3_SET (volume_light_angles, CVAR_TO_FLOAT (rt_sun_pitch), CVAR_TO_FLOAT (rt_sun_yaw), 0);
 
 	if (CVAR_TO_BOOL (rt_sun))
-		RT_GetSkyColor (volume_light_color);
+		RT_GetSunColor (volume_light_color);
 	else
 		volume_light_color[0] = volume_light_color[1] = volume_light_color[2] = 0.0f;
 
@@ -2295,7 +2310,7 @@ static void RT_SunPreset_f (cvar_t *var)
 		{140, 180, 255},
 	};
 
-	Cvar_Set ("rt_sky_color", va ("%d %d %d", presets[preset][0], presets[preset][1], presets[preset][2]));
+	Cvar_Set ("rt_sun_color", va ("%d %d %d", presets[preset][0], presets[preset][1], presets[preset][2]));
 }
 
 extern atomic_uint32_t rt_require_static_submit;

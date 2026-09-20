@@ -1101,6 +1101,12 @@ typedef struct RgDrawFrameSkyParams
     RgSkyType   skyType;
     // Used as a main color for RG_SKY_TYPE_COLOR.
     RgFloat3D   skyColorDefault;
+    // The colour of the sun's disc in the procedural sky: the sun itself, as
+    // opposed to skyColorDefault above, which tints the atmosphere it hangs in,
+    // so a tinted sky can hold a differently coloured sun. The host sends
+    // rt_sun_color here.
+    // Default: (1, 1, 1)
+    RgFloat3D   sunDiscColor;
     // The result sky color is multiplied by this value.
     float       skyColorMultiplier;
     float       skyColorSaturation;
@@ -1120,10 +1126,10 @@ typedef struct RgDrawFrameSkyParams
     RgBool32    godRaysEnabled;
     // Strength of the volumetric sun shafts: 1 is the look they were calibrated
     // with, 2 is twice as bright, 0 disables them (and then the shadow map that
-    // feeds them is not rendered either). The name follows Q2RTX's own
-    // gr_intensity knob, but its value cannot be compared with it: upstream
-    // multiplies the accumulated sun disc radiance by it, this one multiplies
-    // the directional light colour.
+    // feeds them is not rendered either). The host cvar is rt_godrays_intensity,
+    // this engine's naming of Q2RTX's own gr_intensity knob, but the two values
+    // cannot be compared: upstream multiplies the accumulated sun disc radiance
+    // by it, this one multiplies the directional light colour.
     // Default: 1
     float       godRaysIntensity;
     // For RG_SKY_TYPE_RASTERIZED_GEOMETRY (classic Quake sky texture, i.e.

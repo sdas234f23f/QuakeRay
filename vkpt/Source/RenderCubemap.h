@@ -39,10 +39,14 @@ public:
     {
         float faceBasis[18][4]; // 6 faces * (right, up, forward)
         float sunDirection[4];  // xyz = direction toward the sun, w = how much sun the sky shows (0 = no sun)
-        float sunColor[4];      // xyz color, w = sun angular radius (rad)
+        float skyTint[4];       // xyz = tint of the atmosphere (rt_sky_color), w = sun angular radius (rad)
         float skyParams[4];     // x = multiplier, y = tint strength, z = sun disc intensity, w = sun disc radius
         float cloudColor[4];    // xyz = cloud color, w = cloud time (s)
         float cloudParams[4];   // x = coverage, y = density, z = drift speed, w = enabled
+        // Appended after everything else so that a stale compiled shader (which
+        // does not know the field) still reads every field it does know at the
+        // same offset.
+        float sunDiscColor[4];  // xyz = colour of the sun disc (rt_sun_color), w unused
     };
 
 public:
