@@ -156,7 +156,8 @@ ShHitInfo getHitInfoPrimaryRay(
     const vec3 rayOrigin, const vec3 rayDirAX, const vec3 rayDirAY, 
     out vec2 motion, out float motionDepthLinear, 
     out vec3 gradDepth, out float depthNDC, out float depthLinear,
-    out float screenEmission)
+    out float screenEmission,
+    out uint emissionBlendCode)
 
 #elif defined(HITINFO_INL_RFL)
 
@@ -166,7 +167,8 @@ ShHitInfo getHitInfoWithRayCone_ReflectionRefraction(
     in out vec3 virtualPosForMotion,
     out float rayLen,
     out vec2 motion, out float motionDepthLinear,
-    out float screenEmission)
+    out float screenEmission,
+    out uint emissionBlendCode)
 
 #elif defined(HITINFO_INL_INDIR)
 
@@ -341,13 +343,13 @@ ShHitInfo getHitInfoBounce(
 
     if (tr.materials[0][MATERIAL_ROUGHNESS_METALLIC_EMISSION_INDEX] != MATERIAL_NO_TEXTURE)
     {
-        vec3 rme = 
+        vec4 rme = 
     #if defined(HITINFO_INL_PRIM)
-            getTextureSampleGrad(tr.materials[0][MATERIAL_ROUGHNESS_METALLIC_EMISSION_INDEX], texCoords[0], dTdx[0], dTdy[0]).xyz;
+            getTextureSampleGrad(tr.materials[0][MATERIAL_ROUGHNESS_METALLIC_EMISSION_INDEX], texCoords[0], dTdx[0], dTdy[0]);
     #elif defined(HITINFO_INL_RFL)
-            getTextureSampleDerivSet(tr.materials[0][MATERIAL_ROUGHNESS_METALLIC_EMISSION_INDEX], texCoords[0], derivSet, 0).xyz;
+            getTextureSampleDerivSet(tr.materials[0][MATERIAL_ROUGHNESS_METALLIC_EMISSION_INDEX], texCoords[0], derivSet, 0);
     #elif defined(HITINFO_INL_INDIR)
-            getTextureSampleLod(tr.materials[0][MATERIAL_ROUGHNESS_METALLIC_EMISSION_INDEX], texCoords[0], lod).xyz;
+            getTextureSampleLod(tr.materials[0][MATERIAL_ROUGHNESS_METALLIC_EMISSION_INDEX], texCoords[0], lod);
     #endif
 
     #if defined(HITINFO_INL_PRIM) || defined(HITINFO_INL_RFL)
@@ -376,12 +378,23 @@ ShHitInfo getHitInfoBounce(
         h.metallic  = rme[ 1 ];
         h.emission  = rme[ 2 ];
 
+    #if defined(HITINFO_INL_PRIM) || defined(HITINFO_INL_RFL)
+        // Per-material rt_emis_blend override authored in materials.yaml; 0 means
+        // "not authored" and the global cvar applies (the alpha of an authored
+        // _rme file is 255, which decodes to the same "not authored" state).
+        emissionBlendCode = uint( rme.a * 255.0 + 0.5 );
+    #endif
+
     }
     else
     {
         h.roughness = tr.geomRoughness;
         h.metallic  = tr.geomMetallicity;
         h.emission  = tr.geomEmission;
+
+    #if defined(HITINFO_INL_PRIM) || defined(HITINFO_INL_RFL)
+        emissionBlendCode = 0u;
+    #endif
     }
     
     h.roughness = globalUniform.squareInputRoughness == 0 ? h.roughness : square( h.roughness );

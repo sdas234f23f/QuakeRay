@@ -110,14 +110,28 @@ vec3 blendEmissionLayer( const vec3 hdr, const vec3 layer, const uint mode )
 }
 
 
+// Resolves the per-pixel emission blend mode. The primary ray pass stores the
+// material's authored mode (+1) in the alpha of framebufPrimaryToReflRefr;
+// 0 means "not authored" and any other out-of-range value (e.g. the 255 alpha of
+// an authored *_rme texture) falls back to the global rt_emis_blend cvar.
+uint decodeEmissionBlendMode( const uint code )
+{
+    if( code < 1u || code > 6u )
+    {
+        return globalUniform.emissionBlendMode;
+    }
+    return min( code - 1u, 5u );
+}
+
+
 // Q2RTX-style tone curve application (tone_mapping_apply.comp, SDR path).
 // Applies the noise-aware tone curve + auto-exposure + knee to the HDR image.
-vec3 finalizeColor( const vec3 hdr, const vec3 screenEmis )
+vec3 finalizeColor( const vec3 hdr, const vec3 screenEmis, const uint emisBlendMode )
 {
     const float strength = clamp( globalUniform.emissionBlendStrength, 0.0, 1.0 );
     const vec3  layer    = screenEmis * globalUniform.emissionMaxScreenColor * strength;
 
-    vec3 input_color = blendEmissionLayer( hdr, layer, globalUniform.emissionBlendMode );
+    vec3 input_color = blendEmissionLayer( hdr, layer, emisBlendMode );
 
     const float lum = max( getLuminance( input_color ), exp2( min_log_luminance ) );
 
@@ -332,6 +346,11 @@ void main()
 
     vec3 hdr        = texelFetch( framebufFinal_Sampler, pix, 0 ).rgb;
     const vec3 screenEmis = texelFetch( framebufScreenEmission_Sampler, pix, 0 ).rgb;
+    // per-material rt_emis_blend override, stored by the primary ray pass.
+    // That framebuffer is addressed in checkerboard space (like the throughput
+    // buffer below), so the regular pixel must be mapped first.
+    const uint emisBlendMode = decodeEmissionBlendMode(
+        texelFetch( framebufPrimaryToReflRefr_Sampler, getCheckerboardPix( pix ), 0 ).a );
 
     // volumetric sunlight (god rays) - additive, before tonemapping. The god
     // rays pass runs at half resolution (CmGodRays) and is bilaterally
@@ -355,7 +374,7 @@ void main()
         }
     }
 
-    vec3 color = finalizeColor( hdr, screenEmis );
+    vec3 color = finalizeColor( hdr, screenEmis, emisBlendMode );
     vec3 bloom = getBloomInput( hdr, screenEmis, pix );
 
     color = applyVolumetrics( pix, color );

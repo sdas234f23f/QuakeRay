@@ -298,6 +298,7 @@ static void rt_mat_reset(rt_material_t *mat)
     mat->bump_scale = 1.0f;
     mat->metalness_factor = 0.0f;
     mat->emissive_factor = 1.0f;
+    mat->emissive_blend = -1;
     mat->specular_factor = 1.0f;
     mat->base_factor = 1.0f;
     mat->light_brightness = 1.0f;
@@ -379,6 +380,20 @@ static void rt_mat_set_attribute(rt_material_t *mat, const char *key, const char
         mat->specular_factor = (float)atof(value);
     else if (!q_strcasecmp(key, "base_factor"))
         mat->base_factor = (float)atof(value);
+    else if (!q_strcasecmp(key, "emissive_blend"))
+    {
+        const int v = atoi(value);
+
+        if (v < 0 || v > RT_MAT_EMIS_BLEND_MAX)
+        {
+            Con_DWarning("RT mat: material '%s': emissive_blend %d is out of range 0..%d; ignored\n",
+                         mat->name, v, RT_MAT_EMIS_BLEND_MAX);
+        }
+        else
+        {
+            mat->emissive_blend = v;
+        }
+    }
     else if (!q_strcasecmp(key, "kind"))
         mat->kind = rt_mat_parse_kind(value);
     else if (!q_strcasecmp(key, "is_light"))
@@ -758,7 +773,7 @@ void RT_MAT_Cmd(void)
     }
 
     Con_Printf("material '%s': base=%s normals=%s emissive=%s gloss=%s mask=%s kind=%d "
-               "bump=%.2f rough=%.2f metal=%.2f emiss=%.2f spec=%.2f base=%.2f\n",
+               "bump=%.2f rough=%.2f metal=%.2f emiss=%.2f spec=%.2f base=%.2f emis_blend=%d\n",
                m->name,
                m->filename_base[0] ? m->filename_base : "-",
                m->filename_normals[0] ? m->filename_normals : "-",
@@ -766,5 +781,6 @@ void RT_MAT_Cmd(void)
                m->filename_gloss[0] ? m->filename_gloss : "-",
                m->filename_mask[0] ? m->filename_mask : "-",
                m->kind, m->bump_scale, m->roughness_override,
-               m->metalness_factor, m->emissive_factor, m->specular_factor, m->base_factor);
+               m->metalness_factor, m->emissive_factor, m->specular_factor, m->base_factor,
+               m->emissive_blend);
 }

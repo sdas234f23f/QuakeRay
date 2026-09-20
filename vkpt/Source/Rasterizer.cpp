@@ -97,6 +97,7 @@ Rasterizer::Rasterizer( VkDevice                                 _device,
         _uniform->GetDescSetLayout(),
         _tonemapping->GetDescSetLayout(),
         _volumetric->GetDescSetLayout(),
+        storageFramebuffers->GetDescSetLayout(),
     };
     CreatePipelineLayouts( layouts, std::size( layouts ), _textureManager->GetDescSetLayout() );
 
@@ -247,7 +248,8 @@ void Rasterizer::DrawToFinalImage( VkCommandBuffer                          cmd,
 
 
     typedef FramebufferImageIndex FI;
-    FI                            fs[] = { FI::FB_IMAGE_INDEX_DEPTH_NDC, FI::FB_IMAGE_INDEX_FINAL };
+    FI                            fs[] = { FI::FB_IMAGE_INDEX_DEPTH_NDC, FI::FB_IMAGE_INDEX_FINAL,
+                                           FI::FB_IMAGE_INDEX_PRIMARY_TO_REFL_REFR };
     storageFramebuffers->BarrierMultiple( cmd, frameIndex, fs );
 
 
@@ -273,6 +275,7 @@ void Rasterizer::DrawToFinalImage( VkCommandBuffer                          cmd,
         uniform->GetDescSet( frameIndex ),
         tonemapping->GetDescSet( frameIndex ),
         volumetric->GetDescSet( frameIndex ),
+        storageFramebuffers->GetDescSet( frameIndex ),
     };
 
     const DrawParams params = {
