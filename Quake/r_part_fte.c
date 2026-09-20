@@ -6869,7 +6869,7 @@ static void PScript_DrawParticleTypes (cb_context_t *cbx, float pframetime)
 			
 			RgRasterizedGeometryUploadInfo info = {
 				.renderType = RG_RASTERIZED_GEOMETRY_RENDER_TYPE_DEFAULT,
-				.vertexCount = 4, // !!! assuming that 'x' in "if (cl_numstrisvert + 'x' > cl_maxstrisvert[])" is always <=4 
+				.vertexCount = (uint32_t)tris->numvert,
 				.pVertices = rtvertices + tris->firstvert,
 				.indexCount = num_indices,
 				.pIndices = rtindices + tris->firstidx,
