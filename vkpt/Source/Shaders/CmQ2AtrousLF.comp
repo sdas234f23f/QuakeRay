@@ -100,8 +100,14 @@ filter_image(
             if(xx == 0 && yy == 0)
                 continue;
 
-            float w = float(all(greaterThanEqual(p_hires, ivec2(field_left, 0)))
-                    && all(lessThan(p_hires, ivec2(field_right, height))));
+            // Skip out-of-range neighbours instead of fetching them with a zero weight:
+            // texelFetch with out-of-range integer coordinates is undefined, and a NaN
+            // result would still poison the accumulated sum (NaN * 0 is NaN).
+            if(any(lessThan(p_hires, ivec2(field_left, 0)))
+                    || any(greaterThanEqual(p_hires, ivec2(field_right, height))))
+                continue;
+
+            float w = 1.0;
 
             // Use geometric normals so that we can blur over larger areas.
             // The lighting detail will be partially preserved by spherical harmonics.
@@ -138,6 +144,15 @@ filter_image(
     filtered_lf.CoCg = sum_color_lf.CoCg / sum_w_lf;
 }
 
+// Disabled in d8460b9f, where it darkened the LF signal around dark silhouettes
+// (screen frame, weapon). The pass is still defined for reference, but it has to be
+// corrected before it can run again:
+//   1. neighbours are not validated by depth or geometry normal, unlike filter_image,
+//      so unrelated geometry (a dark weapon in front of a lit wall) changes the result;
+//   2. Q2_FLT_ATROUS_DEFLICKER_LF is a ratio against the mean of the 8 neighbours, so
+//      it has to stay >= 1 to leave flat regions untouched; Q2RTX uses
+//      flt_atrous_deflicker_lf = 2.0, while the constant here is 0.75;
+//   3. the fetches below are not bounded (see filter_image for the pattern to use).
 void deflicker_image(
     sampler2D img_lf_shY,
     sampler2D img_lf_CoCg,
@@ -180,13 +195,20 @@ void
 main()
 {
     ivec2 ipos = ivec2(gl_GlobalInvocationID);
-    if(any(greaterThanEqual(ipos * Q2_GRAD_DWN, ivec2(globalUniform.renderWidth, globalUniform.renderHeight))))
+
+    // Reject invocations without a valid high-res anchor. For a render size of 3k + 1 the
+    // old test admitted one extra low-res column/row whose anchor texel lies outside the
+    // image, and every fetch with that anchor is undefined.
+    if(any(greaterThanEqual(ipos * Q2_GRAD_DWN + ivec2(1),
+                ivec2(globalUniform.renderWidth, globalUniform.renderHeight))))
         return;
 
     Q2SH filtered_lf;
 
     switch(push.iteration)
     {
+    // deflicker_image() used to run here; disabled in d8460b9f (black LF ghosting
+    // around the screen frame and the weapon). See its comment above.
     case 0: filtered_lf = q2LoadSH(framebufQ2AtrousPingLF_SH_Sampler, framebufQ2AtrousPingLF_COCG_Sampler, ipos); break;
     case 1: filter_image(framebufQ2AtrousPongLF_SH_Sampler, framebufQ2AtrousPongLF_COCG_Sampler, filtered_lf); break;
     case 2: filter_image(framebufQ2AtrousPingLF_SH_Sampler, framebufQ2AtrousPingLF_COCG_Sampler, filtered_lf); break;
