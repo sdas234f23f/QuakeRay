@@ -72,6 +72,17 @@ extern RgVertex *rtallbrushvertices;
    registry slot. Faces above it keep the whole-surface light. */
 #define RT_MAX_EMISSIVE_POLYS_PER_FACE 64
 
+/* A masked light has to keep the surface's own polygons, so a face with more corners than a light
+   carries is cut into convex pieces instead of being replaced by a square (see RT_SplitUvPolygon).
+   RT_MAX_UV_SPLIT_VERTS is how many corners a face may have and still be cut, and
+   RT_UV_SPLIT_PIECE_VERTS how many corners each piece takes: six at a time leaves a convex
+   remainder, so the largest accepted face comes apart in exactly the sixteen pieces
+   RT_MAX_UV_SPLIT_PIECES allows, which is also what bounds the lights one face can add. A face
+   past the split keeps the square, and its emission is then the mean of its mask. */
+#define RT_MAX_UV_SPLIT_VERTS   68
+#define RT_UV_SPLIT_PIECE_VERTS 6
+#define RT_MAX_UV_SPLIT_PIECES  16
+
 static RgTexturedAreaLightUploadInfo rt_wldlights_emissive[MAX_WORLDLIGHTS_COUNT];
 static int                           rt_wldlights_emissive_count = 0;
 
@@ -1400,10 +1411,12 @@ static float RT_SurfaceLightStyleScale (const msurface_t *surf, const vec3_t cen
 
 	for (int i = 0; i < MAXLIGHTMAPS && surf->styles[i] != 255; i++)
 	{
-		const int   style = surf->styles[i];
-		const float value = (float)d_lightstylevalue[style];
+		const int style = surf->styles[i];
+		/* The style value is 8.8 fixed point. Normalised here so that the dimmest style
+		   wins by comparison, exactly as the shader picks it for the visible material. */
+		const float value = (float)d_lightstylevalue[style] * (1.0f / 256.0f);
 
-		if (value >= 255.5f)
+		if (value >= 255.5f * (1.0f / 256.0f))
 			continue;
 
 		if (reach >= 0.0f)
@@ -1415,7 +1428,7 @@ static float RT_SurfaceLightStyleScale (const msurface_t *surf, const vec3_t cen
 		}
 
 		if (!dims || value < scale)
-			scale = value * (1.0f / 256.0f);
+			scale = value;
 		dims = true;
 	}
 
@@ -1469,16 +1482,16 @@ static float RT_WorldLightStyleScale (int index)
 
 	for (int k = 0; k < MAXLIGHTMAPS && surf->styles[k] != 255; k++)
 	{
-		const float value = (float)d_lightstylevalue[surf->styles[k]];
+		const float value = (float)d_lightstylevalue[surf->styles[k]] * (1.0f / 256.0f);
 
-		if (value >= 255.5f)
+		if (value >= 255.5f * (1.0f / 256.0f))
 			continue;
 
 		if (!accepted[k])
 			continue;
 
 		if (!dims || value < scale)
-			scale = value * (1.0f / 256.0f);
+			scale = value;
 		dims = true;
 	}
 
@@ -1511,11 +1524,15 @@ static qboolean RT_EmissiveLightParamsForTex(gltexture_t *light_tex, rt_emissive
 	if (!light_tex->rthaslightcolor && VectorLength (light_tex->rtemissivecolor) <= 0.0005f)
 		return false;
 
-	const qboolean has_mask = light_tex->rtemissivetex && light_tex->rtemissivemean > 0.0f;
+	/* Whether a mask is there is a question about the material, not about how bright the mask is:
+	   a mask that is black everywhere is still there, and the light built from it emits nothing
+	   instead of glowing evenly over its whole polygon. */
+	const qboolean has_mask = light_tex->rtemissivetex;
 
-	/* The mask is in the geometry now, so the shader never samples it: with no material the
-	   textured area light is uniform over its polygon and scaled by meanEmiss. */
-	p->material  = RG_BLEND_FACTOR_ONE;
+	/* The light has to glow where the surface glows, so a masked texture sends its material along
+	   and the shader reads the mask at the point it sampled. Only a texture with no mask is
+	   uniform over its polygon, and only there does meanEmiss describe the emission. */
+	p->material  = has_mask ? light_tex->rtmaterial : RG_NO_MATERIAL;
 	p->meanEmiss = has_mask ? light_tex->rtemissivemean : 1.0f;
 	p->glow      = false;
 	p->glow_mean = p->meanEmiss;
@@ -1686,6 +1703,71 @@ static int RT_ClipUvPolyToRect (const RgFloat2D *in, int n, const float *uvmin, 
 	return RT_ClipUvPolyEdge (tmp, m, 1, uvmax[1], false, out);
 }
 
+typedef struct rt_uv_piece_s
+{
+	RgFloat2D verts[MAX_TEXTURED_AREA_LIGHT_VERTS];
+	int       count;
+} rt_uv_piece_t;
+
+/*
+=================
+RT_SplitUvPolygon
+
+Cuts a uv polygon into convex pieces of at most MAX_TEXTURED_AREA_LIGHT_VERTS corners, and returns
+0 when there is no way to do it: a face whose uv collapses (no fit), or one with more corners than
+pieces can be cut from. A piece is a run of consecutive corners of the input in winding order, so it
+lies in the plane of the face and carries its uv: the pieces are the face, edges and all. That is
+what a light reading the mask needs, since a square standing in for a face would read the mask over
+a shape the surface does not have.
+=================
+*/
+static int RT_SplitUvPolygon (const RgFloat2D *uv, int n, rt_uv_piece_t *out, int out_max)
+{
+	RgFloat2D rest[RT_MAX_UV_SPLIT_VERTS];
+	int       num = 0;
+
+	if (n < 3 || n > RT_MAX_UV_SPLIT_VERTS || out_max < 1)
+		return 0;
+
+	for (int i = 0; i < n; i++)
+		rest[i] = uv[i];
+
+	/* A run of consecutive corners of a convex polygon is convex, and so is what is left after the
+	   chord from the first to the last of them is cut off; six at a time therefore cuts a face of
+	   any size into a handful of pieces. */
+	while (n > MAX_TEXTURED_AREA_LIGHT_VERTS)
+	{
+		if (num >= out_max || n < RT_UV_SPLIT_PIECE_VERTS + 2)
+			return 0;
+
+		rt_uv_piece_t *piece = &out[num++];
+
+		piece->count = RT_UV_SPLIT_PIECE_VERTS;
+
+		for (int i = 0; i < piece->count; i++)
+			piece->verts[i] = rest[i];
+
+		/* The remainder is the first corner, the last corner of the piece, and every corner after
+		   it. It is read and written from the front, and the write never reaches the read. */
+		int m = 1;
+
+		for (int i = RT_UV_SPLIT_PIECE_VERTS - 1; i < n; i++)
+			rest[m++] = rest[i];
+
+		n = m;
+	}
+
+	if (num >= out_max)
+		return 0;
+
+	out[num].count = n;
+
+	for (int i = 0; i < n; i++)
+		out[num].verts[i] = rest[i];
+
+	return num + 1;
+}
+
 static int RT_EmissiveGlowPolygons (const rt_uploadsurf_state_t *s, const RgFloat2D *surfuv, int vertcount,
                                     const vec3_t A, const vec3_t B, const rt_emissive_params_t *params,
                                     const RgTexturedAreaLightUploadInfo *base,
@@ -1705,7 +1787,8 @@ static int RT_EmissiveGlowPolygons (const rt_uploadsurf_state_t *s, const RgFloa
 		}
 	}
 
-	/* Same repetition range the shader samples with getTalUvTiles: one unit of uv is one tile. */
+	/* One unit of uv is one repetition of the texture, so the glow extents have to be cut out of
+	   every repetition the face covers. */
 	const int tileminx = (int)floor (uvmin[0]);
 	const int tilemaxx = (int)fmax ((double)ceil (uvmax[0]) - 1.0, (double)tileminx);
 	const int tileminy = (int)floor (uvmin[1]);
@@ -2001,13 +2084,26 @@ static void RT_AddEmissiveLight (const rt_uploadsurf_state_t *s)
 	VectorCopy (normal, light_info.normal.data);
 
 	qboolean poly_ok = false;
-	if (fit_ok && vertcount <= MAX_TEXTURED_AREA_LIGHT_VERTS)
+
+	/* A light reading the mask has to keep the surface's own geometry, so the surface's uv is
+	   kept aside whether or not a single polygon can hold the face. */
+	const qboolean uv_ok = (vertcount <= RT_MAX_UV_SPLIT_VERTS);
+	RgFloat2D      surfuv[RT_MAX_UV_SPLIT_VERTS];
+
+	if (uv_ok)
 	{
 		for (int i = 0; i < vertcount; i++)
 		{
-			light_info.uvVerts[i].data[0] = verts[i].texCoord[0];
-			light_info.uvVerts[i].data[1] = verts[i].texCoord[1];
+			surfuv[i].data[0] = verts[i].texCoord[0];
+			surfuv[i].data[1] = verts[i].texCoord[1];
 		}
+	}
+
+	if (fit_ok && vertcount <= MAX_TEXTURED_AREA_LIGHT_VERTS)
+	{
+		for (int i = 0; i < vertcount; i++)
+			light_info.uvVerts[i] = surfuv[i];
+
 		light_info.numVerts = vertcount;
 		VectorCopy (A, light_info.A.data);
 		VectorCopy (B, light_info.B.data);
@@ -2015,8 +2111,60 @@ static void RT_AddEmissiveLight (const rt_uploadsurf_state_t *s)
 		poly_ok = true;
 	}
 
+	/* A masked surface too complex for one light is cut into the convex pieces it is made of,
+	   each with the uv of its own corners, and each becomes a light of its own. Cutting is
+	   preferred over the square below because the square would read the mask over a shape the
+	   surface does not have, and it is preferred over dropping the light because the surface
+	   does glow, only not evenly. */
+	if (!poly_ok && fit_ok && uv_ok && params.material != RG_NO_MATERIAL)
+	{
+		rt_uv_piece_t pieces[RT_MAX_UV_SPLIT_PIECES];
+		const int     num = RT_SplitUvPolygon (surfuv, vertcount, pieces, RT_MAX_UV_SPLIT_PIECES);
+
+		if (num > 0)
+		{
+			vec3_t ab;
+			CrossProduct (A, B, ab);
+
+			for (int i = 0; i < num; i++)
+			{
+				RgTexturedAreaLightUploadInfo piece = light_info;
+
+				for (int k = 0; k < pieces[i].count; k++)
+					piece.uvVerts[k] = pieces[i].verts[k];
+
+				piece.numVerts = pieces[i].count;
+				piece.area     = (float) fabs (RT_UvPolyArea (pieces[i].verts, pieces[i].count)) * VectorLength (ab);
+				piece.uniqueID = RT_GetBrushSurfUniqueId (s->entuniqueid, s->model, s->surf, (uint64_t) (i + 1));
+				piece.fit      = 1;
+				VectorCopy (A, piece.A.data);
+				VectorCopy (B, piece.B.data);
+				VectorCopy (C, piece.C.data);
+				VectorCopy (params.color, piece.color.data);
+
+				RT_UploadEmissiveLight (&piece, is_static_geom, s->surf, light_tex);
+			}
+
+			if (watch)
+				watch->lights += num;
+
+			return;
+		}
+	}
+
+	/* What is left is a face no single polygon holds: one with more corners than a light carries,
+	   or one whose uv collapses (no fit), and a masked one with more corners than can be cut up.
+	   A square over the surface's own area keeps the light's energy, which is all an unmasked
+	   texture needs. */
 	if (!poly_ok)
 	{
+		/* The square stands for the surface and carries a uv of its own, so the mask cannot be
+		   read through it: a sample of it would land on a point of the texture the surface does
+		   not cover, and a face whose uv the light cannot follow, or one larger than the cut
+		   takes, would flicker with that sample instead of glowing evenly. It keeps the mean of
+		   the mask instead, which is the emission an unmasked light carries as well. */
+		light_info.material = RG_NO_MATERIAL;
+
 		VectorScale (accum_center, 1.0f / total_area, accum_center);
 
 		const float L = sqrt (total_area);
@@ -2756,6 +2904,9 @@ void RT_UploadAllWorldModelLights (void)
 			rt_emissive_params_t params;
 			if (RT_EmissiveLightParamsForTex (cur_tex, &params))
 			{
+				/* The mask the shader samples belongs to the frame the surface shows, so the
+				   material moves with it; the geometry stays where the surface is. */
+				li->material  = params.material;
 				li->meanEmiss = params.meanEmiss;
 				VectorCopy (params.color, li->color.data);
 			}
@@ -2771,8 +2922,9 @@ void RT_UploadAllWorldModelLights (void)
 
 			/* A switched-off style dims the light's emission to zero instead of dropping it
 			   from the light array: a missing id leaves a hole in every cluster list naming it.
-			   The scale goes on the color, not meanEmiss, because meanEmiss is the light's
-			   selection mass and zeroing it would eject the light from the cluster lists. */
+			   The scale goes on the color, which is the radiance the shader reads of a light
+			   with a mask and without one alike. meanEmiss is not it: for a masked light the
+			   shader never reads meanEmiss, so a style written there would not dim the light. */
 			VectorScale (li->color.data, style_scale, li->color.data);
 		}
 
@@ -3245,7 +3397,8 @@ void RT_WorldCensus (void)
 		{
 			all_light_faces++;
 
-			if (light_tex->rtemissivetex && light_tex->rtemissivemean > 0.0f)
+			// has_mask of RT_EmissiveLightParamsForTex: the texture carries a mask, bright or not.
+			if (light_tex->rtemissivetex)
 				masked_light_faces++;
 		}
 

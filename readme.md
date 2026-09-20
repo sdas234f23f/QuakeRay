@@ -8,7 +8,7 @@ QuakeRay is Ray Tracing engine for Quake 1, with a Q2RTX-style partial path trac
 
 * Ray tracing with ReSTIR direct light sampling
 * FSR 2.0 and 3.1 support
-* TAL (Texture Area Lights) system: all emissive surfaces are sampled as textured area lights with a per-surface light, with its own intensity, blend mode, screen-color ceiling, sharp mask and mip boost knobs.
+* TAL (Texture Area Lights) system: all emissive surfaces are sampled as textured area lights with a per-surface light, with its own intensity, blend mode, screen-color ceiling, sharp mask and mip boost knobs. A light reads the same emission mask the visible surface does, in the point it samples, so a face bright in its centre and dark around it lights the scene from its lit part alone — through the light styles and the animated frames as well.
 * True Light Mode (opt-in): All light sources are TAL, which means all emissive textures are actual light sources.
 * Q2RTX-style path traced lighting.
 * ASVGF denoiser.
@@ -89,6 +89,14 @@ Steps:
    ```
 
    `SDL2.dll` and all codec DLLs are copied next to `quakeray.exe` automatically during the build. The renderer is compiled into the executable — no external renderer DLL is needed. The `.spv` shaders and the blue noise texture are loaded from the game data (`id1/shaders/`, `id1/BlueNoise_LDR_RGBA_128.ktx2`).
+
+5. (Optional) Package a release — needs a Release build (`.\build_win.ps1 Release`):
+
+   ```
+   .\bundle_release.ps1
+   ```
+
+   Writes `dist\QuakeRay-<version>-win64.zip`: the Release `quakeray.exe`, the runtime DLLs, the `id1` runtime assets (`materials`, `mdl_skins`, `progs`, `shaders`, `textures` and the blue noise / water normal KTX2 tables) and `readme.md`, `changelog.md` and `LICENSE.txt`. The version in the archive name is read from `ENGINE_VERSION` / `ENGINE_VER_PATCH` (`Quake\quakedef.h`) unless `-Version` passes one in; debug artifacts are never included, and the original game data is not bundled.
 
 ## Ray tracing settings
 
