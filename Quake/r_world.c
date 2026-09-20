@@ -46,6 +46,8 @@ extern cvar_t rt_light_styles;
 extern cvar_t rt_light_styles_reach;
 extern cvar_t rt_wmodel_lights_batch;
 extern cvar_t rt_world_batch_merge;
+extern cvar_t rt_truelight;
+extern cvar_t rt_materials_only;
 extern cvar_t rt_debugemissive;
 extern cvar_t rt_light_report_filter;
 extern cvar_t rt_worldcensus;
@@ -1330,6 +1332,16 @@ static void RT_ScaleEmissiveLightColor (vec3_t color)
 	RT_FIXUP_LIGHT_INTENSITY (color, true);
 }
 
+/* rt_truelight 0 renders the original Quake light sources only (legacy entity lights,
+   classic dlights, and model/sprite light_color spheres) and disables textured area
+   lights -- the emissive-texture (TAL) lights -- entirely. rt_truelight 1 (default) and
+   2 keep them on. rt_materials_only always keeps them on, as they are what that mode
+   previews. */
+static qboolean RT_AllowTexturedAreaLights (void)
+{
+	return CVAR_TO_BOOL (rt_materials_only) || CVAR_TO_FLOAT (rt_truelight) > 0.0f;
+}
+
 static void RT_UploadEmissiveLight (const RgTexturedAreaLightUploadInfo *light_info, qboolean is_static_geom,
                                     const msurface_t *surf, gltexture_t *light_tex)
 {
@@ -1491,7 +1503,7 @@ typedef struct rt_emissive_params_s
 	float      glow_mean;
 } rt_emissive_params_t;
 
-static qboolean RT_EmissiveLightParamsForTex (gltexture_t *light_tex, rt_emissive_params_t *p)
+static qboolean RT_EmissiveLightParamsForTex(gltexture_t *light_tex, rt_emissive_params_t *p)
 {
 	if (!light_tex || !light_tex->rtislight)
 		return false;
@@ -1503,7 +1515,7 @@ static qboolean RT_EmissiveLightParamsForTex (gltexture_t *light_tex, rt_emissiv
 
 	/* The mask is in the geometry now, so the shader never samples it: with no material the
 	   textured area light is uniform over its polygon and scaled by meanEmiss. */
-	p->material  = RG_NO_MATERIAL;
+	p->material  = RG_BLEND_FACTOR_ONE;
 	p->meanEmiss = has_mask ? light_tex->rtemissivemean : 1.0f;
 	p->glow      = false;
 	p->glow_mean = p->meanEmiss;
@@ -1580,6 +1592,26 @@ static gltexture_t *RT_CanonicalLightTex (texture_t *base, int alt)
 	}
 
 	return fallback;
+}
+
+/*
+=================
+RT_AnimatedLightTex
+
+The frame of an animated texture the surface currently shows, resolved at cl.time, or the base
+frame when the current frame cannot host a light. It is the time-dependent counterpart of
+RT_CanonicalLightTex: it is read only to re-derive a stored light's emission per frame, never to
+pick the light's identity or geometry, so the time dependency does not shift the light array.
+=================
+*/
+static gltexture_t *RT_AnimatedLightTex (texture_t *base)
+{
+	if (!base || !base->gltexture)
+		return NULL;
+
+	gltexture_t *frame = R_TextureAnimation (base, 0)->gltexture;
+
+	return (frame && frame->rthasmaterial) ? frame : base->gltexture;
 }
 
 static float RT_UvPolyArea (const RgFloat2D *p, int n)
@@ -1725,6 +1757,9 @@ static int RT_EmissiveGlowPolygons (const rt_uploadsurf_state_t *s, const RgFloa
 
 static void RT_AddEmissiveLight (const rt_uploadsurf_state_t *s)
 {
+	if (!RT_AllowTexturedAreaLights ())
+		return;
+
 	gltexture_t *light_tex = s->light_tex ? s->light_tex : s->diffuse_tex;
 	rt_emis_watch_t *watch = RT_EmisWatch (light_tex ? light_tex->name : NULL);
 
@@ -2670,8 +2705,32 @@ static void RT_RegisterWorldModelLight (const RgTexturedAreaLightUploadInfo *lt,
 	}
 }
 
+/* The light manager drops a light whose colour channels sum to less than 0.0001
+   (IsColorTooDim in vkpt). A light style or a dark animation frame switching the light off must
+   not push the colour below that: a dropped id leaves a hole in every cluster list naming it,
+   which is the whole-scene flicker. Keep the faintest possible emission instead. */
+#define RT_MIN_EMISSIVE_COLOR_SUM 0.0002f
+
+static void RT_KeepEmissiveLightColor (vec3_t color)
+{
+	float sum = 0.0f;
+
+	for (int i = 0; i < 3; i++)
+		if (color[i] > 0.0f)
+			sum += color[i];
+
+	if (sum < RT_MIN_EMISSIVE_COLOR_SUM)
+	{
+		const float c = RT_MIN_EMISSIVE_COLOR_SUM * (1.0f / 3.0f);
+		color[0] = color[1] = color[2] = c;
+	}
+}
+
 void RT_UploadAllWorldModelLights (void)
 {
+	if (!RT_AllowTexturedAreaLights ())
+		return;
+
 	if (rt_wldlights_style_accepted_dirty ||
 	    rt_wldlights_style_accepted_reach != CVAR_TO_FLOAT (rt_light_styles_reach))
 	{
@@ -2681,27 +2740,48 @@ void RT_UploadAllWorldModelLights (void)
 	for (int i = 0; i < rt_wldlights_emissive_count; i++)
 	{
 		RgTexturedAreaLightUploadInfo *li = &rt_wldlights_emissive_upload[i];
+		const msurface_t *surf = rt_wldlights_emissive_surf[i];
 		gltexture_t *light_tex = rt_wldlights_emissive_tex[i];
 
 		*li = rt_wldlights_emissive[i];
 
-		/* The light keeps the parameters of the frame that was stored when the map was
-		   loaded. Re-deriving them from the animation frame the surface currently shows
-		   changes the light's selection mass several times a second, and a frame without
-		   emissive parameters dropped the light from the frame's light array altogether.
-		   Both are visible across the whole map, because one light is listed in every
-		   cluster of its PVS, and the lists themselves never change. */
+		/* Animated world textures (teleporters and the like) light the level from the frame
+		   they currently show. Re-derive the emission from that frame every frame. The light's
+		   identity and geometry come from the surface and stay fixed, so this never moves the
+		   light in the array or in the cluster lists; only its colour and mean emission change.
+		   A frame that cannot host a light dims the light instead of dropping it. */
+		gltexture_t *cur_tex = RT_AnimatedLightTex (surf->texinfo->texture);
+		if (cur_tex && cur_tex != light_tex)
+		{
+			rt_emissive_params_t params;
+			if (RT_EmissiveLightParamsForTex (cur_tex, &params))
+			{
+				li->meanEmiss = params.meanEmiss;
+				VectorCopy (params.color, li->color.data);
+			}
+			else
+			{
+				VectorCopy (vec3_origin, li->color.data);
+			}
+		}
+
 		if (light_tex && light_tex->rtlightstyles && CVAR_TO_BOOL (rt_light_styles))
 		{
 			const float style_scale = RT_WorldLightStyleScale (i);
 
-			/* A switched-off style dims the light to zero emission instead of dropping it:
-			   an id that is missing from a frame's light array leaves a hole in every cluster
-			   list naming it, which the renderer resolves to nothing for that frame. */
-			li->meanEmiss *= style_scale;
+			/* A switched-off style dims the light's emission to zero instead of dropping it
+			   from the light array: a missing id leaves a hole in every cluster list naming it.
+			   The scale goes on the color, not meanEmiss, because meanEmiss is the light's
+			   selection mass and zeroing it would eject the light from the cluster lists. */
+			VectorScale (li->color.data, style_scale, li->color.data);
 		}
 
 		RT_ScaleEmissiveLightColor (li->color.data);
+
+		/* The light manager drops a light whose colour channels sum to less than its keep
+		   threshold, so a light switched off by its style or by a dark animation frame is
+		   clamped to a barely-there emission instead of being dropped. */
+		RT_KeepEmissiveLightColor (li->color.data);
 	}
 
 	if (CVAR_TO_BOOL (rt_wmodel_lights_batch))

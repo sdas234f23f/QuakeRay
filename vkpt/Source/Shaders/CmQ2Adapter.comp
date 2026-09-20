@@ -42,7 +42,7 @@ layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
 vec3 q2AntiFirefly(const ivec2 pix, const vec3 center, const usampler2D buf, const int width, const int height)
 {
-    float maxNeighborLum = 0.0;
+    float maxNeighborLum = 1.0f;
     float centerLum = getLuminance(center);
 
     if (centerLum < Q2_FIREFLY_MIN_LUM)

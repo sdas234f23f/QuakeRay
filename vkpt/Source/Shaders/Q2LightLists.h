@@ -30,7 +30,7 @@
 #ifndef Q2_LIGHT_LISTS_H_
 #define Q2_LIGHT_LISTS_H_
 
-#define Q2_MAX_BRUTEFORCE_SAMPLING 8
+#define Q2_MAX_BRUTEFORCE_SAMPLING 16
 
 // Light statistics modes, mirroring the rt_q2_lightstats cvar: they only affect how
 // often the statistics are accumulated and whether they are applied, so the modes can
@@ -188,8 +188,7 @@ float q2LightSelectionMass(const ShLightEncoded encoded, const vec3 p, const vec
         const TexturedAreaLight l = decodeAsTexturedAreaLight(encoded);
         const vec3 center = getTexturedAreaLightCenter(l);
         const DirectionAndLength centerToSurf = calcDirectionAndLength(center, p);
-        float sa = safeSolidAngle(l.area * getGeometryFactorClamped(l.normal, centerToSurf.dir, centerToSurf.len));
-        return sa * max(l.meanEmiss, 0.0);
+        return safeSolidAngle(l.area * getGeometryFactorClamped(l.normal, centerToSurf.dir, centerToSurf.len));
     }
     else
     {
