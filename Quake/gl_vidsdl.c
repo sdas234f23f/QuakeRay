@@ -2715,9 +2715,17 @@ VID_Restart_f -- johnfitz -- change video modes on the fly
 */
 static void VID_Restart_f (void)
 {
-	if (vid_locked || !vid_changed)
+	if (vid_locked)
 		return;
-	VID_Restart (true);
+
+	/* Re-read materials.yaml and re-apply the material properties to every
+	   texture so edits are picked up without a full engine restart. */
+	GL_WaitForDeviceIdle ();
+	RT_MAT_Reload ();
+	TexMgr_ReloadAllImages ();
+
+	if (vid_changed)
+		VID_Restart (true);
 }
 
 /*

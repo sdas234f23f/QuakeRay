@@ -134,6 +134,7 @@ gltexture_t *TexMgr_LoadImage (
 	unsigned flags);
 void TexMgr_ReloadImage (gltexture_t *glt, int shirt, int pants);
 void TexMgr_ReloadNobrightImages (void);
+void TexMgr_ReloadAllImages (void);
 
 // RT: kludge to load fullbright image as an emissive part of RgMaterial.
 // 1st call of TexMgr_LoadImage - prepare everything for 'rgCreateStaticMaterial', but hold until:

@@ -41,6 +41,7 @@ static rt_material_t rt_map_materials[RT_MAT_MAX_MAP];
 static int rt_map_count = 0;
 static qboolean rt_initialized = false;
 static cmd_function_t *rt_mat_cmd = NULL;
+static char rt_current_map[MAX_QPATH];
 
 static cvar_t rt_materials = { "rt_materials", "1", CVAR_ARCHIVE };
 cvar_t rt_mat_debug = { "rt_mat_debug", "0", 0 };
@@ -628,6 +629,8 @@ void RT_MAT_ChangeMap(const char *mapname)
         return;
     }
 
+    q_strlcpy(rt_current_map, mapname ? mapname : "", sizeof(rt_current_map));
+
     rt_map_count = 0;
 
     char name[MAX_QPATH];
@@ -635,6 +638,26 @@ void RT_MAT_ChangeMap(const char *mapname)
 
     rt_mat_load_ctx_t ctx = { rt_map_materials, &rt_map_count, RT_MAT_MAX_MAP };
     rt_mat_load_cb(name, &ctx);
+}
+
+void RT_MAT_Reload(void)
+{
+    if (!rt_initialized)
+    {
+        return;
+    }
+
+    rt_global_count = 0;
+    rt_map_count = 0;
+
+    rt_mat_load_ctx_t ctx = { rt_global_materials, &rt_global_count, RT_MAT_MAX_GLOBAL };
+    RT_PKZ_ListFiles("materials/", ".yaml", rt_mat_load_cb, &ctx);
+    rt_mat_find_dir_mats(rt_mat_load_cb, &ctx);
+
+    if (rt_current_map[0])
+    {
+        RT_MAT_ChangeMap(rt_current_map);
+    }
 }
 
 static void rt_mat_normalize_name(const char *name, char *out, size_t outsize)
