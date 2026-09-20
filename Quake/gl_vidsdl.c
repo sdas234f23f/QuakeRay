@@ -1876,6 +1876,9 @@ static void GL_EndRenderingTask (end_rendering_parms_t *parms)
 		.skyViewerPosition = RT_VEC3 (r_origin),
 		.godRaysEnabled = CVAR_TO_BOOL (rt_godrays),
 		.godRaysIntensity = CVAR_TO_FLOAT (gr_intensity),
+		.godRaysFromSkyTexture = 0,
+		.godRaysSkyDirection = {{0.0f, 0.0f, 0.0f}},
+		.godRaysSkyColor = {{0.0f, 0.0f, 0.0f}},
 	};
 
 	if (usePhysicalSky)
@@ -1888,13 +1891,22 @@ static void GL_EndRenderingTask (end_rendering_parms_t *parms)
 		c[6] = CVAR_TO_BOOL (rt_sky_clouds) ? 1.0f : 0.0f;
 		c[7] = c[8] = 0.0f;
 	}
+	else if (!CVAR_TO_BOOL (r_fastsky))
+	{
+		vec3_t brightest_dir, brightest_color;
 
-	// The volume light is the sky seen from the sun's direction, so it is
-	// sunlight: with rt_sun 0 there is nothing to scatter and only the ambient
-	// term below still lights the fog. The legacy rt_volume_lpitch/lyaw +
-	// skyflatcolor fallback that used to run here is gone: its colour was the
-	// sky texture's average rather than rt_sky_color, which made the shafts an
-	// order of magnitude brighter with the sun off.
+		if (Sky_GetBrightestPoint (cl.time, brightest_dir, brightest_color))
+		{
+			RT_APPLY_SKY_COLOR (brightest_color);
+			RT_FIXUP_LIGHT_INTENSITY (brightest_color, true);
+			VectorScale (brightest_color, RT_SUN_LIGHT_INTENSITY_SCALE, brightest_color);
+
+			sky_params.godRaysFromSkyTexture = 1;
+			RT_VEC3_SET (sky_params.godRaysSkyDirection.data, brightest_dir[0], brightest_dir[1], brightest_dir[2]);
+			RT_VEC3_SET (sky_params.godRaysSkyColor.data, brightest_color[0], brightest_color[1], brightest_color[2]);
+		}
+	}
+
 	vec3_t volume_light_angles;
 	vec3_t volume_light_color;
 

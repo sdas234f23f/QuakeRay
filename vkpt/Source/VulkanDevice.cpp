@@ -915,13 +915,21 @@ void VulkanDevice::Render(VkCommandBuffer cmd, const RgDrawFrameInfo &drawInfo)
             float sunColor[3] = {}, sunDir[3] = {}, sunAngularRadius = 0.0047f;
             const bool sunExists = scene->GetLightManager()->GetLastDirectionalLight(sunColor, sunDir, &sunAngularRadius);
 
-            // The shafts are inscattered sunlight, so with no directional light
-            // (rt_sun 0) there is nothing to scatter and the pass only clears the
-            // buffers: marching a sun the host never asked for is what made the
-            // shafts bright with rt_sun 0. The rt_volume_* light shafts are a
-            // different pass and are unaffected by this.
-            const bool godRaysOn = godRaysEnabled && sunExists;
+            const bool useSkyBrightest =
+                (drawInfo.pSkyParams != nullptr) &&
+                (drawInfo.pSkyParams->skyType == RG_SKY_TYPE_RASTERIZED_GEOMETRY) &&
+                (drawInfo.pSkyParams->godRaysFromSkyTexture != 0);
+
+            const bool godRaysOn = godRaysEnabled && (sunExists || useSkyBrightest);
             gr.godRaysEnabled = godRaysOn ? 1u : 0u;
+
+            float shadowLightDir[3] = {sunDir[0], sunDir[1], sunDir[2]};
+            if (useSkyBrightest)
+            {
+                shadowLightDir[0] = -drawInfo.pSkyParams->godRaysSkyDirection.data[0];
+                shadowLightDir[1] = -drawInfo.pSkyParams->godRaysSkyDirection.data[1];
+                shadowLightDir[2] = -drawInfo.pSkyParams->godRaysSkyDirection.data[2];
+            }
 
             float aabbMin[3], aabbMax[3];
             if (scene->HasAABB())
@@ -940,19 +948,28 @@ void VulkanDevice::Render(VkCommandBuffer cmd, const RgDrawFrameInfo &drawInfo)
                     godRays->Trace(cmd, frameIndex, gr, 0);
                     godRays->Filter(cmd, frameIndex);
                 }
-                else if (shadowMap->Render(cmd, sunDir, aabbMin, aabbMax,
+                else if (shadowMap->Render(cmd, shadowLightDir, aabbMin, aabbMax,
                                            staticCollector.get(), dynamicCollector.get(),
                                            shadowMapVP, &shadowMapDepthScale))
                 {
-                    // The god rays sun direction points TOWARD the sun (Q2RTX
-                    // convention): the phase function peaks around the sun and
-                    // the shadow bias pushes samples away from it.
-                    gr.sunDirection[0] = -sunDir[0];
-                    gr.sunDirection[1] = -sunDir[1];
-                    gr.sunDirection[2] = -sunDir[2];
-                    gr.sunColor[0] = sunColor[0];
-                    gr.sunColor[1] = sunColor[1];
-                    gr.sunColor[2] = sunColor[2];
+                    if (useSkyBrightest)
+                    {
+                        gr.sunDirection[0] = drawInfo.pSkyParams->godRaysSkyDirection.data[0];
+                        gr.sunDirection[1] = drawInfo.pSkyParams->godRaysSkyDirection.data[1];
+                        gr.sunDirection[2] = drawInfo.pSkyParams->godRaysSkyDirection.data[2];
+                        gr.sunColor[0] = drawInfo.pSkyParams->godRaysSkyColor.data[0];
+                        gr.sunColor[1] = drawInfo.pSkyParams->godRaysSkyColor.data[1];
+                        gr.sunColor[2] = drawInfo.pSkyParams->godRaysSkyColor.data[2];
+                    }
+                    else
+                    {
+                        gr.sunDirection[0] = -sunDir[0];
+                        gr.sunDirection[1] = -sunDir[1];
+                        gr.sunDirection[2] = -sunDir[2];
+                        gr.sunColor[0] = sunColor[0];
+                        gr.sunColor[1] = sunColor[1];
+                        gr.sunColor[2] = sunColor[2];
+                    }
 
                     for (int k = 0; k < 3; k++)
                     {

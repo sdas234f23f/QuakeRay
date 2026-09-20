@@ -462,6 +462,8 @@ void Sky_LoadTexture (qmodel_t *mod, texture_t *mt, int tex_index);
 void Sky_LoadTextureQ64 (qmodel_t *mod, texture_t *mt, int tex_index);
 void Sky_LoadSkyBox (const char *name);
 
+qboolean Sky_GetBrightestPoint (float time, vec3_t dir, vec3_t color);
+
 void R_ClearTextureChains (qmodel_t *mod, texchain_t chain);
 void R_ChainSurface (msurface_t *surf, texchain_t chain);
 void R_DrawTextureChains (cb_context_t *cbx, qmodel_t *model, entity_t *ent, texchain_t chain, int entuniqueid);
