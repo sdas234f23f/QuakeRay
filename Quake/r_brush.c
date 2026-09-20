@@ -55,20 +55,11 @@ RgVertex *rtallbrushvertices;
 
 static int *rt_surfcluster;
 
-/* The leaf a surface belongs to, which is not the index the renderer indexes its clusters with:
-   that one is RT_MapWorldCluster of this. */
-int RT_GetSurfaceCluster (const qmodel_t *m, const msurface_t *s)
+/* The leaf a surface belongs to, resolved from the surface's centroid nudged off its plane. The
+   returned index is a leaf index (0 = solid, 1..numleafs = real), which RT_MapWorldCluster turns
+   into the cluster index the renderer indexes. */
+static int RT_SurfaceCentroidLeaf (const msurface_t *s)
 {
-	if (m == cl.worldmodel && rt_surfcluster)
-	{
-		const int si = (int)(s - m->surfaces);
-
-		const int submodel_first =
-			(cl.worldmodel->numsubmodels > 1) ? cl.worldmodel->submodels[1].firstface : cl.worldmodel->numsurfaces;
-		if (si >= 0 && si < m->numsurfaces && si < submodel_first)
-			return rt_surfcluster[si];
-	}
-
 	vec3_t normal;
 	if (s->flags & SURF_PLANEBACK)
 	{
@@ -108,6 +99,23 @@ int RT_GetSurfaceCluster (const qmodel_t *m, const msurface_t *s)
 	return 0;
 }
 
+/* The leaf a surface belongs to, which is not the index the renderer indexes its clusters with:
+   that one is RT_MapWorldCluster of this. */
+int RT_GetSurfaceCluster (const qmodel_t *m, const msurface_t *s)
+{
+	if (m == cl.worldmodel && rt_surfcluster)
+	{
+		const int si = (int)(s - m->surfaces);
+
+		const int submodel_first =
+			(cl.worldmodel->numsubmodels > 1) ? cl.worldmodel->submodels[1].firstface : cl.worldmodel->numsurfaces;
+		if (si >= 0 && si < m->numsurfaces && si < submodel_first)
+			return rt_surfcluster[si];
+	}
+
+	return RT_SurfaceCentroidLeaf (s);
+}
+
 static void RT_BuildSurfaceClusterMap (void)
 {
 	qmodel_t *wm = cl.worldmodel;
@@ -124,22 +132,16 @@ static void RT_BuildSurfaceClusterMap (void)
 	if (!rt_surfcluster)
 		return;
 
-	for (int i = 0; i < wm->numsurfaces; i++)
-		rt_surfcluster[i] = RT_GetSurfaceCluster (wm, &wm->surfaces[i]);
-
+	/* Each world surface keeps the leaf its centre resolves into. RT_GetSurfaceCluster reads the
+	   cache being built here, so the centroid walk must not go through it, and the leaf at the
+	   centre is the leaf the ray lands in when it hits the surface. The last leaf whose
+	   marksurfaces list named the surface says nothing about that, so the surface is assigned the
+	   centre leaf directly instead of the last one the old mark walk happened to reach. Submodel
+	   surfaces are never cached: RT_GetSurfaceCluster falls back to the centroid for them. */
 	const int submodel_first =
 		(wm->numsubmodels > 1) ? wm->submodels[1].firstface : wm->numsurfaces;
-	for (int l = 0; l < wm->numleafs; l++)
-	{
-		const mleaf_t *leaf = &wm->leafs[l];
-		for (int j = 0; j < leaf->nummarksurfaces; j++)
-		{
-			const int si = leaf->firstmarksurface[j];
-			if (si >= submodel_first || si < 0 || si >= wm->numsurfaces)
-				continue;
-			rt_surfcluster[si] = l;
-		}
-	}
+	for (int i = 0; i < submodel_first; i++)
+		rt_surfcluster[i] = RT_SurfaceCentroidLeaf (&wm->surfaces[i]);
 }
 
 /*
