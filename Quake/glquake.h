@@ -562,6 +562,9 @@ void RT_GetSkyColor (float color[3]);
 // directional light, and with it the indirect sun, the god rays and the fog's
 // sunlit shafts. The sky is not painted with it.
 void RT_GetSunColor (float color[3]);
+// The sun editor (rt_sun_edit): while it is on, the sun is placed where the
+// crosshair points, and there it stays.
+void RT_UpdateSunEditor (void);
 // The colour the procedural clouds are composited over the sky with.
 void RT_GetSkyCloudsColor (float color[3]);
 // The tint every light source is multiplied by (see RT_FIXUP_LIGHT_INTENSITY).

@@ -476,6 +476,9 @@ void R_SetupViewBeforeMark (void *unused)
 	VectorCopy (r_refdef.vieworg, r_origin);
 	AngleVectors (r_refdef.viewangles, vpn, vright, vup);
 
+	// The sun editor follows the crosshair, which is this very vector.
+	RT_UpdateSunEditor ();
+
 	// current viewleaf
 	r_oldviewleaf = r_viewleaf;
 	r_viewleaf = Mod_PointInLeaf (r_origin, cl.worldmodel);

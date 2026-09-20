@@ -48,6 +48,8 @@ static int buttonremap[] = {
 	K_MOUSE2,           /* middle button	*/
 	K_MOUSE4, K_MOUSE5};
 
+extern cvar_t rt_sun_edit;
+
 /* total accumulated mouse movement since last frame */
 static int total_dx, total_dy = 0;
 
@@ -926,6 +928,14 @@ void IN_SendKeyEvents (void)
 			if (event.button.button < 1 || event.button.button > sizeof (buttonremap) / sizeof (buttonremap[0]))
 			{
 				Con_Printf ("Ignored event for mouse button %d\n", event.button.button);
+				break;
+			}
+			// The sun editor is left by a press of the fire button, which is
+			// swallowed: the press that ends the mode does not shoot.
+			if (event.button.state == SDL_PRESSED && buttonremap[event.button.button - 1] == K_MOUSE1 &&
+			    key_dest == key_game && CVAR_TO_BOOL (rt_sun_edit))
+			{
+				Cvar_Set ("rt_sun_edit", "0");
 				break;
 			}
 			Key_Event (buttonremap[event.button.button - 1], event.button.state == SDL_PRESSED);
