@@ -40,6 +40,19 @@ float                  skyflatcolor[3];
 float                  skymins[2][6], skymaxs[2][6];
 #endif
 
+// Brightest spot of the classic (non-procedural) sky, computed at load time and
+// used to aim the god rays when rt_physical_sky 0 (no directional sun light).
+// The scrolling 2-layer sky and the static skybox are tracked independently and
+// the accessor below picks whichever is actually being drawn.
+static qboolean sky_brightest_2layer_valid;
+static int      sky_brightest_texel_x, sky_brightest_texel_y;
+static int      sky_brightest_width, sky_brightest_height;
+static float    sky_brightest_2layer_color[3];
+
+static qboolean sky_brightest_skybox_valid;
+static float    sky_brightest_skybox_direction[3];
+static float    sky_brightest_skybox_color[3];
+
 char skybox_name[1024]; // name of current skybox, or "" if no skybox
 
 gltexture_t *skybox_textures[6];
@@ -93,6 +106,143 @@ static rt_skybatch_t rt_skybatch_alpha = {0};
 //
 //==============================================================================
 
+static float Sky_Luminance (float r, float g, float b)
+{
+	return 0.2126f * r + 0.7152f * g + 0.0722f * b;
+}
+
+static void Sky_StoreBrightestTexel (int x, int y, int width, int height, const float color[3])
+{
+	sky_brightest_2layer_valid = true;
+	sky_brightest_texel_x = x;
+	sky_brightest_texel_y = y;
+	sky_brightest_width = width;
+	sky_brightest_height = height;
+	VectorCopy (color, sky_brightest_2layer_color);
+}
+
+// Scans an indexed solid sky layer (palette indices) for the brightest texel.
+static void Sky_FindBrightestIndexed (const byte *src, int width, int height)
+{
+	int   bestx = 0, besty = 0;
+	float bestlum = -1.0f;
+	float bestcolor[3] = {1.0f, 1.0f, 1.0f};
+
+	for (int y = 0; y < height; y++)
+	{
+		for (int x = 0; x < width; x++)
+		{
+			const byte *rgba = (const byte *)&d_8to24table[src[y * width + x]];
+			const float r = rgba[0] / 255.0f;
+			const float g = rgba[1] / 255.0f;
+			const float b = rgba[2] / 255.0f;
+			const float lum = Sky_Luminance (r, g, b);
+
+			if (lum > bestlum)
+			{
+				bestlum = lum;
+				bestx = x;
+				besty = y;
+				bestcolor[0] = r;
+				bestcolor[1] = g;
+				bestcolor[2] = b;
+			}
+		}
+	}
+
+	Sky_StoreBrightestTexel (bestx, besty, width, height, bestcolor);
+}
+
+// Scans one RGBA skybox face, accumulating the globally brightest texel. axis is
+// the Sky_DrawSkyBox axis, which drives the st_to_vec direction mapping.
+static void Sky_ScanSkyBoxFace (const byte *data, int width, int height, int axis, qboolean *found, float *bestlum, vec3_t bestdir, vec3_t bestcolor)
+{
+	for (int y = 0; y < height; y++)
+	{
+		for (int x = 0; x < width; x++)
+		{
+			const byte *px = data + (size_t)(y * width + x) * 4;
+			const float r = px[0] / 255.0f;
+			const float g = px[1] / 255.0f;
+			const float b = px[2] / 255.0f;
+			const float lum = Sky_Luminance (r, g, b);
+
+			if (*found && lum <= *bestlum)
+				continue;
+
+			// Invert Sky_EmitSkyBoxVertex's texcoord mapping (bilerp seam ignored).
+			const float s = 2.0f * (x + 0.5f) / width - 1.0f;
+			const float t = 1.0f - 2.0f * (y + 0.5f) / height;
+			const float bv[3] = {s, t, 1.0f};
+			float       dir[3];
+
+			for (int j = 0; j < 3; j++)
+			{
+				const int k = st_to_vec[axis][j];
+				dir[j] = (k < 0) ? -bv[-k - 1] : bv[k - 1];
+			}
+
+			const float len = sqrtf (dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]);
+			if (len > 0.0f)
+				VectorScale (dir, 1.0f / len, dir);
+
+			*found = true;
+			*bestlum = lum;
+			VectorCopy (dir, bestdir);
+			bestcolor[0] = r;
+			bestcolor[1] = g;
+			bestcolor[2] = b;
+		}
+	}
+}
+
+/*
+=============
+Sky_GetBrightestPoint
+
+Returns the direction and albedo colour of the brightest spot in the sky that is
+currently being drawn (skybox first, then the scrolling 2-layer sky). The 2-layer
+sky scrolls, so its direction is recomputed for the current time by inverting
+Sky_GetTexCoord's mapping.
+==============
+*/
+qboolean Sky_GetBrightestPoint (float time, vec3_t dir, vec3_t color)
+{
+	if (skybox_name[0] && sky_brightest_skybox_valid)
+	{
+		VectorCopy (sky_brightest_skybox_direction, dir);
+		VectorCopy (sky_brightest_skybox_color, color);
+		return true;
+	}
+
+	if (!sky_brightest_2layer_valid)
+		return false;
+
+	VectorCopy (sky_brightest_2layer_color, color);
+
+	// The solid layer drifts at 8 texels/sec (Sky_DrawFaceQuad uses speed 8 for
+	// it) and Sky_GetTexCoord wraps the scroll to [0,128) with its hardcoded 128
+	// texture period. Recompute where the brightest texel has scrolled to, then
+	// invert Sky_GetTexCoord's flattened-sphere mapping to a unit direction.
+	float scroll = time * 8.0f;
+	scroll -= (int)scroll & ~127;
+
+	const float u = sky_brightest_texel_x * (128.0f / sky_brightest_width) - scroll;
+	const float v = sky_brightest_texel_y * (128.0f / sky_brightest_height) - scroll;
+
+	const float A = 6.0f * 63.0f;
+	const float r2 = u * u + v * v;
+	const float denom = sqrtf (A * A + 8.0f * r2);
+
+	dir[0] = u * (3.0f / denom);
+	dir[1] = v * (3.0f / denom);
+	dir[2] = (A * A - r2 > 0.0f) ? sqrtf (A * A - r2) / denom : 0.0f;
+
+	VectorNormalize (dir);
+
+	return true;
+}
+
 /*
 =============
 Sky_LoadTexture
@@ -129,6 +279,8 @@ void Sky_LoadTexture (qmodel_t *mod, texture_t *mt, int tex_index)
 	q_snprintf (texturename, sizeof (texturename), "%s:%s_back", mod->name, mt->name);
 	q_snprintf (rtname, sizeof (rtname), "%s/%s_back", mapname, mt->name);
 	solidskytexture = TexMgr_LoadImage (rtname, mod, texturename, halfwidth, mt->height, SRC_INDEXED, back_data, "", (src_offset_t)back_data, TEXPREF_NONE);
+
+	Sky_FindBrightestIndexed (back_data, halfwidth, mt->height);
 
 	// extract front layer and upload
 	r = g = b = count = 0;
@@ -209,6 +361,8 @@ void Sky_LoadTextureQ64 (qmodel_t *mod, texture_t *mt, int tex_index)
 	q_snprintf (rtname, sizeof (rtname), "%s/%s_back", mapname, mt->name);
 	solidskytexture = TexMgr_LoadImage (texturename, mod, texturename, mt->width, halfheight, SRC_INDEXED, back, "", (src_offset_t)back, TEXPREF_NONE);
 
+	Sky_FindBrightestIndexed (back, mt->width, halfheight);
+
 	// front layer, convert to RGBA and upload
 	p = r = g = b = count = 0;
 
@@ -264,6 +418,10 @@ void        Sky_LoadSkyBox (const char *name)
 	char     filename[MAX_OSPATH];
 	byte    *data;
 	qboolean nonefound = true;
+	qboolean skybox_found = false;
+	float    skybox_bestlum = -1.0f;
+	vec3_t   skybox_bestdir = {0, 0, 1};
+	vec3_t   skybox_bestcolor = {1, 1, 1};
 
 	if (strcmp (skybox_name, name) == 0)
 		return; // no change
@@ -280,6 +438,7 @@ void        Sky_LoadSkyBox (const char *name)
 	if (name[0] == 0)
 	{
 		skybox_name[0] = 0;
+		sky_brightest_skybox_valid = false;
 		return;
 	}
 
@@ -292,6 +451,13 @@ void        Sky_LoadSkyBox (const char *name)
 		{
 			skybox_textures[i] = TexMgr_LoadImage (filename, cl.worldmodel, filename, width, height, SRC_RGBA, data, filename, 0, TEXPREF_NONE);
 			nonefound = false;
+
+			// skytexorder maps the stored face index to the axis whose st_to_vec
+			// basis describes the face orientation; it is its own inverse here
+			// (faces 1 and 2 are swapped).
+			const int axis = (i == 1) ? 2 : (i == 2) ? 1 : i;
+			Sky_ScanSkyBoxFace (data, width, height, axis, &skybox_found, &skybox_bestlum, skybox_bestdir, skybox_bestcolor);
+
 			Mem_Free (data);
 		}
 		else
@@ -310,8 +476,13 @@ void        Sky_LoadSkyBox (const char *name)
 			skybox_textures[i] = NULL;
 		}
 		skybox_name[0] = 0;
+		sky_brightest_skybox_valid = false;
 		return;
 	}
+
+	sky_brightest_skybox_valid = true;
+	VectorCopy (skybox_bestdir, sky_brightest_skybox_direction);
+	VectorCopy (skybox_bestcolor, sky_brightest_skybox_color);
 
 	q_strlcpy (skybox_name, name, sizeof (skybox_name));
 }
@@ -333,6 +504,8 @@ void Sky_ClearAll (void)
 	solidskytexture = NULL;
 	alphaskytexture = NULL;
 	max_skytexture_index = -1;
+	sky_brightest_2layer_valid = false;
+	sky_brightest_skybox_valid = false;
 }
 
 /*

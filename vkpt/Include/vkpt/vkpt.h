@@ -1126,6 +1126,16 @@ typedef struct RgDrawFrameSkyParams
     // the directional light colour.
     // Default: 1
     float       godRaysIntensity;
+    // For RG_SKY_TYPE_RASTERIZED_GEOMETRY (classic Quake sky texture, i.e.
+    // rt_physical_sky 0) there is no directional sun light to aim the god rays
+    // at. When godRaysFromSkyTexture is non-zero the shafts are cast from the
+    // brightest spot of the classic sky texture instead: godRaysSkyDirection is
+    // the world-space direction TOWARD that spot and godRaysSkyColor is its
+    // light colour (already light-fixup'd, matching how the sun colour is
+    // prepared for the same params).
+    RgBool32    godRaysFromSkyTexture;
+    RgFloat3D   godRaysSkyDirection;
+    RgFloat3D   godRaysSkyColor;
 } RgDrawFrameSkyParams;
 
 #define RG_LIGHT_STYLE_COUNT 64
