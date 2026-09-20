@@ -282,6 +282,10 @@ task_handle_t prev_end_rendering_task = INVALID_TASK_HANDLE;
 
 cvar_t rt_light_report_filter = {"rt_light_report_filter", "", 0};
 
+// The sun editor is a mode, not a setting: it must not come back on after a
+// restart, which would grab the sun without anybody asking for it.
+cvar_t rt_sun_edit = {"rt_sun_edit", "0", 0};
+
 
 /*
 ================
@@ -1304,6 +1308,30 @@ void RT_GetSunColor (float color[3])
 	RT_ColorGet (&rt_colors[RT_COLOR_SUN], color);
 }
 
+#define RAD2DEG(a) ((a) / M_PI_DIV_180)
+
+// The crosshair is the view vector of the frame, bob and weapon kick included,
+// and the sun goes exactly where it points. The light, the god rays and the sky
+// read rt_sun_pitch/rt_sun_yaw through AngleVectors and take -forward as the
+// direction toward the sun, so the sun's sine of pitch is the view vector's own
+// z -- which is already -sin of the view pitch -- and its yaw is the view yaw
+// turned around.
+void RT_UpdateSunEditor (void)
+{
+	float pitch, yaw;
+
+	if (!CVAR_TO_BOOL (rt_sun_edit))
+	{
+		return;
+	}
+
+	pitch = RAD2DEG (asin (CLAMP (-1.0f, vpn[2], 1.0f)));
+	yaw = anglemod (RAD2DEG (atan2 (vpn[1], vpn[0])) + 180.0f);
+
+	Cvar_SetValueQuick (&rt_sun_pitch, pitch);
+	Cvar_SetValueQuick (&rt_sun_yaw, yaw);
+}
+
 void RT_GetSkyCloudsColor (float color[3])
 {
 	RT_ColorGet (&rt_colors[RT_COLOR_CLOUDS], color);
@@ -2290,6 +2318,25 @@ static void VID_InitModelist (void)
 	}
 }
 
+static void RT_SunEditChanged_f (cvar_t *var)
+{
+	(void)var;
+
+	if (CVAR_TO_BOOL (rt_sun_edit))
+	{
+		Con_Printf ("Sun editor: the sun follows the crosshair, press fire to leave it there.\n");
+
+		if (CVAR_TO_FLOAT (rt_sun) <= 0.0f)
+		{
+			Con_Printf ("Sun editor: rt_sun is 0, so there is no sun to see -- set rt_sun 1 first.\n");
+		}
+	}
+	else
+	{
+		Con_Printf ("Sun placed: rt_sun_pitch %s, rt_sun_yaw %s\n", rt_sun_pitch.string, rt_sun_yaw.string);
+	}
+}
+
 static void RT_SunPreset_f (cvar_t *var)
 {
 	const int preset = CLAMP (0, CVAR_TO_INT32 (rt_sun_preset), 7);
@@ -2518,6 +2565,7 @@ void VID_Init (void)
 #undef CVAR_DEF_T
 
 		Cvar_RegisterVariable (&rt_light_report_filter);
+		Cvar_RegisterVariable (&rt_sun_edit);
 
 		// The colour settings are read per light, so they watch their cvar instead of
 		// comparing its string on every read. Registered after the cvars, which is
@@ -2529,6 +2577,7 @@ void VID_Init (void)
 	}
 
 	Cvar_SetCallback (&rt_sun_preset, RT_SunPreset_f);
+	Cvar_SetCallback (&rt_sun_edit, RT_SunEditChanged_f);
 	Cvar_SetCallback (&rt_light_styles, RT_LightStylesChanged_f);
 	Cvar_SetCallback (&rt_light_styles_reach, RT_LightStylesChanged_f);
 	Cvar_SetCallback (&rt_worldcensus, RT_WorldCensusChanged_f);
