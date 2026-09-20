@@ -46,8 +46,6 @@ struct TriangleLight
 
 #define MAX_TEXTURED_AREA_LIGHT_VERTS 8
 
-#define TAL_SELF_ILLUMINATION_PLANE_EPS 0.05
-
 struct TexturedAreaLight
 {
     vec3 A;
@@ -461,14 +459,6 @@ LightSample sampleTexturedAreaLight(const TexturedAreaLight l, const vec3 surfPo
 
     const uint textureIndex = floatBitsToUint(l.textureIndex);
 
-    const float selfLitOffset = globalUniform.talSelfLitOffset;
-
-    if( selfLitOffset <= 0.0 &&
-        abs( dot( l.normal, surfPosition - getTexturedAreaLightCenter( l ) ) ) < TAL_SELF_ILLUMINATION_PLANE_EPS )
-    {
-        return emptyLightSample();
-    }
-
     vec2 uv = sampleConvexPolygon(l.uvVerts, l.numVerts, pointRnd.x, pointRnd.y);
 
     float mask = 1.0;
@@ -504,11 +494,15 @@ LightSample sampleTexturedAreaLight(const TexturedAreaLight l, const vec3 surfPo
         }
     }
 
-    r.position = texturedAreaLightWorldPos(l, uv) + l.normal * selfLitOffset;
+    r.position = texturedAreaLightWorldPos(l, uv);
 
     const DirectionAndLength lightToSurf = calcDirectionAndLength(r.position, surfPosition);
 
-    r.color = l.color * mask;
+    // Match Q2RTX sample_polygonal_lights: sample on the polygon (no normal offset),
+    // soft edge attenuation via sqrt spot factor instead of a hard coplanar cull.
+    const float spotlight = sqrt(max(0.0, dot(l.normal, lightToSurf.dir)));
+
+    r.color = l.color * mask * spotlight;
     r.dw = safeSolidAngle(emiss * l.area * getGeometryFactorClamped(l.normal, lightToSurf.dir, lightToSurf.len));
 
     return r;
