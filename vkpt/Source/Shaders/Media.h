@@ -27,6 +27,11 @@
     #error DESC_SET_GLOBAL_UNIFORM must be defined
 #endif
 
+// Beer-Lambert extinction is derived as -log(medium color), so a medium color channel
+// of exactly 0 would make the extinction infinite (and 0 * inf -> NaN at distance 0),
+// blacking out everything seen through the medium. Clamp the log argument instead.
+#define MEDIA_EXTINCTION_MIN_COLOR 1e-6
+
 
 float getIndexOfRefraction(uint media)
 {
@@ -49,11 +54,11 @@ vec3 getMediaTransmittance( uint media, float distance )
 
     if( media == MEDIA_TYPE_WATER )
     {
-        extinction = -log( globalUniform.waterColorAndDensity.rgb );
+        extinction = -log( max( globalUniform.waterColorAndDensity.rgb, vec3( MEDIA_EXTINCTION_MIN_COLOR ) ) );
     }
     else if( media == MEDIA_TYPE_ACID )
     {
-        extinction = -log( globalUniform.acidColorAndDensity.rgb );
+        extinction = -log( max( globalUniform.acidColorAndDensity.rgb, vec3( MEDIA_EXTINCTION_MIN_COLOR ) ) );
         extinction *= max(1.0, sqrt( globalUniform.acidColorAndDensity.a ) );
     }
 
