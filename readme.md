@@ -1,4 +1,4 @@
-# QuakeRay
+# QuakeRay engine
 
 QuakeRay is Ray Tracing engine for Quake 1, with a Q2RTX-style partial path traced features and a Vulkan backend.
 

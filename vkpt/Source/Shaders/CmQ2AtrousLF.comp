@@ -187,7 +187,7 @@ main()
 
     switch(push.iteration)
     {
-    case 0: deflicker_image(framebufQ2AtrousPingLF_SH_Sampler, framebufQ2AtrousPingLF_COCG_Sampler, filtered_lf); break;
+    case 0: filtered_lf = q2LoadSH(framebufQ2AtrousPingLF_SH_Sampler, framebufQ2AtrousPingLF_COCG_Sampler, ipos); break;
     case 1: filter_image(framebufQ2AtrousPongLF_SH_Sampler, framebufQ2AtrousPongLF_COCG_Sampler, filtered_lf); break;
     case 2: filter_image(framebufQ2AtrousPingLF_SH_Sampler, framebufQ2AtrousPingLF_COCG_Sampler, filtered_lf); break;
     case 3: filter_image(framebufQ2AtrousPongLF_SH_Sampler, framebufQ2AtrousPongLF_COCG_Sampler, filtered_lf); break;
