@@ -129,6 +129,7 @@ void vkpt::ImageComposition::ApplyTonemapping( VkCommandBuffer      cmd,
         FI::FB_IMAGE_INDEX_FINAL,
         FI::FB_IMAGE_INDEX_DEPTH_WORLD,
         FI::FB_IMAGE_INDEX_ACID_FOG,
+        FI::FB_IMAGE_INDEX_PRIMARY_TO_REFL_REFR,
     };
     framebuffers->BarrierMultiple(cmd, frameIndex, fs);
 

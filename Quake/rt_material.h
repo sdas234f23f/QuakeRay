@@ -9,6 +9,8 @@
 
 #include "quakedef.h"
 
+#define RT_MAT_EMIS_BLEND_MAX 5
+
 enum {
     RT_MAT_KIND_INVALID    = 0,
     RT_MAT_KIND_REGULAR    = 1,
@@ -34,6 +36,9 @@ typedef struct rt_material_s {
     float roughness_override;
     float metalness_factor;
     float emissive_factor;
+    /* Overrides the global rt_emis_blend cvar for this material's emission;
+       -1 = not authored (use the cvar), 0..RT_MAT_EMIS_BLEND_MAX = mode. */
+    int emissive_blend;
     float specular_factor;
     float base_factor;
     int kind;

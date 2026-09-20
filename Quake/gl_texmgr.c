@@ -448,9 +448,9 @@ static void TexMgr_RTMatDump_f (void)
 		            glt->name, glt->rtname, !!(glt->flags & TEXPREF_RT_IS_EMISSIVE));
 		if (mat)
 		{
-			Con_Printf ("RT dump:   authored: brightness=%.3f is_light=%d light_styles=%d has_light_color=%d light_color=(%.4f,%.4f,%.4f)\n",
+			Con_Printf ("RT dump:   authored: brightness=%.3f is_light=%d light_styles=%d has_light_color=%d light_color=(%.4f,%.4f,%.4f) emissive_blend=%d\n",
 			            mat->light_brightness, mat->is_light, mat->light_styles, mat->has_light_color,
-			            mat->light_color[0], mat->light_color[1], mat->light_color[2]);
+			            mat->light_color[0], mat->light_color[1], mat->light_color[2], mat->emissive_blend);
 			Con_Printf ("RT dump:   authored: color_emissive=%d (%.4f,%.4f,%.4f) color_emissive_threshold=%.4f emissive_factor=%.3f\n",
 			            mat->has_color_emissive, mat->color_emissive[0], mat->color_emissive[1], mat->color_emissive[2],
 			            mat->color_emissive_threshold, mat->emissive_factor);
@@ -1173,6 +1173,10 @@ static qboolean TexMgr_ApplyMaterialFromMat (gltexture_t *glt, unsigned *albedoF
 	const qboolean has_emis_mask = (emisBuf != NULL) || use_color_emissive;
 	const float emissScale = (isBrush && has_emis_mask && mat->is_light) ? mat->light_brightness : 1.0f;
 	const qboolean maskedTAL = (emissScale != 1.0f);
+	/* Per-material rt_emis_blend override, packed into the alpha of the
+	   roughness-metallic-emission texture: 0 = not authored, so the global
+	   cvar applies; otherwise the authored mode plus one. */
+	const int emisBlendCode = (mat->emissive_blend >= 0) ? (mat->emissive_blend + 1) : 0;
 
 	glt->rtemissive = false;
 	glt->rtemissivecolor[0] = 0.0f;
@@ -1286,7 +1290,7 @@ static qboolean TexMgr_ApplyMaterialFromMat (gltexture_t *glt, unsigned *albedoF
 		rme[i * 4 + 0] = CLAMP (0, (int)(rough * 255), 255);
 		rme[i * 4 + 1] = CLAMP (0, (int)(metal * 255), 255);
 		rme[i * 4 + 2] = CLAMP (0, (int)(emissOut * 255), 255);
-		rme[i * 4 + 3] = 255;
+		rme[i * 4 + 3] = (byte)emisBlendCode;
 
 		if (normBuf)
 		{

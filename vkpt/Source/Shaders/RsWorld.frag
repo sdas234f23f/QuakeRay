@@ -30,6 +30,7 @@ layout (location = 1) out vec3 outScreenEmission;
 #define DESC_SET_GLOBAL_UNIFORM 1
 #define DESC_SET_TONEMAPPING    2
 #define DESC_SET_VOLUMETRIC     3
+#define DESC_SET_FRAMEBUFFERS   4
 #include "ShaderCommonGLSLFunc.h"
 #include "Exposure.h"
 #include "Volumetric.h"
@@ -69,11 +70,17 @@ void main()
     outColor.rgb *= ev100ToLuminousExposure( getCurrentEV100() );
 #endif
 
-    float emis = 0.0;
+    float emis            = 0.0;
+    uint  emisBlendCode   = 0u;
     if( rasterizerFragInfo.emissionTextureIndex != MATERIAL_NO_TEXTURE )
     {
-        emis = getTextureSample( rasterizerFragInfo.emissionTextureIndex,
-                                 vertTexCoord )[ EMISSION_CHANNEL ];
+        const vec4 emisSample = getTextureSample( rasterizerFragInfo.emissionTextureIndex,
+                                                  vertTexCoord );
+        emis          = emisSample[ EMISSION_CHANNEL ];
+
+        // Per-material rt_emis_blend override: the CPU packs it into the alpha of the
+        // RME texture as ( mode + 1 ), while 0 means "not authored".
+        emisBlendCode = uint( emisSample.a * 255.0 + 0.5 );
     }
     outScreenEmission = rmeEmissionToScreenEmission( emis ) * albedoAlpha.rgb;
 
@@ -83,5 +90,18 @@ void main()
         {
             discard;
         }
+    }
+
+    // The compose pass reads the per-pixel mode from the alpha of
+    // framebufPrimaryToReflRefr, where the traced path stores it for the surfaces
+    // that it covers. Rasterized emissive surfaces must contribute the same value.
+    if( emisBlendCode != 0u )
+    {
+        // The traced pass addresses this framebuffer in checkerboard space, so the
+        // rasterized pixel has to be mapped the same way for the compose pass to
+        // find the mode at the pixel it resolves.
+        const ivec2 pix  = getCheckerboardPix( ivec2( gl_FragCoord.xy ) );
+        const uvec4 prev = imageLoad( framebufPrimaryToReflRefr, pix );
+        imageStore( framebufPrimaryToReflRefr, pix, uvec4( prev.rgb, emisBlendCode ) );
     }
 }

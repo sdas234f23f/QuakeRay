@@ -346,7 +346,8 @@ void main()
     float firstHitDepthNDC;
     float firstHitDepthLinear;
     float screenEmission;
-    const ShHitInfo h = getHitInfoPrimaryRay(primaryPayload, cameraOrigin, cameraRayDirAX, cameraRayDirAY, motionCurToPrev, motionDepthLinearCurToPrev, gradDepth, firstHitDepthNDC, firstHitDepthLinear, screenEmission);
+    uint emissionBlendCode;
+    const ShHitInfo h = getHitInfoPrimaryRay(primaryPayload, cameraOrigin, cameraRayDirAX, cameraRayDirAY, motionCurToPrev, motionDepthLinearCurToPrev, gradDepth, firstHitDepthNDC, firstHitDepthLinear, screenEmission, emissionBlendCode);
 
 
     vec3 throughput = vec3(1.0);
@@ -378,7 +379,7 @@ void main()
     imageStore(framebufThroughput,          pix, vec4(throughput, 0.0));
 
     // save some info for refl/refr shader
-    imageStore(framebufPrimaryToReflRefr,   pix, uvec4(h.geometryInstanceFlags, primaryPayload.instIdAndIndex, h.portalIndex, 0));
+    imageStore(framebufPrimaryToReflRefr,   pix, uvec4(h.geometryInstanceFlags, primaryPayload.instIdAndIndex, h.portalIndex, emissionBlendCode));
 
     // save info for rasterization and upscalers (FSR/DLSS), but only about primary surface,
     // as reflections/refraction only may be losely represented via rasterization
@@ -617,6 +618,7 @@ void main()
 
         float rayLen;
         float emis;
+        uint emisBlendCode;
 
         h = getHitInfoWithRayCone_ReflectionRefraction(
             currentPayload, rayCone, 
@@ -624,7 +626,8 @@ void main()
             virtualPos, 
             rayLen, 
             motionCurToPrev, motionDepthLinearCurToPrev,
-            emis
+            emis,
+            emisBlendCode
         );
 
         // Accumulate the fog along this reflection/refraction segment
@@ -991,6 +994,7 @@ void main()
 
         float rayLen;
         float emis;
+        uint emisBlendCode;
 
         h = getHitInfoWithRayCone_ReflectionRefraction(
             currentPayload, rayCone,
@@ -998,7 +1002,8 @@ void main()
             virtualPos,
             rayLen,
             motionCurToPrev, motionDepthLinearCurToPrev,
-            emis
+            emis,
+            emisBlendCode
         );
 
         // Accumulate the fog along this reflection/refraction segment
