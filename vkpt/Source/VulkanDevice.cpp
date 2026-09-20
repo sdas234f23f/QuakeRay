@@ -756,11 +756,25 @@ void VulkanDevice::Render(VkCommandBuffer cmd, const RgDrawFrameInfo &drawInfo)
         {
             RenderCubemap::ProceduralSkyParams p = {};
 
-            // sky color follows rt_sky_color, sent by the host via skyColorDefault;
-            // this keeps the sky tint independent from whether the sun light is enabled (rt_sun)
-            p.sunColor[0] = uniform->GetData()->skyColorDefault[0];
-            p.sunColor[1] = uniform->GetData()->skyColorDefault[1];
-            p.sunColor[2] = uniform->GetData()->skyColorDefault[2];
+            // the atmosphere is painted with the sky tint (rt_sky_color), sent by the
+            // host via skyColorDefault; this keeps the tint independent from whether
+            // the sun light is enabled (rt_sun)
+            p.skyTint[0] = uniform->GetData()->skyColorDefault[0];
+            p.skyTint[1] = uniform->GetData()->skyColorDefault[1];
+            p.skyTint[2] = uniform->GetData()->skyColorDefault[2];
+
+            // the disc is the sun itself, so it is drawn with the sun's own colour
+            // (rt_sun_color, white when the host does not send one) rather than with
+            // the sky tint above: the sun keeps its colour while the sky around it
+            // is tinted freely. It only reaches the visible cubemap, never the
+            // envCubemap the indirect sky samples.
+            p.sunDiscColor[0] = p.sunDiscColor[1] = p.sunDiscColor[2] = 1.0f;
+            if (drawInfo.pSkyParams)
+            {
+                p.sunDiscColor[0] = drawInfo.pSkyParams->sunDiscColor.data[0];
+                p.sunDiscColor[1] = drawInfo.pSkyParams->sunDiscColor.data[1];
+                p.sunDiscColor[2] = drawInfo.pSkyParams->sunDiscColor.data[2];
+            }
 
             float sunColor[3], sunDir[3], sunAngularRadius = 0.0047f;
             // A directional light is uploaded only while the host has the sun
@@ -789,16 +803,20 @@ void VulkanDevice::Render(VkCommandBuffer cmd, const RgDrawFrameInfo &drawInfo)
                 p.sunDirection[1] = d[1] / len;
                 p.sunDirection[2] = d[2] / len;
             }
-            p.sunColor[3] = sunAngularRadius;
+            p.skyTint[3] = sunAngularRadius;
             p.skyParams[0] = uniform->GetData()->skyColorMultiplier;
             p.skyParams[1] = uniform->GetData()->skyColorSaturation;
-            // Sun disc intensity, multiplied into the 0..1 sky tint. The sky's own
-            // halo already reaches an order of magnitude more than that tint does,
-            // so the disc needs a value in the hundreds to be the brightest thing
-            // over the horizon -- at 25 it was dimmer than the sky around it. It
-            // only reaches the visible cubemap; the indirect sky samples the
-            // disc-less envCubemap, so this is not a light source.
-            p.skyParams[2] = 750.0f; // sun disc intensity
+            // Sun disc intensity. The disc used to be painted with the 0..1 sky tint
+            // -- 0.0079 luminance at the default colour, since the tint reaches the
+            // shader twice, once as the colour and once through RT_APPLY_SKY_COLOR --
+            // so it needed a value in the hundreds to become the brightest thing over
+            // the horizon; at 25 it was dimmer than the sky around it. The disc now
+            // carries the sun's own colour, so this constant alone has to supply that
+            // brightness: the old tint luminance times the old 750 (0.0079 * 750 =
+            // 5.9) keeps the disc at the brightness it had. It only reaches the
+            // visible cubemap; the indirect sky samples the disc-less envCubemap, so
+            // this is not a light source.
+            p.skyParams[2] = 6.0f; // sun disc intensity
             p.skyParams[3] = 0.025f; // display sun disc angular radius (rad), ~1.4 deg; physical 0.05 deg is sub-pixel
 
             // cloud params are packed into the otherwise-unused skyCubemapRotationTransform field
@@ -890,12 +908,12 @@ void VulkanDevice::Render(VkCommandBuffer cmd, const RgDrawFrameInfo &drawInfo)
         bool godRaysActive = false;
         GodRays::Params gr = {};
         {
-            // Host cvars rt_godrays and gr_intensity. When disabled the shadow
-            // map is not rendered and the god rays buffers are cleared by the
-            // shader itself (CmGodRays returns early for godRaysEnabled == 0).
-            // Like Q2RTX (god_rays.c: enabled && intensity > 0), gr_intensity 0
-            // counts as disabled as well, so the shadow map that feeds the shafts
-            // is skipped rather than marched and thrown away.
+            // Host cvars rt_godrays and rt_godrays_intensity. When disabled the
+            // shadow map is not rendered and the god rays buffers are cleared by
+            // the shader itself (CmGodRays returns early for godRaysEnabled == 0).
+            // Like Q2RTX (god_rays.c: enabled && intensity > 0),
+            // rt_godrays_intensity 0 counts as disabled as well, so the shadow map
+            // that feeds the shafts is skipped rather than marched and thrown away.
             const float godRaysIntensity = (drawInfo.pSkyParams == nullptr)
                 ? 1.0f : std::max(drawInfo.pSkyParams->godRaysIntensity, 0.0f);
             const bool godRaysEnabled =
@@ -907,7 +925,7 @@ void VulkanDevice::Render(VkCommandBuffer cmd, const RgDrawFrameInfo &drawInfo)
             // intensity * 1e-4, CmGodRays.comp). That colour carries the light
             // fixup, so 8.0 here is the ratio the shafts were originally
             // calibrated against; rt_sun, rt_brightness and the light tint now all
-            // reach them through it, and gr_intensity scales them on top.
+            // reach them through it, and rt_godrays_intensity scales them on top.
             constexpr float godRaysIntensityBase = 8.0f;
             gr.godRaysIntensity = godRaysIntensityBase * godRaysIntensity;
             gr.godRaysEccentricity = 0.75f;

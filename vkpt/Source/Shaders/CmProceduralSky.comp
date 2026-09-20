@@ -39,10 +39,11 @@ layout(std140, set = 0, binding = 1) uniform Params
 {
     vec4 faceBasis[18]; // 6 faces * (right, up, forward)
     vec4 sunDirection;  // xyz = normalized direction TOWARD the sun, w = how much sun the sky shows (0 = no sun)
-    vec4 sunColor;      // xyz = sun color, w = physical sun angular radius (radians)
+    vec4 skyTint;       // xyz = sky color (rt_sky_color) that tints the atmosphere, w = physical sun angular radius (radians)
     vec4 skyParams;     // x = sky color multiplier, y = tint strength, z = sun disc intensity, w = sun disc display radius (radians)
     vec4 cloudColor;    // xyz = cloud color, w = cloud time (seconds)
     vec4 cloudParams;   // x = cloud coverage, y = cloud density, z = drift speed, w = clouds enabled
+    vec4 sunDiscColor;  // xyz = color of the sun disc (rt_sun_color), w unused
 } params;
 
 const float PI = 3.14159265358979323846;
@@ -134,7 +135,7 @@ float cloudMask(vec3 dir, float time, float speed)
     return n;
 }
 
-vec3 evaluateSky(vec3 rd, vec3 sunDir, vec3 sunColor, float tintStrength, float sunAmount)
+vec3 evaluateSky(vec3 rd, vec3 sunDir, vec3 skyTint, float tintStrength, float sunAmount)
 {
     vec3 camera = vec3(0.0, 0.0, PLANET_RADIUS);
     // exit distance of the atmosphere along the view ray
@@ -194,11 +195,16 @@ vec3 evaluateSky(vec3 rd, vec3 sunDir, vec3 sunColor, float tintStrength, float 
     // keeps the physical blue atmosphere, while colored presets strongly re-tint
     // the sky (the physical blue would otherwise dominate and hide the preset).
     // tintStrength (rt_sky_tint) scales how strongly the tint is applied.
-    float tintLum = dot(sunColor, vec3(0.2126, 0.7152, 0.0722));
-    float tintSat = length(sunColor - vec3(tintLum));
-    float tintAmount = clamp(tintStrength * tintSat / (tintLum + 1e-5), 0.0, 1.0);
+    // How dark the tint is counts as well: chroma alone made every achromatic
+    // colour a no-op, so a black sky colour (no chroma at all) kept the bright
+    // blue atmosphere instead of turning the sky black.
+    float tintLum = dot(skyTint, vec3(0.2126, 0.7152, 0.0722));
+    float tintSat = length(skyTint - vec3(tintLum));
+    float tintChroma = tintSat / (tintLum + 1e-5);
+    float tintDarkness = 1.0 - clamp(tintLum, 0.0, 1.0);
+    float tintAmount = clamp(tintStrength * max(tintChroma, tintDarkness), 0.0, 1.0);
     float skyLum = dot(inScatter, vec3(0.2126, 0.7152, 0.0722));
-    vec3 col = mix(inScatter, vec3(skyLum) * sunColor, tintAmount);
+    vec3 col = mix(inScatter, vec3(skyLum) * skyTint, tintAmount);
 
     // procedural clouds (color is set separately from the sky, e.g. black clouds on a colored sky)
     if (params.cloudParams.w > 0.5)
@@ -229,21 +235,21 @@ void main()
     vec3 dir = normalize(ndc.x * right + (-ndc.y) * up + forward);
 
     vec3  sunDir       = normalize(params.sunDirection.xyz);
-    vec3  sunColor     = max(params.sunColor.xyz, vec3(0.0));
+    vec3  skyTint      = max(params.skyTint.xyz, vec3(0.0));
     float sunAmount    = params.sunDirection.w;      // 0 when the host has no sun (rt_sun 0)
     float sunAngRad    = max(params.skyParams.w, 0.0); // display sun disc radius
     float multiplier   = params.skyParams.x;
     float tintStrength = params.skyParams.y;
     float sunIntensity = params.skyParams.z;
 
-    vec3  base         = evaluateSky(dir, sunDir, sunColor, tintStrength, sunAmount);
+    vec3  base         = evaluateSky(dir, sunDir, skyTint, tintStrength, sunAmount);
 
     imageStore(envCubemapOut, ipos, vec4(base * multiplier, 1.0));
 
     float cosAng = cos(sunAngRad);
     // smoothstep() is evaluated for the whole cubemap before the amount scales it
     float disc = smoothstep(cosAng, 1.0, dot(dir, sunDir)) * sunAmount;
-    vec3 col = (base + sunColor * sunIntensity * disc) * multiplier;
+    vec3 col = (base + params.sunDiscColor.xyz * sunIntensity * disc) * multiplier;
 
     imageStore(cubemapOut, ipos, vec4(col, 1.0));
 }
