@@ -256,8 +256,6 @@ void Host_FindMaxClients (void)
 
 void Host_Version_f (void)
 {
-	Con_Printf ("Quake Version %1.2f\n", VERSION);
-	Con_Printf ("QuakeSpasm Version " QUAKESPASM_VER_STRING "\n");
 	Con_Printf ("QuakeRay Version " ENGINE_VER_STRING "\n");
 	Con_Printf ("Exe: "__TIME__
 	            " "__DATE__
@@ -874,7 +872,7 @@ static void CL_LoadCSProgs (void)
 				int maj = (int)ENGINE_VERSION;
 				int min = (ENGINE_VERSION - maj) * 100;
 				G_FLOAT (OFS_PARM0) = false;
-				G_INT (OFS_PARM1) = PR_SetEngineString ("vkQuake");
+				G_INT (OFS_PARM1) = PR_SetEngineString ("QuakeRay");
 				G_FLOAT (OFS_PARM2) = 10000 * maj + 100 * (min) + ENGINE_VER_PATCH;
 				PR_ExecuteProgram (qcvm->extfuncs.CSQC_Init);
 			}
