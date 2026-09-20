@@ -106,6 +106,7 @@ public:
         uint32_t baseVertex;
         uint32_t firstIndex; // in uint32 elements; 0 when not indexed
         uint32_t indexCount; // in elements (0 when not indexed)
+        float model[16];     // column-major world/model transform (identity for world-space geometry)
     };
     std::vector<GeometryDrawInfo> GetGeometryDrawInfos() const;
 

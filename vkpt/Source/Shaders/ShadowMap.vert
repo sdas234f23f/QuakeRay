@@ -31,10 +31,11 @@ layout(location = 0) in vec4 world_pos;
 layout(push_constant, std140) uniform ShadowMapConstants
 {
     mat4 view_projection_matrix;
+    mat4 model_matrix;
 } push;
 
 void main()
 {
-    gl_Position = push.view_projection_matrix * vec4(world_pos.xyz, 1.0);
+    gl_Position = push.view_projection_matrix * push.model_matrix * vec4(world_pos.xyz, 1.0);
     gl_Position.y = -gl_Position.y;
 }
