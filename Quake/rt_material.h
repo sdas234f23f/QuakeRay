@@ -61,6 +61,8 @@ void RT_MAT_Shutdown(void);
 
 void RT_MAT_ChangeMap(const char *mapname);
 
+void RT_MAT_Reload(void);
+
 rt_material_t *RT_MAT_Find(const char *name);
 
 enum {

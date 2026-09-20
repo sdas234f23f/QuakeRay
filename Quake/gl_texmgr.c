@@ -1755,6 +1755,36 @@ void TexMgr_ReloadNobrightImages (void)
 }
 
 /*
+================
+TexMgr_ReloadAllImages
+
+Reloads every reloadable image texture so that material properties baked in
+at load time (emissive colour, light brightness, ...) are re-applied from a
+fresh materials.yaml. Called by vid_restart.
+
+Skips lightmaps / surface-indices (they never carry a material) and the
+auxiliary fullbright texture of the two-pass load (TEXPREF_RT_IS_EMISSIVE),
+which has no material of its own -- the base texture holds the combined one.
+================
+*/
+void TexMgr_ReloadAllImages (void)
+{
+	gltexture_t *glt;
+
+	for (glt = active_gltextures; glt; glt = glt->next)
+	{
+		if (glt->flags & TEXPREF_RT_IS_EMISSIVE)
+			continue;
+		if (glt->source_format != SRC_INDEXED && glt->source_format != SRC_RGBA)
+			continue;
+		if (!glt->source_file[0] && !glt->source_offset)
+			continue;
+
+		TexMgr_ReloadImage (glt, -1, -1);
+	}
+}
+
+/*
 ================================================================================
 
     TEXTURE BINDING / TEXTURE UNIT SWITCHING
