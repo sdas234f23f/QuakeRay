@@ -279,6 +279,8 @@ Host_InitLocal
 void Host_InitLocal (void)
 {
 	Cmd_AddCommand ("version", Host_Version_f);
+	Cmd_AddCommand ("cfg_write", Host_CfgWrite_f);
+	Cmd_AddCommand ("cfg_exec", Host_CfgExec_f);
 
 	Host_InitCommands ();
 
@@ -356,6 +358,92 @@ void Host_WriteConfiguration (void)
 
 		fclose (f);
 	}
+}
+
+/*
+================
+Host_CfgWrite_f
+
+Writes key bindings and archived cvars to a user-specified .cfg file
+in the current gamedir.
+================
+*/
+void Host_CfgWrite_f (void)
+{
+	FILE       *f;
+	const char *name;
+
+	if (Cmd_Argc () != 2)
+	{
+		Con_Printf ("cfg_write <name> : write settings to <name>.cfg in the current gamedir\n");
+		return;
+	}
+
+	name = Cmd_Argv (1);
+	if (!name[0])
+	{
+		Con_Printf ("cfg_write <name> : write settings to <name>.cfg in the current gamedir\n");
+		return;
+	}
+
+	f = fopen (va ("%s/%s.cfg", com_gamedir, name), "w");
+	if (!f)
+	{
+		Con_Printf ("Couldn't write %s.cfg.\n", name);
+		return;
+	}
+
+	Key_WriteBindings (f);
+	Cvar_WriteVariables (f);
+
+	fprintf (f, "vid_restart\n");
+	if (in_mlook.state & 1)
+		fprintf (f, "+mlook\n");
+
+	fclose (f);
+	Con_Printf ("Wrote %s.cfg to %s.\n", name, com_gamedir);
+}
+
+/*
+================
+Host_CfgExec_f
+
+Executes a user-specified .cfg file from the current gamedir.
+================
+*/
+void Host_CfgExec_f (void)
+{
+	const char *name;
+	char        filename[MAX_OSPATH];
+	char       *f;
+
+	if (Cmd_Argc () != 2)
+	{
+		Con_Printf ("cfg_exec <name> : execute <name>.cfg from the current gamedir\n");
+		return;
+	}
+
+	name = Cmd_Argv (1);
+	if (!name[0])
+	{
+		Con_Printf ("cfg_exec <name> : execute <name>.cfg from the current gamedir\n");
+		return;
+	}
+
+	q_snprintf (filename, sizeof (filename), "%s.cfg", name);
+	f = (char *)COM_LoadFile (filename, NULL);
+	if (!f)
+	{
+		Con_Printf ("Couldn't exec %s\n", filename);
+		return;
+	}
+
+	Con_Printf ("execing %s\n", filename);
+
+	Cbuf_InsertText ("\n"); // just in case there was no trailing \n.
+	Cbuf_InsertText (f);
+
+	Mem_Free (f);
 }
 
 /*
