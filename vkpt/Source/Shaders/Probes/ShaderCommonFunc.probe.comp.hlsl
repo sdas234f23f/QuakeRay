@@ -10,9 +10,9 @@
 // probes have to be edited together: a resource that is touched on one side only is reported as
 // a mismatch, which is exactly the point.
 //
-// RayCone.hlsli has no probe pair of its own: it declares no resource, but it can not be compiled
-// without the accessors of this layer, so it is pinned from here instead (see the block before the
-// store, and the same block in the GLSL half).
+// RayCone.hlsli and Media.hlsli have no probe pair of their own: neither declares a resource, but
+// neither can be compiled without the accessors of this layer, so both are pinned from here instead
+// (see the blocks before the store, and the same blocks in the GLSL half).
 
 #define DESC_SET_GLOBAL_UNIFORM 0
 #define DESC_SET_FRAMEBUFFERS   1
@@ -29,6 +29,7 @@
 // constant or as 0. RayCone.hlsli requires it.
 #define MATERIAL_MAX_ALBEDO_LAYERS 3
 #include "RayCone.hlsli"
+#include "Media.hlsli"
 
 #define PROBE_DESC_SET 8
 
@@ -209,6 +210,25 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
 
     v += getTextureSampleDerivU(3, uv, 0.01).x;
     v += getTextureSampleDerivSet(3, uv, derivSet, 0).y;
+
+    // Media.hlsli: the medium helpers and the refraction direction, which the helper writes through
+    // an out parameter
+    v += getIndexOfRefraction(MEDIA_TYPE_WATER) + getIndexOfRefraction(MEDIA_TYPE_ACID) +
+         getIndexOfRefraction(MEDIA_TYPE_GLASS) + getIndexOfRefraction(MEDIA_TYPE_VACUUM);
+    v += getMediaTransmittance(MEDIA_TYPE_WATER, v).r + getMediaTransmittance(MEDIA_TYPE_ACID, v).g;
+    v += getGlowingMediaFog(MEDIA_TYPE_ACID, v).b;
+
+    float3 refractionDir = float3(0.0, 0.0, 0.0);
+    if (calcRefractionDirection(1.0, 1.5, dir, worldNormal, refractionDir))
+    {
+        v += refractionDir.x;
+    }
+
+    v += float(getMediaTypeFromFlags(GEOM_INST_FLAG_MEDIA_TYPE_WATER | GEOM_INST_FLAG_MEDIA_TYPE_GLASS |
+                                     GEOM_INST_FLAG_MEDIA_TYPE_ACID));
+    v += isPortalFromFlags(GEOM_INST_FLAG_PORTAL) ? 1.0 : 0.0;
+    v += isRefractFromFlags(GEOM_INST_FLAG_REFRACT) ? 1.0 : 0.0;
+    v += isReflectFromFlags(GEOM_INST_FLAG_REFLECT) ? 1.0 : 0.0;
 
     // Not under any define
     v += rmeEmissionToScreenEmission(v);
