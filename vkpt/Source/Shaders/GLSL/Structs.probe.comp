@@ -1,0 +1,42 @@
+#version 460
+
+// Structs.h has no shader stage of its own, so this pair exists to check that Structs.hlsli
+// keeps its memory layout. Every struct is instantiated and every member is touched, and
+// CheckShaderProperties.py compares the layouts that glslc and dxc derive from them.
+
+#include "Structs.h"
+
+layout(binding = 0, std430) readonly buffer ProbeTriangles  { ShTriangle  t[];  };
+layout(binding = 1, std430) readonly buffer ProbeHitInfos   { ShHitInfo   h[];  };
+layout(binding = 2, std430) readonly buffer ProbePayloads   { ShPayload   p[];  };
+layout(binding = 3, std430) readonly buffer ProbeShadows    { ShPayloadShadow s[]; };
+layout(binding = 4, std430) writeonly buffer ProbeOutput    { float       o[];  };
+
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+
+void main()
+{
+    float v = 0.0;
+
+    v += t[0].positions[0][0] + t[0].positions[1][1] + t[0].positions[2][2];
+    v += t[0].prevPositions[0][1] + t[0].normals[1][2];
+    v += t[0].layerTexCoord[0][1][0] + t[0].layerTexCoord[1][0][1] + t[0].layerTexCoord[2][1][1];
+    v += t[0].materialColors[2].w;
+    v += float(t[0].materials[1].z) + float(t[0].vertexColors[2]);
+    v += float(t[0].geometryInstanceFlags);
+    v += t[0].tangent.y;
+    v += t[0].geomRoughness + t[0].geomEmission + t[0].geomMetallicity;
+    v += float(t[0].portalIndex) + float(t[0].cluster) + float(t[0].lightStyleIndices);
+
+    v += h[0].albedo.y + h[0].metallic;
+    v += h[0].normal.z + h[0].roughness;
+    v += h[0].normalGeom.x + h[0].emission;
+    v += h[0].hitPosition.z;
+    v += float(h[0].instCustomIndex) + float(h[0].geometryInstanceFlags);
+    v += float(h[0].portalIndex) + float(h[0].cluster);
+
+    v += p[0].baryCoords.x + float(p[0].instIdAndIndex) + float(p[0].geomAndPrimIndex);
+    v += float(s[0].isShadowed);
+
+    o[0] = v;
+}

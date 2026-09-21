@@ -24,10 +24,16 @@
 // compatible with the GLSL layouts, so any change here must pass CheckShaderProperties.py.
 //
 // Rules to keep the port honest, apply them everywhere in the HLSL shader base:
-//   * matrices: GLSL `m * v` becomes HLSL `mul(v, m)`, and GLSL `m[i][j]` becomes
-//     HLSL `m[j][i]`. For the very same bytes dxc declares matrices as RowMajor where
-//     glslang declares them as ColMajor, i.e. the logical matrix is transposed, and the
-//     two rules above compensate exactly for that.
+//   * matrices: declare the shape transposed, GLSL `matCxR` becomes HLSL `floatRxC` (a
+//     square `matN` becomes `floatNxN`). An element access is then copied as is, `m[i][j]`
+//     stays `m[i][j]`, and it is legal exactly where the GLSL one was. Only a product
+//     changes: GLSL `m * v` becomes HLSL `mul(v, m)`, GLSL `a * b` becomes `mul(b, a)`, and
+//     `transpose(...)` is copied as is. For the very same bytes dxc declares such a matrix
+//     as RowMajor where glslang declares it as ColMajor, i.e. the two languages read the
+//     same bytes as transposed matrices, and that is exactly what the transposed
+//     declaration and the product rule compensate for. With this dxc lands every offset,
+//     MatrixStride and ArrayStride on the same byte as glslang, so matrices never need
+//     [[vk::offset]].
 //   * struct members: dxc packs nested struct members on 4-byte boundaries, GLSL std430
 //     uses the alignment of the member type, so e.g. a float2 after a float lands on
 //     offset 4 instead of 8. Where the checker reports such a difference, pin the member

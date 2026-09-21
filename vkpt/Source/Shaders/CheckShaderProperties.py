@@ -7,10 +7,15 @@ Both compilers are given the same job: a SPIR-V module for Vulkan 1.2. glslc (th
 glslang) and dxc spell a few things differently, so those are normalized instead of being
 compared as text:
 
-  * matrices: glslang emits ColMajor, dxc emits RowMajor, both with MatrixStride 16. The
-    bytes are identical, only the indexing convention differs.
+  * matrices: an HLSL matrix is declared as the transpose of the GLSL one, GLSL matCxR
+    becomes floatRxC, and dxc emits RowMajor where glslang emits ColMajor. A transposed
+    declaration occupies the same bytes (same offsets, MatrixStride and ArrayStride, which
+    are compared and not normalized), so the GLSL side is described as its transpose and the
+    majorness is not compared. Describing the transpose is also what makes the checker pin
+    the transposed declaration the port is required to use.
   * dxc wraps a structured buffer in a Block struct that holds the runtime array, and puts
-    NonWritable on that member instead of on the variable.
+    NonWritable on that member instead of on the variable. A read-only storage buffer is
+    read-only in either spelling.
   * a GLSL `readonly uniform` block is NonWritable, an HLSL ConstantBuffer cannot express
     that flag. It has no effect on the descriptor, so it is ignored for uniform blocks.
   * glslang wraps a uniform block in a one-member struct, dxc puts the members of the block
@@ -25,11 +30,17 @@ constants, descriptor set/binding assignment and resource kind, the byte layout 
 block (recursively, including nested structs and array strides), input/output locations and
 the builtins the entry point uses.
 
+A header has no stage of its own and is therefore never compiled on its own, so a header is
+pinned by a probe: a shader that instantiates what the header declares and touches every
+member of it. The probe's HLSL lives in Probes/, out of the shader build, while its GLSL
+half lives in GLSL/ like the GLSL half of any other pair.
+
 Usage:
     python CheckShaderProperties.py [--rebuild] [shader ...]
 
-With no arguments, every <name>.<stage>.hlsl next to this script is checked against
-GLSL/<name>.<stage>. Exits with a non-zero status if a property does not match.
+With no arguments, every <name>.<stage>.hlsl next to this script and every
+Probes/<name>.<stage>.hlsl is checked against GLSL/<name>.<stage>. Exits with a non-zero
+status if a property does not match.
 """
 
 import difflib
@@ -40,6 +51,7 @@ import sys
 
 
 GLSL_FOLDER_PATH = "GLSL/"
+PROBES_FOLDER_PATH = "Probes/"
 GLSL_EXTENSIONS = [".comp", ".vert", ".frag", ".rgen", ".rahit", ".rchit", ".rmiss"]
 HLSL_SUFFIX = ".hlsl"
 TEMP_FOLDER_PATH = "Build/"
@@ -109,7 +121,8 @@ class Instruction:
 
 
 class Module:
-    def __init__(self, text):
+    def __init__(self, text, transposeMatrices=False):
+        self.transposeMatrices = transposeMatrices
         self.instructions = []
         self.resultInstruction = {}
         # decorations[id][name] = [args]
@@ -204,6 +217,14 @@ class Module:
         if op == "OpTypeVector":
             return "v" + o[1] + "(" + self.describeType(o[0], depth) + ")"
         if op == "OpTypeMatrix":
+            if self.transposeMatrices:
+                # GLSL matCxR is C vectors of R components, HLSL floatRxC is R vectors of C
+                # components. Describing the GLSL matrix transposed makes it directly
+                # comparable with the HLSL spelling dxc emits for the ported declaration.
+                vectorOp, vectorOperands = self.typeOf(o[0])
+                if vectorOp == "OpTypeVector":
+                    return "m" + vectorOperands[1] + "(v" + o[1] + "(" + \
+                        self.describeType(vectorOperands[0], depth) + "))"
             return "m" + o[1] + "(" + self.describeType(o[0], depth) + ")"
         if op == "OpTypeArray":
             return "array[" + self.constantValue(o[1]) + "](" + self.describeType(o[0], depth) + ")"
@@ -233,6 +254,11 @@ class Module:
 
     def arrayStride(self, id):
         return self.decorations.get(id, {}).get("ArrayStride", [None])[0]
+
+    def isNonWritable(self, variableId, blockTypeId):
+        if "NonWritable" in self.decorations.get(variableId, {}):
+            return True
+        return "NonWritable" in self.memberDecorations.get((blockTypeId, 0), {})
 
     # -- property extraction -----------------------------------------------------------
 
@@ -354,7 +380,7 @@ class Module:
 
             # GLSL `readonly uniform` gets NonWritable, an HLSL ConstantBuffer cannot
             # express that flag, and for a uniform block it does not affect the descriptor.
-            if decor.get("NonWritable") is not None and storageClass != "Uniform":
+            if storageClass != "Uniform" and self.isNonWritable(instruction.resultId, pointeeId):
                 description += " nonwritable"
 
             descriptors[path] = description
@@ -521,14 +547,16 @@ def compareProperties(name, glslProperties, hlslProperties, allowList):
 
 
 def checkPair(name, allowList):
-    glslPath = GLSL_FOLDER_PATH + name
+    # A probe carries its folder in the name, its GLSL original does not.
+    baseName = os.path.basename(name)
+    glslPath = GLSL_FOLDER_PATH + baseName
     hlslPath = name + HLSL_SUFFIX
 
     if not os.path.isfile(glslPath):
         return 0, [TAB + "skipped: " + glslPath + " does not exist"]
 
-    glslSpvPath = TEMP_FOLDER_PATH + name + ".glsl.spv"
-    hlslSpvPath = TEMP_FOLDER_PATH + name + ".hlsl.spv"
+    glslSpvPath = TEMP_FOLDER_PATH + baseName + ".glsl.spv"
+    hlslSpvPath = TEMP_FOLDER_PATH + baseName + ".hlsl.spv"
 
     success, compilerOutput = compileShader(glslPath, glslSpvPath, isHLSL=False)
     if not success:
@@ -538,15 +566,15 @@ def checkPair(name, allowList):
     if not success:
         return 1, [TAB + "dxc failed", compilerOutput]
 
-    glslTxtPath = TEMP_FOLDER_PATH + name + ".glsl.spv.txt"
-    hlslTxtPath = TEMP_FOLDER_PATH + name + ".hlsl.spv.txt"
+    glslTxtPath = TEMP_FOLDER_PATH + baseName + ".glsl.spv.txt"
+    hlslTxtPath = TEMP_FOLDER_PATH + baseName + ".hlsl.spv.txt"
 
     for spvPath, txtPath in [(glslSpvPath, glslTxtPath), (hlslSpvPath, hlslTxtPath)]:
         if not disassemble(spvPath, txtPath)[0]:
             return 1, [TAB + "spirv-dis failed"]
 
     with open(glslTxtPath, "r", encoding="utf-8") as f:
-        glslModule = Module(f.read())
+        glslModule = Module(f.read(), transposeMatrices=True)
     with open(hlslTxtPath, "r", encoding="utf-8") as f:
         hlslModule = Module(f.read())
 
@@ -556,16 +584,28 @@ def checkPair(name, allowList):
     return mismatches, messages
 
 
+def resolveProbeName(name):
+    if os.path.isfile(name + HLSL_SUFFIX):
+        return name
+    if os.path.isfile(PROBES_FOLDER_PATH + name + HLSL_SUFFIX):
+        return PROBES_FOLDER_PATH + name
+    return name
+
+
 def getPairs(arguments):
     if len(arguments) > 0:
         # Arguments may name the HLSL file or the shader itself, e.g. EfWaves.comp.hlsl or
-        # EfWaves.comp.
-        return [a[:-len(HLSL_SUFFIX)] if a.endswith(HLSL_SUFFIX) else a for a in arguments]
+        # EfWaves.comp. A probe can be named without its folder.
+        names = [a[:-len(HLSL_SUFFIX)] if a.endswith(HLSL_SUFFIX) else a for a in arguments]
+        return [resolveProbeName(name) for name in names]
 
     pairs = []
-    for entry in sorted(os.listdir(".")):
-        if entry.endswith(HLSL_SUFFIX) and getHLSLProfile(entry) is not None:
-            pairs.append(entry[:-len(HLSL_SUFFIX)])
+    for folder in ["./", PROBES_FOLDER_PATH]:
+        if not os.path.isdir(folder):
+            continue
+        for entry in sorted(os.listdir(folder)):
+            if entry.endswith(HLSL_SUFFIX) and getHLSLProfile(entry) is not None:
+                pairs.append(folder + entry[:-len(HLSL_SUFFIX)])
 
     return pairs
 
