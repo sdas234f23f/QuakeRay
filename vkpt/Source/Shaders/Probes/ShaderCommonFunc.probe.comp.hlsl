@@ -10,9 +10,10 @@
 // probes have to be edited together: a resource that is touched on one side only is reported as
 // a mismatch, which is exactly the point.
 //
-// RayCone.hlsli and Media.hlsli have no probe pair of their own: neither declares a resource, but
-// neither can be compiled without the accessors of this layer, so both are pinned from here instead
-// (see the blocks before the store, and the same blocks in the GLSL half).
+// RayCone.hlsli, Media.hlsli and TurbWarp.hlsli have no probe pair of their own: none of them
+// declares a resource, but none can be compiled without the accessors of this layer either, so all
+// three are pinned from here instead (see the blocks before the store, and the same blocks in the
+// GLSL half).
 
 #define DESC_SET_GLOBAL_UNIFORM 0
 #define DESC_SET_FRAMEBUFFERS   1
@@ -30,6 +31,7 @@
 #define MATERIAL_MAX_ALBEDO_LAYERS 3
 #include "RayCone.hlsli"
 #include "Media.hlsli"
+#include "TurbWarp.hlsli"
 
 #define PROBE_DESC_SET 8
 
@@ -229,6 +231,11 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
     v += isPortalFromFlags(GEOM_INST_FLAG_PORTAL) ? 1.0 : 0.0;
     v += isRefractFromFlags(GEOM_INST_FLAG_REFRACT) ? 1.0 : 0.0;
     v += isReflectFromFlags(GEOM_INST_FLAG_REFLECT) ? 1.0 : 0.0;
+
+    // TurbWarp.hlsli: the animated surface texture coordinate, both with and without the flag
+    v += getTurbWarpUV(uv).x;
+    v += getSurfaceTexCoord(GEOM_INST_FLAG_TURB_WARP, uv).y;
+    v += getSurfaceTexCoord(0u, uv).x;
 
     // Not under any define
     v += rmeEmissionToScreenEmission(v);
