@@ -262,6 +262,9 @@ else
 			.geomType = RG_GEOMETRY_TYPE_DYNAMIC,
 			.passThroughType =
 			    is_invis ? RG_GEOMETRY_PASS_THROUGH_TYPE_GLASS_REFLECT_REFRACT :
+			    // MF_HOLEY models (index 255 = transparent) must keep their alpha in the
+			    // traced path too, where the alpha test runs in the any-hit shader.
+			    alphatest ? RG_GEOMETRY_PASS_THROUGH_TYPE_ALPHA_TESTED :
 		        RG_GEOMETRY_PASS_THROUGH_TYPE_OPAQUE,
 			.visibilityType =
 			    isfirstperson ? RG_GEOMETRY_VISIBILITY_TYPE_FIRST_PERSON :
