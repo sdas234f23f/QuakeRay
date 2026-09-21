@@ -66,10 +66,17 @@
 #define Q2_FLT_ATROUS_NORMAL_HF 16.0
 #define Q2_FLT_ATROUS_NORMAL_SPEC 1.0
 #define Q2_FLT_ATROUS_LUM_HF 16.0
-// Used only by the disabled LF deflicker pass (CmQ2AtrousLF.comp). It clamps a pixel to
-// K * the mean of its 8 neighbours, so K >= 1 leaves flat regions untouched. Q2RTX uses
-// flt_atrous_deflicker_lf = 2.0; the value below is what darkened flat regions.
-#define Q2_FLT_ATROUS_DEFLICKER_LF 0.75
+// Ratio against the mean of the valid neighbours used by the LF deflicker pass
+// (CmQ2AtrousLF.comp, iteration 0). It has to stay >= 1 so that flat regions are left
+// untouched; Q2RTX uses flt_atrous_deflicker_lf = 2.0, and 0.75 darkened flat regions.
+#define Q2_FLT_ATROUS_DEFLICKER_LF 2.0
+
+// Neighbour validation of the LF deflicker pass: a tap only counts as a lower bound when
+// it lies on the same surface as the center, so that a dark silhouette in front of a lit
+// wall (weapon, screen frame) cannot drag the limit down. Same criteria as the history
+// validation of CmQ2Temporal.comp: relative depth difference and geometric normal.
+#define Q2_FLT_DEFLICKER_DEPTH 0.1
+#define Q2_FLT_DEFLICKER_NORMAL 0.5
 
 // Lower clamp for fwidth_depth: the reciprocal of the per-pixel depth change of
 // the pixel footprint (Q2RTX path_tracer_rgen.h). Same value as upstream, in

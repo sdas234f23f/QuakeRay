@@ -144,46 +144,98 @@ filter_image(
     filtered_lf.CoCg = sum_color_lf.CoCg / sum_w_lf;
 }
 
-// Disabled in d8460b9f, where it darkened the LF signal around dark silhouettes
-// (screen frame, weapon). The pass is still defined for reference, but it has to be
-// corrected before it can run again:
-//   1. neighbours are not validated by depth or geometry normal, unlike filter_image,
-//      so unrelated geometry (a dark weapon in front of a lit wall) changes the result;
-//   2. Q2_FLT_ATROUS_DEFLICKER_LF is a ratio against the mean of the 8 neighbours, so
-//      it has to stay >= 1 to leave flat regions untouched; Q2RTX uses
-//      flt_atrous_deflicker_lf = 2.0, while the constant here is 0.75;
-//   3. the fetches below are not bounded (see filter_image for the pattern to use).
+// Enabled on iteration 0, before the first a-trous step, which is where Q2RTX runs it: an
+// isolated spike in the temporal result gets cut there instead of being smeared over its
+// neighbours by the four iterations that follow. It was disabled in d8460b9f, where it
+// darkened the LF signal around dark silhouettes (screen frame, weapon); the three problems
+// it used to have are addressed below:
+//   1. neighbours are now validated by depth and geometry normal, like filter_image, so
+//      unrelated geometry (a dark weapon in front of a lit wall) cannot change the result;
+//   2. Q2_FLT_ATROUS_DEFLICKER_LF is a ratio against the mean of the valid neighbours, so
+//      it has to stay >= 1 to leave flat regions untouched; it is 2.0, as in Q2RTX
+//      (flt_atrous_deflicker_lf), where 0.75 darkened flat regions;
+//   3. the fetches below are bounded to this pixel's checkerboard field and the mean is
+//      taken over the neighbours that passed validation, so there is no division by zero.
+// The fireflies this pass was re-enabled for turned out to come from the sun's contribution
+// to an indirect bounce (rt_sun_bounce_scale / rt_sun_bounce_range), not from the LF channel.
 void deflicker_image(
     sampler2D img_lf_shY,
     sampler2D img_lf_CoCg,
     out Q2SH filtered_lf)
 {
     ivec2 ipos_lowres = ivec2(gl_GlobalInvocationID);
+    ivec2 ipos_hires = ipos_lowres * Q2_GRAD_DWN + ivec2(1);
+
     Q2SH color_center_lf = q2LoadSH(img_lf_shY, img_lf_CoCg, ipos_lowres);
 
-    Q2SH sum_color_lf = q2InitSH();
+    const float lum_center = color_center_lf.shY.w;
+    if(lum_center <= 0.0)
+    {
+        filtered_lf = color_center_lf;
+        return;
+    }
+
+    // The anchor is the only pixel of the low-res entry that has depth and normal.
+    vec3 geo_normal_center = texelFetchNormalGeometry(ipos_hires);
+    float depth_center = texelFetch(framebufQ2ViewDepth_Sampler, ipos_hires, 0).r;
+
+    // Boundaries for the checkerboard field, either left or right half of the screen
+    const int width = int(globalUniform.renderWidth);
+    const int height = int(globalUniform.renderHeight);
+    int field_left = 0;
+    int field_right = width / 2;
+    if(ipos_hires.x >= field_right)
+    {
+        field_left = field_right;
+        field_right = width;
+    }
+
+    float sum_lum = 0.0;
+    int num_neighbors = 0;
 
     const int r = 1;
-    const float num_pixels = square(float(r * 2 + 1)) - 1.0;
-
     for(int yy = -r; yy <= r; yy++)
     {
         for(int xx = -r; xx <= r; xx++)
         {
-            ivec2 p_lowres = ipos_lowres + ivec2(xx, yy);
-
             if(xx == 0 && yy == 0)
                 continue;
 
-            Q2SH c_lf = q2LoadSH(img_lf_shY, img_lf_CoCg, p_lowres);
-            q2AccumulateSH(sum_color_lf, c_lf, 1.0);
+            ivec2 p_lowres = ipos_lowres + ivec2(xx, yy);
+            ivec2 p_hires = p_lowres * Q2_GRAD_DWN + ivec2(1);
+
+            // Skip out-of-range neighbours instead of fetching them: texelFetch with
+            // out-of-range integer coordinates is undefined, and the other half of the
+            // rows belongs to the checkerboard field that this invocation does not own.
+            if(any(lessThan(p_hires, ivec2(field_left, 0)))
+                    || any(greaterThanEqual(p_hires, ivec2(field_right, height))))
+                continue;
+
+            float depth = texelFetch(framebufQ2ViewDepth_Sampler, p_hires, 0).r;
+            vec3 geo_normal = texelFetchNormalGeometry(p_hires);
+
+            float dist_depth = abs(depth_center - depth) / max(abs(depth_center), 1e-6);
+            float dot_geo_normals = dot(geo_normal_center, geo_normal);
+
+            if(dist_depth >= Q2_FLT_DEFLICKER_DEPTH || dot_geo_normals <= Q2_FLT_DEFLICKER_NORMAL)
+                continue;
+
+            sum_lum += q2LoadSH(img_lf_shY, img_lf_CoCg, p_lowres).shY.w;
+            num_neighbors++;
         }
     }
 
-    float max_lum = sum_color_lf.shY.w * Q2_FLT_ATROUS_DEFLICKER_LF / num_pixels;
-    if(color_center_lf.shY.w > max_lum)
+    // Nothing to compare against: leave the sample untouched instead of dividing by zero.
+    if(num_neighbors == 0)
     {
-        float ratio = max_lum / color_center_lf.shY.w;
+        filtered_lf = color_center_lf;
+        return;
+    }
+
+    float limit = sum_lum / float(num_neighbors) * Q2_FLT_ATROUS_DEFLICKER_LF;
+    if(lum_center > limit)
+    {
+        float ratio = limit / lum_center;
         color_center_lf.shY *= ratio;
         color_center_lf.CoCg *= ratio;
     }
@@ -191,8 +243,7 @@ void deflicker_image(
     filtered_lf = color_center_lf;
 }
 
-void
-main()
+void main()
 {
     ivec2 ipos = ivec2(gl_GlobalInvocationID);
 
@@ -207,19 +258,21 @@ main()
 
     switch(push.iteration)
     {
-    // deflicker_image() used to run here; disabled in d8460b9f (black LF ghosting
-    // around the screen frame and the weapon). See its comment above.
-    case 0: filtered_lf = q2LoadSH(framebufQ2AtrousPingLF_SH_Sampler, framebufQ2AtrousPingLF_COCG_Sampler, ipos); break;
-    case 1: filter_image(framebufQ2AtrousPongLF_SH_Sampler, framebufQ2AtrousPongLF_COCG_Sampler, filtered_lf); break;
-    case 2: filter_image(framebufQ2AtrousPingLF_SH_Sampler, framebufQ2AtrousPingLF_COCG_Sampler, filtered_lf); break;
-    case 3: filter_image(framebufQ2AtrousPongLF_SH_Sampler, framebufQ2AtrousPongLF_COCG_Sampler, filtered_lf); break;
-    }
-
-    switch(push.iteration)
-    {
-    case 0: Q2_STORE_SH(framebufQ2AtrousPongLF_SH, framebufQ2AtrousPongLF_COCG, ipos, filtered_lf); break;
-    case 1: Q2_STORE_SH(framebufQ2AtrousPingLF_SH, framebufQ2AtrousPingLF_COCG, ipos, filtered_lf); break;
-    case 2: Q2_STORE_SH(framebufQ2AtrousPongLF_SH, framebufQ2AtrousPongLF_COCG, ipos, filtered_lf); break;
-    case 3: Q2_STORE_SH(framebufQ2AtrousPingLF_SH, framebufQ2AtrousPingLF_COCG, ipos, filtered_lf); break;
+    case 0:
+        deflicker_image(framebufQ2AtrousPingLF_SH_Sampler, framebufQ2AtrousPingLF_COCG_Sampler, filtered_lf);
+        Q2_STORE_SH(framebufQ2AtrousPongLF_SH, framebufQ2AtrousPongLF_COCG, ipos, filtered_lf);
+        break;
+    case 1:
+        filter_image(framebufQ2AtrousPongLF_SH_Sampler, framebufQ2AtrousPongLF_COCG_Sampler, filtered_lf);
+        Q2_STORE_SH(framebufQ2AtrousPingLF_SH, framebufQ2AtrousPingLF_COCG, ipos, filtered_lf);
+        break;
+    case 2:
+        filter_image(framebufQ2AtrousPingLF_SH_Sampler, framebufQ2AtrousPingLF_COCG_Sampler, filtered_lf);
+        Q2_STORE_SH(framebufQ2AtrousPongLF_SH, framebufQ2AtrousPongLF_COCG, ipos, filtered_lf);
+        break;
+    case 3:
+        filter_image(framebufQ2AtrousPongLF_SH_Sampler, framebufQ2AtrousPongLF_COCG_Sampler, filtered_lf);
+        Q2_STORE_SH(framebufQ2AtrousPingLF_SH, framebufQ2AtrousPingLF_COCG, ipos, filtered_lf);
+        break;
     }
 }

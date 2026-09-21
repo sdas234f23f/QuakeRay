@@ -107,6 +107,7 @@ typedef struct rt_emis_stats_s
 	int no_color;
 	int style_off;
 	int degenerate;
+	int frame_off;
 	int static_queued;
 	int static_dropped;
 	int dynamic;
@@ -153,10 +154,12 @@ typedef struct rt_emis_watch_s
 	int  no_color;
 	int  style_off;
 	int  degenerate;
+	int  frame_off;
 	int  hist_frames;
 	int  hist_lit;
 	int  hist_dark;
 	int  hist_style_off;
+	int  hist_frame_off;
 	int  hist_min_lights;
 	int  hist_max_lights;
 	float min_style_scale;
@@ -211,12 +214,17 @@ static void RT_EmisWatchFrameEnd (void)
 		if (w->surfaces > 0)
 		{
 			w->hist_frames++;
-			if (w->lights > 0)
+			/* A frame that carries no light of its own is a dark frame: the surface is still
+			   there and still visible, it just does not glow on that frame. Counting it as lit
+			   would hide the blinks of a lamp behind a steady "lit" history. */
+			if (w->lights > 0 && w->frame_off == 0)
 				w->hist_lit++;
 			else
 				w->hist_dark++;
 			if (w->style_off > 0)
 				w->hist_style_off++;
+			if (w->frame_off > 0)
+				w->hist_frame_off++;
 			if (w->lights < w->hist_min_lights)
 				w->hist_min_lights = w->lights;
 			if (w->lights > w->hist_max_lights)
@@ -229,6 +237,7 @@ static void RT_EmisWatchFrameEnd (void)
 		w->no_color = 0;
 		w->style_off = 0;
 		w->degenerate = 0;
+		w->frame_off = 0;
 		w->min_style_scale = 1.0f;
 		w->style_count = 0;
 	}
@@ -929,6 +938,7 @@ RgTransform RT_GetBrushModelMatrix (entity_t *e)
 static qboolean  RT_FindNearestTeleport (const RgGeometryUploadInfo *info, uint8_t *result, qboolean *potentially_mirror);
 static RgFloat3D ApplyTransform (const RgTransform *transform, const vec3_t v);
 static gltexture_t *RT_CanonicalLightTex (texture_t *base, int alt);
+static void         RT_KeepEmissiveLightColor (vec3_t color);
 
 typedef struct rt_uploadsurf_state_t
 {
@@ -1365,6 +1375,11 @@ static void RT_UploadEmissiveLight (const RgTexturedAreaLightUploadInfo *light_i
 
 		RgTexturedAreaLightUploadInfo li = *light_info;
 		RT_ScaleEmissiveLightColor (li.color.data);
+
+		/* Same clamp as a stored light gets: without it a light dimmed to nothing by its
+		   animation frame falls below the keep threshold of the light manager and is dropped
+		   from the light array, which costs the cluster lists an id they name. */
+		RT_KeepEmissiveLightColor (li.color.data);
 
 		RgResult r = rgUploadTexturedAreaLight (vulkan_globals.instance, &li);
 		RG_CHECK (r);
@@ -1876,6 +1891,38 @@ static void RT_AddEmissiveLight (const rt_uploadsurf_state_t *s)
 
 	const qboolean is_static_geom = RT_IsStaticWorldSurface (s);
 
+	/* Whether the light reads a mask shapes it (cut into pieces of the face, or a square that
+	   carries no mask), so it is asked of the canonical frame and not of the animation. */
+	const qboolean light_masked = (params.material != RG_NO_MATERIAL);
+
+	/* Emission follows the animation, identity does not. s->diffuse_tex is the frame the
+	   visible pass renders of this surface, so a surface that steps to another frame steps its
+	   light with it. Deliberately no fallback to the base frame the light was picked from: the
+	   base is the lit frame of a blink, and reading it back would leave the off frame glowing.
+	   A frame that cannot light for itself only dims the light -- dropping it would take an id
+	   out of every cluster list naming it. */
+	gltexture_t *frame_tex = s->diffuse_tex;
+
+	if (!is_static_geom && frame_tex && frame_tex != light_tex)
+	{
+		rt_emissive_params_t frame_params;
+
+		if (RT_EmissiveLightParamsForTex (frame_tex, &frame_params))
+		{
+			params.material  = frame_params.material;
+			params.meanEmiss = frame_params.meanEmiss;
+			VectorCopy (frame_params.color, params.color);
+		}
+		else
+		{
+			rt_emis_stats.frame_off++;
+			if (watch)
+				watch->frame_off++;
+			RT_EmisNoteSkip (frame_tex->name, "dark animation frame");
+			VectorCopy (vec3_origin, params.color);
+		}
+	}
+
 	const RgTransform transf = RT_GetBrushModelMatrix (s->ent);
 	const int        vertcount = s->surf->numedges;
 	const RgVertex  *verts = rtallbrushvertices + s->surf->vbo_firstvert;
@@ -2119,7 +2166,7 @@ static void RT_AddEmissiveLight (const rt_uploadsurf_state_t *s)
 	   preferred over the square below because the square would read the mask over a shape the
 	   surface does not have, and it is preferred over dropping the light because the surface
 	   does glow, only not evenly. */
-	if (!poly_ok && fit_ok && uv_ok && params.material != RG_NO_MATERIAL)
+	if (!poly_ok && fit_ok && uv_ok && light_masked)
 	{
 		rt_uv_piece_t pieces[RT_MAX_UV_SPLIT_PIECES];
 		const int     num = RT_SplitUvPolygon (surfuv, vertcount, pieces, RT_MAX_UV_SPLIT_PIECES);
@@ -4318,8 +4365,8 @@ void RT_PrintEmissiveStats (void)
 {
 	RT_LightReportPrint ("emissive pass: %i surfaces considered -> %i static world lights baked (whole map), %i entity lights uploaded (all passes)\n",
 		rt_emis_stats.surfaces, rt_emis_stats.static_queued, rt_emis_stats.dynamic);
-	RT_LightReportPrint ("rejected: %i no light material, %i no light color, %i lightstyle off, %i degenerate\n",
-		rt_emis_stats.no_material, rt_emis_stats.no_color, rt_emis_stats.style_off, rt_emis_stats.degenerate);
+	RT_LightReportPrint ("rejected: %i no light material, %i no light color, %i lightstyle off, %i degenerate, %i of a dark animation frame\n",
+		rt_emis_stats.no_material, rt_emis_stats.no_color, rt_emis_stats.style_off, rt_emis_stats.degenerate, rt_emis_stats.frame_off);
 
 	if (rt_emis_stats.glow_lights || rt_emis_stats.glow_fallback)
 		RT_LightReportPrint ("partial-glow textures: %i faces built %i polygon lights, %i faces fell back to the whole surface\n",
@@ -4339,12 +4386,12 @@ void RT_PrintEmissiveStats (void)
 	for (int i = 0; i < rt_emis_watch_num; i++)
 	{
 		const rt_emis_watch_t *w = &rt_emis_watch[i];
-		RT_LightReportPrint ("  <%s> visible %i -> lights %i (rejected %i no material, %i no color, %i style off, %i degenerate)\n",
-			w->name, w->surfaces, w->lights, w->no_material, w->no_color, w->style_off, w->degenerate);
+		RT_LightReportPrint ("  <%s> visible %i -> lights %i (rejected %i no material, %i no color, %i style off, %i degenerate, %i dark frame)\n",
+			w->name, w->surfaces, w->lights, w->no_material, w->no_color, w->style_off, w->degenerate, w->frame_off);
 
 		if (w->hist_frames > 0)
-			RT_LightReportPrint ("       since the filter was set: %i frames visible, lit %i, dark %i, %i with a lightstyle reject, lights %i..%i%s\n",
-				w->hist_frames, w->hist_lit, w->hist_dark, w->hist_style_off,
+			RT_LightReportPrint ("       since the filter was set: %i frames visible, lit %i, dark %i, %i with a lightstyle reject, %i on a dark animation frame, lights %i..%i%s\n",
+				w->hist_frames, w->hist_lit, w->hist_dark, w->hist_style_off, w->hist_frame_off,
 				(w->hist_min_lights > w->hist_max_lights) ? 0 : w->hist_min_lights, w->hist_max_lights,
 				(w->hist_lit > 0 && w->hist_dark > 0) ? "   <-- INTERMITTENT" : "");
 
