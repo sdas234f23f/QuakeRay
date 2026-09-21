@@ -83,6 +83,8 @@ set(vkpt_SOURCES
     Source/Q2Denoiser.cpp
     Source/RayStats.cpp
     Source/PassTimings.cpp
+    Source/RHI/NvrhiContext.cpp
+    Source/RHI/NvrhiRequirements.cpp
     Source/WorldLights.cpp
 )
 
@@ -167,6 +169,10 @@ target_include_directories(vkpt PUBLIC "Include")
 
 # Vulkan (found in the parent scope)
 target_link_libraries(vkpt PUBLIC Vulkan::Vulkan)
+
+# RHI layer: NVRHI built by the root CMakeLists (target nvrhi_vk is the static
+# Vulkan backend, nvrhi holds the shared interface and the validation layer).
+target_link_libraries(vkpt PRIVATE nvrhi_vk nvrhi)
 
 # FSR 2 / FSR 3.1 — prebuilt AMD-signed FidelityFX API DLL
 if(WIN32)

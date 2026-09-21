@@ -211,6 +211,35 @@ if(QUAKERAY_PLATFORM_WINDOWS)
 endif()
 
 # ============================================================================
+# NVRHI — NVIDIA RHI, used by the renderer (Vulkan backend)
+# ============================================================================
+# vkpt keeps creating the instance, the device and the queues itself, and the
+# RHI layer wraps those handles, so only the Vulkan backend is built here.
+# The D3D11 and D3D12 backends (and their fetched headers) stay off.
+option(NVRHI_BUILD_SHARED "Build NVRHI as a shared library" OFF)
+option(NVRHI_INSTALL "Generate install rules for NVRHI" OFF)
+option(NVRHI_WITH_VULKAN "Build the NVRHI Vulkan backend" ON)
+option(NVRHI_WITH_DX11 "Build the NVRHI D3D11 backend" OFF)
+option(NVRHI_WITH_DX12 "Build the NVRHI D3D12 backend" OFF)
+option(NVRHI_WITH_VALIDATION "Build the NVRHI validation layer" ON)
+option(NVRHI_FETCH_VULKAN_HEADERS "Fetch Vulkan-Headers instead of using the located Vulkan headers" OFF)
+
+# The NVRHI Vulkan backend is written against Vulkan-Hpp, needs vulkan.hpp and
+# refuses Vulkan headers older than 1.4.318; the bundled headers in
+# Windows/misc/include (VK_HEADER_VERSION 182) provide neither.
+if(NOT NVRHI_FETCH_VULKAN_HEADERS AND NOT EXISTS "${Vulkan_INCLUDE_DIR}/vulkan/vulkan.hpp")
+    message(FATAL_ERROR
+        "NVRHI needs the Vulkan SDK headers (vulkan.hpp, VK_HEADER_VERSION >= 318). "
+        "Install the Vulkan SDK and make sure VULKAN_SDK is visible when configuring, "
+        "or configure with -DNVRHI_FETCH_VULKAN_HEADERS=ON.")
+endif()
+
+# NVRHI strips /W[0-4] from CMAKE_CXX_FLAGS and appends /W4 /MP. Those edits are
+# confined to the NVRHI directory scope, so the strict host flags below are not
+# affected; only NVRHI's own targets get its warnings.
+add_subdirectory(third_party/nvrhi)
+
+# ============================================================================
 # vkpt renderer — vendored
 # ============================================================================
 # The renderer source lives in the vkpt/ subdirectory and is built as a

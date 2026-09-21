@@ -29,6 +29,8 @@
 #include "RgException.h"
 #include "Generated/ShaderCommonC.h"
 #include "LibraryConfig.h"
+#include "RHI/NvrhiContext.h"
+#include "RHI/NvrhiRequirements.h"
 
 using namespace vkpt;
 
@@ -73,6 +75,10 @@ VulkanDevice::VulkanDevice( const RgInstanceCreateInfo* info )
 
     // set device
     queues->SetDevice( device );
+
+    // the RHI device wraps the device and the queues above, so it is created
+    // once both exist
+    CreateNvrhiDevice();
 
 
     memAllocator        = std::make_shared<MemoryAllocator>(instance, device, physDevice);
@@ -306,6 +312,10 @@ VulkanDevice::~VulkanDevice()
 {
     vkDeviceWaitIdle(device);
 
+    // the RHI device holds Vulkan objects created from this device,
+    // so it has to be released before them
+    nvrhi.reset();
+
     physDevice.reset();
     queues.reset();
     swapchain.reset();
@@ -475,6 +485,11 @@ void VulkanDevice::CreateInstance(const RgInstanceCreateInfo &info)
         extensions.push_back(n);
     }
 
+    enabledInstanceExtensions.clear();
+    for (const char *n : extensions)
+    {
+        enabledInstanceExtensions.push_back(n);
+    }
 
     VkApplicationInfo appInfo = {};
     appInfo.apiVersion = VK_API_VERSION_1_3;
@@ -581,6 +596,37 @@ void VulkanDevice::CreateDevice()
     vulkan12Features.shaderFloat16 = 1;
     vulkan12Features.drawIndirectCount = 1;
 
+    // Features the RHI layer depends on, enabled only if the driver supports them.
+    const NvrhiRequirements nvrhiRequirements = QueryNvrhiRequirements(physDevice->Get());
+    const std::vector<std::string> unsupportedNvrhiFeatures = nvrhiRequirements.GetUnsupported();
+
+    if (!nvrhiRequirements.IsCriticalSupported())
+    {
+        std::string message = "RHI: the device does not support the required features:";
+        for (const std::string &name : unsupportedNvrhiFeatures)
+        {
+            message += " ";
+            message += name;
+        }
+
+        throw RgException(RG_GRAPHICS_API_ERROR, message);
+    }
+
+    ApplyNvrhiRequirements(nvrhiRequirements, vulkan12Features);
+
+    if (!unsupportedNvrhiFeatures.empty())
+    {
+        std::string message = "RHI: features not supported by the device:";
+        for (const std::string &name : unsupportedNvrhiFeatures)
+        {
+            message += " ";
+            message += name;
+        }
+        message += "\n";
+
+        Print(message.c_str());
+    }
+
     VkPhysicalDeviceVulkan13Features vulkan13Features = {};
     vulkan13Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
     vulkan13Features.pNext = nullptr; // end of chain
@@ -658,6 +704,12 @@ void VulkanDevice::CreateDevice()
         deviceExtensions.push_back(n);
     }
 
+    enabledDeviceExtensions.clear();
+    for (const char *n : deviceExtensions)
+    {
+        enabledDeviceExtensions.push_back(n);
+    }
+
 
     std::vector<VkDeviceQueueCreateInfo> queueCreateInfos;
     queues->GetDeviceQueueCreateInfos(queueCreateInfos);
@@ -680,6 +732,58 @@ void VulkanDevice::CreateDevice()
     {
         InitDeviceExtensionFunctions_DebugUtils(device);
     }
+}
+
+void VulkanDevice::CreateNvrhiDevice()
+{
+    // The features were already enabled on the device in CreateDevice; they are
+    // queried again here to know which of them the driver actually has.
+    const NvrhiRequirements requirements = QueryNvrhiRequirements(physDevice->Get());
+
+    std::vector<const char *> instanceExtensions;
+    instanceExtensions.reserve(enabledInstanceExtensions.size());
+    for (const std::string &name : enabledInstanceExtensions)
+    {
+        instanceExtensions.push_back(name.c_str());
+    }
+
+    std::vector<const char *> deviceExtensions;
+    deviceExtensions.reserve(enabledDeviceExtensions.size());
+    for (const std::string &name : enabledDeviceExtensions)
+    {
+        deviceExtensions.push_back(name.c_str());
+    }
+
+    NvrhiDeviceInfo info = {};
+    info.instance = instance;
+    info.physicalDevice = physDevice->Get();
+    info.device = device;
+
+    info.graphicsQueue = queues->GetGraphics();
+    info.graphicsQueueIndex = queues->GetIndexGraphics();
+    info.computeQueue = queues->GetCompute();
+    info.computeQueueIndex = queues->GetIndexCompute();
+    info.transferQueue = queues->GetTransfer();
+    info.transferQueueIndex = queues->GetIndexTransfer();
+
+    info.instanceExtensions = instanceExtensions.data();
+    info.instanceExtensionCount = instanceExtensions.size();
+    info.deviceExtensions = deviceExtensions.data();
+    info.deviceExtensionCount = deviceExtensions.size();
+
+    info.bufferDeviceAddressSupported = true;
+    info.uniformBufferUpdateAfterBindSupported = requirements.descriptorBindingUniformBufferUpdateAfterBind;
+
+    nvrhi = std::make_unique<NvrhiContext>();
+
+    std::string errorMessage;
+    if (!nvrhi->Init(info, [this](const char *pMessage) { Print(pMessage); }, errorMessage))
+    {
+        nvrhi.reset();
+        throw RgException(RG_GRAPHICS_API_ERROR, errorMessage);
+    }
+
+    nvrhi->LogCapabilities();
 }
 
 void VulkanDevice::CreateSyncPrimitives()

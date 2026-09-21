@@ -25,6 +25,8 @@
 #include <array>
 #include <memory>
 #include <optional>
+#include <string>
+#include <vector>
 
 #include "Common.h"
 
@@ -66,6 +68,9 @@
 
 namespace vkpt
 {
+
+class NvrhiContext;
+struct NvrhiRequirements;
 
 class VulkanDevice
 {
@@ -139,6 +144,7 @@ public:
 private:
     void CreateInstance(const RgInstanceCreateInfo &info);
     void CreateDevice();
+    void CreateNvrhiDevice();
     void CreateSyncPrimitives();
     static VkSurfaceKHR GetSurfaceFromUser(VkInstance instance, const RgInstanceCreateInfo &info);
     void ValidateCreateInfo(const RgInstanceCreateInfo *pInfo);
@@ -228,6 +234,14 @@ private:
     VkDebugUtilsMessengerEXT                debugMessenger;
     std::unique_ptr<UserPrint>              userPrint;
     std::shared_ptr<UserFileLoad>           userFileLoad;
+
+    // Names of the extensions the instance and the device were created with.
+    // The RHI layer reads them to know which Vulkan features are available.
+    std::vector<std::string>                enabledInstanceExtensions;
+    std::vector<std::string>                enabledDeviceExtensions;
+
+    // RHI device (NVIDIA NVRHI) created over the Vulkan device above.
+    std::unique_ptr<NvrhiContext>           nvrhi;
 
     // Q2RTX-style fog volumes (host data, uploaded into the uniform each frame)
     std::array<RgFogVolume, RG_MAX_FOG_VOLUMES> fogVolumes{};
