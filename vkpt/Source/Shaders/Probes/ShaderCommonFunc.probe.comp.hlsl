@@ -10,10 +10,10 @@
 // probes have to be edited together: a resource that is touched on one side only is reported as
 // a mismatch, which is exactly the point.
 //
-// RayCone.hlsli, Media.hlsli and TurbWarp.hlsli have no probe pair of their own: none of them
-// declares a resource, but none can be compiled without the accessors of this layer either, so all
-// three are pinned from here instead (see the blocks before the store, and the same blocks in the
-// GLSL half).
+// RayCone.hlsli, Media.hlsli, TurbWarp.hlsli and BRDF.hlsli have no probe pair of their own: none
+// of them declares a resource, but none can be compiled without the accessors of this layer
+// either, so all four are pinned from here instead (see the blocks before the store, and the same
+// blocks in the GLSL half).
 
 #define DESC_SET_GLOBAL_UNIFORM 0
 #define DESC_SET_FRAMEBUFFERS   1
@@ -32,6 +32,13 @@
 #include "RayCone.hlsli"
 #include "Media.hlsli"
 #include "TurbWarp.hlsli"
+
+// BRDF.hlsli takes roughness as its only material input, but it does include Random.hlsli, whose
+// DESC_SET_RANDOM block has to stay out of this probe: this pair pins the sets 0..7 and Random is
+// pinned by its own pair. FORCE_EVALBRDF_GGX_LOOSE is defined here only so that the shipping-hack
+// line inside D_GGX is compiled somewhere, as no shipping shader defines it.
+#define FORCE_EVALBRDF_GGX_LOOSE
+#include "BRDF.hlsli"
 
 #define PROBE_DESC_SET 8
 
@@ -236,6 +243,27 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
     v += getTurbWarpUV(uv).x;
     v += getSurfaceTexCoord(GEOM_INST_FLAG_TURB_WARP, uv).y;
     v += getSurfaceTexCoord(0u, uv).x;
+
+    // BRDF.hlsli: the lambertian lobe, the two Fresnel forms, the GGX lobe and the visible normal
+    // sampling that sampleGGXVNDF does for sampleSmithGGX
+    v += roughnessSquaredToSpecPower(0.5);
+    v += evalBRDFLambertian(0.7);
+    v += getSpecularColor(dir, 0.5).x;
+    v += getMaterialAmbient(dir);
+    v += demodulateSpecular(dir, dir).x;
+    v += getFresnelSchlick(0.5, dir).x;
+    v += getFresnelSchlick(1.0, 1.5, dir, worldNormal);
+    v += D_GGX(1.0, 0.5);
+    v += G1_GGX(1.0, 0.5);
+    v += evalBRDFSmithGGX(worldNormal, dir, dir, 0.5, dir).x;
+
+    float oneOverPdf = 0.0;
+
+    v += sampleLambertian(worldNormal, 0.5, 0.5, oneOverPdf).x;
+    v += sampleGGXVNDF(dir, 0.5, 0.5, 0.5, oneOverPdf).x;
+    v += sampleSmithGGX(worldNormal, dir, 0.5, 0.5, 0.5, oneOverPdf).y;
+    v += evalSpecularBouncePdf(worldNormal, dir, 0.5, dir);
+    v += oneOverPdf;
 
     // Not under any define
     v += rmeEmissionToScreenEmission(v);
