@@ -51,7 +51,12 @@ if (-not (Test-Path $destDir)) {
     New-Item -ItemType Directory -Path $destDir -Force | Out-Null
 }
 
-$srcNames = @(Get-ChildItem -Path (Join-Path $shaderOut "*.spv") | Select-Object -ExpandProperty Name)
+$srcFiles = @(Get-ChildItem -Path (Join-Path $shaderOut "*.spv") -ErrorAction SilentlyContinue)
+if ($srcFiles.Count -eq 0) {
+    throw "No SPIR-V was produced in $shaderOut; $destDir is left untouched."
+}
+
+$srcNames = @($srcFiles | Select-Object -ExpandProperty Name)
 
 $stale = Get-ChildItem -Path (Join-Path $destDir "*.spv") | Where-Object { $srcNames -notcontains $_.Name }
 foreach ($f in $stale) {

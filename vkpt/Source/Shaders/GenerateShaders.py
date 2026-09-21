@@ -26,6 +26,7 @@ import pathlib
 
 
 CACHE_FOLDER_PATH           = "Build/"
+OUTPUT_FOLDER_PATH          = "../../Build/"
 CACHE_FILE_NAME             = "GenerateShadersCache.txt"
 EXTENSIONS                  = [ ".comp", ".vert", "frag", ".rgen", ".rahit", ".rchit", ".rmiss" ]
 DEPENDENCY_EXTENSIONS       = [ ".h", ".inl" ]
@@ -118,6 +119,13 @@ def main():
             os.mkdir(CACHE_FOLDER_PATH)
         except OSError:
             print("> Coudn't create cache folder")
+            return
+
+    if not os.path.exists(OUTPUT_FOLDER_PATH):
+        try:
+            os.makedirs(OUTPUT_FOLDER_PATH)
+        except OSError:
+            print("> Coudn't create output folder")
             return
 
     if not os.path.exists(CACHE_FOLDER_PATH + CACHE_FILE_NAME):
@@ -220,6 +228,8 @@ def main():
         lastModifTime = int(pathlib.Path(filename).stat().st_mtime)
         isOutdated = filename in cache and lastModifTime != cache[filename]
 
+        outputFilename = OUTPUT_FOLDER_PATH + os.path.basename(filename) + ".spv"
+
         if filename not in dependencyMap or isOutdated:
             dependencyMap[filename] = set()
 
@@ -232,14 +242,14 @@ def main():
                             if os.path.exists(dpd):
                                 dependencyMap[filename].add(dpd)
 
-        if filename not in cache or isOutdated or wereDependentModified(dependencyMap, modifiedDependent, cache, filename):
+        if filename not in cache or isOutdated or not os.path.exists(outputFilename) or wereDependentModified(dependencyMap, modifiedDependent, cache, filename):
             print("> Building " + os.path.basename(filename))
 
             r = subprocess.run([
                 "glslc", "--target-env=vulkan1.2"
                 ] + getDependentFoldersProcArg() + [
                 filename, 
-                "-o", "../../Build/" + os.path.basename(filename) + ".spv"], 
+                "-o", outputFilename], 
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
 
             if len(r.stdout) > 0:
@@ -284,6 +294,9 @@ def main():
         printInPowerShell(msg, color)
     else:
         print(msg)
+
+    if msgErrorCount > 0:
+        sys.exit(1)
 
 
 # main
