@@ -1247,6 +1247,9 @@ static void RT_FlushBatch (cb_context_t *cbx, const rt_uploadsurf_state_t *s, ui
 			    s->is_water ? RG_GEOMETRY_PASS_THROUGH_TYPE_WATER_REFLECT_REFRACT :
 			    s->is_acid ? RG_GEOMETRY_PASS_THROUGH_TYPE_ACID_REFLECT_REFRACT :
 			    is_teleport_portal ? RG_GEOMETRY_PASS_THROUGH_TYPE_PORTAL :
+			    // A fence texture keeps its alpha only in the traced path: the rasterized
+			    // one is reserved for translucent surfaces, which a fence is not.
+			    s->alpha_test ? RG_GEOMETRY_PASS_THROUGH_TYPE_ALPHA_TESTED :
 		        RG_GEOMETRY_PASS_THROUGH_TYPE_OPAQUE,
 			.visibilityType = RG_GEOMETRY_VISIBILITY_TYPE_WORLD_0,
 			.vertexCount = num_surf_verts,
