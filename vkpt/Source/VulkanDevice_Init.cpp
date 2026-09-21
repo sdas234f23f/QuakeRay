@@ -664,7 +664,11 @@ void VulkanDevice::CreateDevice()
     vulkan13Features.pNext = nullptr; // end of chain
     vulkan13Features.computeFullSubgroups = 1;
     vulkan13Features.subgroupSizeControl = 1;
-    // The RHI layer records every pass with vkCmdBeginRendering.
+    // The RHI layer records every pass with vkCmdBeginRendering. Enabling it
+    // unconditionally is safe here: IsCriticalSupported() above refuses to
+    // continue on a device without dynamic rendering, so this line is only
+    // reached when the feature exists. ApplyNvrhiRequirements cannot set it,
+    // because this structure does not exist yet when it runs.
     vulkan13Features.dynamicRendering = 1;
 
     vulkan12Features.pNext = &vulkan13Features;  // chain: vk12 → vk13
