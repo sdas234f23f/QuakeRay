@@ -312,14 +312,14 @@ void main()
 
         // Odd render heights leave the last row of the half resolution grid without
         // a partner; such a pixel keeps its previous value, like the untraced rows.
-        if ( pix.y >= textureSize( framebufQ2RngSeed_Sampler, 0 ).y )
+        if ( pix.y >= textureSize( framebufQ2RngSeed_Sampled, 0 ).y )
         {
             return;
         }
     }
     const float halfResScale = halfRes ? 2.0 : 1.0;
 
-    const uint seed = texelFetch( framebufQ2RngSeed_Sampler, pix, 0 ).r;
+    const uint seed = texelFetch( framebufQ2RngSeed_Sampled, pix, 0 ).r;
 
     Surface surf = fetchGbufferSurface( pix );
     surf.position += surf.toViewerDir * RAY_ORIGIN_LEAK_BIAS;

@@ -603,21 +603,31 @@ void vkpt::RenderCubemap::CreateFramebuffer(uint32_t sideSize)
 
 void vkpt::RenderCubemap::CreateDescriptors(const std::shared_ptr<SamplerManager> &samplerManager)
 {
-    VkDescriptorSetLayoutBinding bindings[2] = {};
+    VkDescriptorSetLayoutBinding bindings[4] = {};
 
     bindings[0].binding = BINDING_RENDER_CUBEMAP;
-    bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
     bindings[0].descriptorCount = 1;
     bindings[0].stageFlags = VK_SHADER_STAGE_ALL;
 
     bindings[1].binding = BINDING_RENDER_CUBEMAP_ENV;
-    bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
     bindings[1].descriptorCount = 1;
     bindings[1].stageFlags = VK_SHADER_STAGE_ALL;
 
+    bindings[2].binding = BINDING_RENDER_CUBEMAP_SAMPLER;
+    bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+    bindings[2].descriptorCount = 1;
+    bindings[2].stageFlags = VK_SHADER_STAGE_ALL;
+
+    bindings[3].binding = BINDING_RENDER_CUBEMAP_ENV_SAMPLER;
+    bindings[3].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+    bindings[3].descriptorCount = 1;
+    bindings[3].stageFlags = VK_SHADER_STAGE_ALL;
+
     VkDescriptorSetLayoutCreateInfo layoutInfo = {};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutInfo.bindingCount = 2;
+    layoutInfo.bindingCount = 4;
     layoutInfo.pBindings = bindings;
 
     VkResult r = vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &descSetLayout);
@@ -626,15 +636,17 @@ void vkpt::RenderCubemap::CreateDescriptors(const std::shared_ptr<SamplerManager
     SET_DEBUG_NAME(device, descSetLayout, VK_OBJECT_TYPE_DESCRIPTOR_SET_LAYOUT, "Render cubemap Desc set layout");
 
 
-    VkDescriptorPoolSize poolSize = {};
-    poolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSize.descriptorCount = 2;
+    VkDescriptorPoolSize poolSizes[2] = {};
+    poolSizes[0].type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    poolSizes[0].descriptorCount = 2;
+    poolSizes[1].type = VK_DESCRIPTOR_TYPE_SAMPLER;
+    poolSizes[1].descriptorCount = 2;
 
     VkDescriptorPoolCreateInfo poolInfo = {};
     poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     poolInfo.maxSets = 1;
-    poolInfo.poolSizeCount = 1;
-    poolInfo.pPoolSizes = &poolSize;
+    poolInfo.poolSizeCount = 2;
+    poolInfo.pPoolSizes = poolSizes;
 
     r = vkCreateDescriptorPool(device, &poolInfo, nullptr, &descPool);
     VK_CHECKERROR(r);
@@ -655,20 +667,25 @@ void vkpt::RenderCubemap::CreateDescriptors(const std::shared_ptr<SamplerManager
 
 
     VkDescriptorImageInfo img = {};
-    img.sampler = samplerManager->GetSampler(RG_SAMPLER_FILTER_LINEAR, RG_SAMPLER_ADDRESS_MODE_REPEAT, RG_SAMPLER_ADDRESS_MODE_REPEAT);
+    img.sampler = VK_NULL_HANDLE;
     img.imageView = cubemap.view;
     img.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
     VkDescriptorImageInfo envImg = img;
     envImg.imageView = envCubemap.view;
 
-    VkWriteDescriptorSet wrt[2] = {};
+    VkDescriptorImageInfo samplerImg = {};
+    samplerImg.sampler = samplerManager->GetSampler(RG_SAMPLER_FILTER_LINEAR, RG_SAMPLER_ADDRESS_MODE_REPEAT, RG_SAMPLER_ADDRESS_MODE_REPEAT);
+    samplerImg.imageView = VK_NULL_HANDLE;
+    samplerImg.imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+    VkWriteDescriptorSet wrt[4] = {};
     wrt[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     wrt[0].dstSet = descSet;
     wrt[0].dstBinding = BINDING_RENDER_CUBEMAP;
     wrt[0].dstArrayElement = 0;
     wrt[0].descriptorCount = 1;
-    wrt[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    wrt[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
     wrt[0].pImageInfo = &img;
 
     wrt[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -676,10 +693,26 @@ void vkpt::RenderCubemap::CreateDescriptors(const std::shared_ptr<SamplerManager
     wrt[1].dstBinding = BINDING_RENDER_CUBEMAP_ENV;
     wrt[1].dstArrayElement = 0;
     wrt[1].descriptorCount = 1;
-    wrt[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    wrt[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
     wrt[1].pImageInfo = &envImg;
 
-    vkUpdateDescriptorSets(device, 2, wrt, 0, nullptr);
+    wrt[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    wrt[2].dstSet = descSet;
+    wrt[2].dstBinding = BINDING_RENDER_CUBEMAP_SAMPLER;
+    wrt[2].dstArrayElement = 0;
+    wrt[2].descriptorCount = 1;
+    wrt[2].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+    wrt[2].pImageInfo = &samplerImg;
+
+    wrt[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    wrt[3].dstSet = descSet;
+    wrt[3].dstBinding = BINDING_RENDER_CUBEMAP_ENV_SAMPLER;
+    wrt[3].dstArrayElement = 0;
+    wrt[3].descriptorCount = 1;
+    wrt[3].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+    wrt[3].pImageInfo = &samplerImg;
+
+    vkUpdateDescriptorSets(device, 4, wrt, 0, nullptr);
 }
 
 void vkpt::RenderCubemap::CreateProceduralSkyParamsBuffer()

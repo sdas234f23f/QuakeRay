@@ -173,7 +173,7 @@ vec3 getBloomInput( const vec3 hdr, const vec3 screenEmis, const ivec2 pix )
 {
     const float power = getLuminance( screenEmis );
 
-    const float albedoLum = getLuminance( texelFetch( framebufAlbedo_Sampler, pix, 0 ).rgb );
+    const float albedoLum = getLuminance( texelFetch( framebufAlbedo_Sampled, pix, 0 ).rgb );
     const vec3  emis      = power > 0.001 ? screenEmis / max( albedoLum, power ) : vec3( 0 );
 
     float ec = power * globalUniform.bloomEmissionMultiplier;
@@ -204,7 +204,7 @@ vec3 applyVolumetrics( const ivec2 pix, const vec3 color )
     const vec2 inUV         = getPixelUVWithJitter( pix );
     const vec3 cameraRayDir = getRayDir( inUV );
 
-    float virtualdepth = texelFetch( framebufDepthWorld_Sampler, getCheckerboardPix( pix ), 0 ).r;
+    float virtualdepth = texelFetch( framebufDepthWorld_Sampled, getCheckerboardPix( pix ), 0 ).r;
     bool  isSky        = virtualdepth > MAX_RAY_LENGTH;
 
     if( globalUniform.volumeEnableType == VOLUME_ENABLE_VOLUMETRIC )
@@ -214,7 +214,7 @@ vec3 applyVolumetrics( const ivec2 pix, const vec3 color )
 #ifdef DEBUG_VOLUME_ILLUMINATION
         vec3 sp = volume_toSamplePosition_T(
             position.xyz, globalUniform.volumeViewProj, globalUniform.cameraPosition.xyz );
-        vec3 illum = textureLod( g_illuminationVolume_Sampler, sp, 0.0 ).rgb;
+        vec3 illum = textureLod( sampler3D( g_illuminationVolume_Sampled, g_illuminationVolume_Sampler ), sp, 0.0 ).rgb;
         return color * illum;
 #endif
 
@@ -275,7 +275,7 @@ vec3 applyLevelFog( const ivec2 pix, const vec3 color )
         return color;
     }
 
-    const float depth = texelFetch( framebufDepthWorld_Sampler, getCheckerboardPix( pix ), 0 ).r;
+    const float depth = texelFetch( framebufDepthWorld_Sampled, getCheckerboardPix( pix ), 0 ).r;
 
     float fog;
     if( depth > MAX_RAY_LENGTH )
@@ -344,13 +344,13 @@ void main()
         return;
     }
 
-    vec3 hdr        = texelFetch( framebufFinal_Sampler, pix, 0 ).rgb;
-    const vec3 screenEmis = texelFetch( framebufScreenEmission_Sampler, pix, 0 ).rgb;
+    vec3 hdr        = texelFetch( framebufFinal_Sampled, pix, 0 ).rgb;
+    const vec3 screenEmis = texelFetch( framebufScreenEmission_Sampled, pix, 0 ).rgb;
     // per-material rt_emis_blend override, stored by the primary ray pass.
     // That framebuffer is addressed in checkerboard space (like the throughput
     // buffer below), so the regular pixel must be mapped first.
     const uint emisBlendMode = decodeEmissionBlendMode(
-        texelFetch( framebufPrimaryToReflRefr_Sampler, getCheckerboardPix( pix ), 0 ).a );
+        texelFetch( framebufPrimaryToReflRefr_Sampled, getCheckerboardPix( pix ), 0 ).a );
 
     // volumetric sunlight (god rays) - additive, before tonemapping. The god
     // rays pass runs at half resolution (CmGodRays) and is bilaterally
@@ -363,14 +363,14 @@ void main()
     // be wrong on reflections).
     if (globalUniform.coreQ2RTX != 0)
     {
-        hdr += texelFetch( framebufGodRaysFiltered_Sampler, pix, 0 ).rgb;
+        hdr += texelFetch( framebufGodRaysFiltered_Sampled, pix, 0 ).rgb;
     }
     else
     {
-        const float q2SplitFlag = texelFetch(framebufThroughput_Sampler, getCheckerboardPix(pix), 0).a;
+        const float q2SplitFlag = texelFetch(framebufThroughput_Sampled, getCheckerboardPix(pix), 0).a;
         if (q2SplitFlag == 0.0)
         {
-            hdr += texelFetch( framebufGodRaysFiltered_Sampler, pix, 0 ).rgb;
+            hdr += texelFetch( framebufGodRaysFiltered_Sampled, pix, 0 ).rgb;
         }
     }
 
@@ -379,7 +379,7 @@ void main()
 
     color = applyVolumetrics( pix, color );
 #if SHIPPING_HACK
-    color += texelFetch( framebufAcidFog_Sampler, pix, 0 ).rgb;
+    color += texelFetch( framebufAcidFog_Sampled, pix, 0 ).rgb;
 #endif
 
     color = applyLevelFog( pix, color );
@@ -410,11 +410,11 @@ vec3 processDebug(const ivec2 pix, const vec3 fallback)
     if ((globalUniform.debugShowFlags & DEBUG_SHOW_FLAG_GOD_RAYS) != 0)
     {
         // filtered (bilateral-upscaled) volumetric sunlight buffer
-        return texelFetch(framebufGodRaysFiltered_Sampler, pix, 0).rgb * 4.0;
+        return texelFetch(framebufGodRaysFiltered_Sampled, pix, 0).rgb * 4.0;
     }
     else if ((globalUniform.debugShowFlags & DEBUG_SHOW_FLAG_MOTION_VECTORS) != 0)
     {
-        const vec2 m = texelFetch(framebufMotion_Sampler, getCheckerboardPix(pix), 0).rg;
+        const vec2 m = texelFetch(framebufMotion_Sampled, getCheckerboardPix(pix), 0).rg;
         return vec3(abs(m.r), abs(m.g), 0);
     }
     else if ((globalUniform.debugShowFlags & DEBUG_SHOW_FLAG_UNFILTERED_DIFFUSE) != 0)
@@ -434,7 +434,7 @@ vec3 processDebug(const ivec2 pix, const vec3 fallback)
 #if GRADIENT_ESTIMATION_ENABLED
     else if ((globalUniform.debugShowFlags & DEBUG_SHOW_FLAG_GRADIENTS) != 0)
     {
-        return texelFetch(framebufDISPingGradient_Sampler, getCheckerboardPix(pix) / COMPUTE_ASVGF_STRATA_SIZE, 0).xyz;
+        return texelFetch(framebufDISPingGradient_Sampled, getCheckerboardPix(pix) / COMPUTE_ASVGF_STRATA_SIZE, 0).xyz;
     }
 #endif
 #ifdef DEBUG_SHOW_SH
@@ -450,8 +450,8 @@ vec3 processDebug(const ivec2 pix, const vec3 fallback)
 
         ivec2 centerPix = ivec2(globalUniform.renderWidth * 0.5, globalUniform.renderHeight * 0.5);
         SH indirSH = texelFetchSH(
-            //framebufUnfilteredIndirectSH_R_Sampler, framebufUnfilteredIndirectSH_G_Sampler, framebufUnfilteredIndirectSH_B_Sampler,
-            framebufIndirPongSH_R_Sampler, framebufIndirPongSH_G_Sampler, framebufIndirPongSH_B_Sampler, 
+            //framebufUnfilteredIndirectSH_R_Sampled, framebufUnfilteredIndirectSH_G_Sampled, framebufUnfilteredIndirectSH_B_Sampled,
+            framebufIndirPongSH_R_Sampled, framebufIndirPongSH_G_Sampled, framebufIndirPongSH_B_Sampled, 
             getCheckerboardPix(centerPix));
 
         return SHToIrradiance(indirSH, normal);
@@ -460,8 +460,8 @@ vec3 processDebug(const ivec2 pix, const vec3 fallback)
 
     if ((globalUniform.debugShowFlags & DEBUG_SHOW_FLAG_LUMA) != 0)
     {
-        const vec3 luma = texelFetch(framebufScreenEmission_Sampler, pix, 0).rgb;
-        const vec3 albedo = texelFetch(framebufAlbedo_Sampler, pix, 0).rgb;
+        const vec3 luma = texelFetch(framebufScreenEmission_Sampled, pix, 0).rgb;
+        const vec3 albedo = texelFetch(framebufAlbedo_Sampled, pix, 0).rgb;
         return luma * 8.0 + albedo * 0.15;
     }
 

@@ -47,9 +47,9 @@ vec2 getSrcUV(const ivec2 downsampledPix)
     return (vec2(downsampledPix) + 0.5) * getInverseDownsampledSize();
 }
 
-vec3 getSample(sampler2D srcSampler, const vec2 uv)
+vec3 getSample(texture2D srcTexture, sampler srcSampler, const vec2 uv)
 {
-    return textureLod(srcSampler, uv, 0).rgb;
+    return textureLod(sampler2D(srcTexture, srcSampler), uv, 0).rgb;
 }
 
 float getKarisWeight(const vec3 box4x4)
@@ -57,30 +57,30 @@ float getKarisWeight(const vec3 box4x4)
     return 1.0 / (1.0 + getLuminance(box4x4));
 }
 
-vec3 downsample13tap(sampler2D srcSampler, const vec2 centerUV)
+vec3 downsample13tap(texture2D srcTexture, sampler srcSampler, const vec2 centerUV)
 {
     const vec2 invSrcSize = getInverseSrcSize();
 
     // line by line indexing, slide 153
     const vec3 taps[] = 
     {
-        getSample(srcSampler, centerUV + vec2(-2,-2) * invSrcSize),
-        getSample(srcSampler, centerUV + vec2( 0,-2) * invSrcSize),
-        getSample(srcSampler, centerUV + vec2( 2,-2) * invSrcSize),
+        getSample(srcTexture, srcSampler, centerUV + vec2(-2,-2) * invSrcSize),
+        getSample(srcTexture, srcSampler, centerUV + vec2( 0,-2) * invSrcSize),
+        getSample(srcTexture, srcSampler, centerUV + vec2( 2,-2) * invSrcSize),
 
-        getSample(srcSampler, centerUV + vec2(-1,-1) * invSrcSize),
-        getSample(srcSampler, centerUV + vec2( 1,-1) * invSrcSize),
+        getSample(srcTexture, srcSampler, centerUV + vec2(-1,-1) * invSrcSize),
+        getSample(srcTexture, srcSampler, centerUV + vec2( 1,-1) * invSrcSize),
 
-        getSample(srcSampler, centerUV + vec2(-2, 0) * invSrcSize),
-        getSample(srcSampler, centerUV + vec2( 0, 0) * invSrcSize),
-        getSample(srcSampler, centerUV + vec2( 2, 0) * invSrcSize),
+        getSample(srcTexture, srcSampler, centerUV + vec2(-2, 0) * invSrcSize),
+        getSample(srcTexture, srcSampler, centerUV + vec2( 0, 0) * invSrcSize),
+        getSample(srcTexture, srcSampler, centerUV + vec2( 2, 0) * invSrcSize),
 
-        getSample(srcSampler, centerUV + vec2(-1, 1) * invSrcSize),
-        getSample(srcSampler, centerUV + vec2( 1, 1) * invSrcSize),
+        getSample(srcTexture, srcSampler, centerUV + vec2(-1, 1) * invSrcSize),
+        getSample(srcTexture, srcSampler, centerUV + vec2( 1, 1) * invSrcSize),
 
-        getSample(srcSampler, centerUV + vec2(-2, 2) * invSrcSize),
-        getSample(srcSampler, centerUV + vec2( 0, 2) * invSrcSize),
-        getSample(srcSampler, centerUV + vec2( 2, 2) * invSrcSize),
+        getSample(srcTexture, srcSampler, centerUV + vec2(-2, 2) * invSrcSize),
+        getSample(srcTexture, srcSampler, centerUV + vec2( 0, 2) * invSrcSize),
+        getSample(srcTexture, srcSampler, centerUV + vec2( 2, 2) * invSrcSize),
     };
 
     // on the first downsample use Karis average
@@ -127,11 +127,11 @@ void main()
     
     switch (stepIndex)
     {
-        case 0: imageStore(framebufBloom_Mip1, downsampledPix, vec4(downsample13tap(framebufBloomInput_Sampler, srcUV), 0.0)); break;
-        case 1: imageStore(framebufBloom_Mip2, downsampledPix, vec4(downsample13tap(framebufBloom_Mip1_Sampler, srcUV), 0.0)); break;
-        case 2: imageStore(framebufBloom_Mip3, downsampledPix, vec4(downsample13tap(framebufBloom_Mip2_Sampler, srcUV), 0.0)); break;
-        case 3: imageStore(framebufBloom_Mip4, downsampledPix, vec4(downsample13tap(framebufBloom_Mip3_Sampler, srcUV), 0.0)); break;
-        case 4: imageStore(framebufBloom_Mip5, downsampledPix, vec4(downsample13tap(framebufBloom_Mip4_Sampler, srcUV), 0.0)); break;
+        case 0: imageStore(framebufBloom_Mip1, downsampledPix, vec4(downsample13tap(framebufBloomInput_Sampled, framebufBloomInput_Sampler, srcUV), 0.0)); break;
+        case 1: imageStore(framebufBloom_Mip2, downsampledPix, vec4(downsample13tap(framebufBloom_Mip1_Sampled, framebufBloom_Mip1_Sampler, srcUV), 0.0)); break;
+        case 2: imageStore(framebufBloom_Mip3, downsampledPix, vec4(downsample13tap(framebufBloom_Mip2_Sampled, framebufBloom_Mip2_Sampler, srcUV), 0.0)); break;
+        case 3: imageStore(framebufBloom_Mip4, downsampledPix, vec4(downsample13tap(framebufBloom_Mip3_Sampled, framebufBloom_Mip3_Sampler, srcUV), 0.0)); break;
+        case 4: imageStore(framebufBloom_Mip5, downsampledPix, vec4(downsample13tap(framebufBloom_Mip4_Sampled, framebufBloom_Mip4_Sampler, srcUV), 0.0)); break;
     }
 }
 

@@ -64,7 +64,7 @@ void main()
             ivec2 p = pos_grad * Q2_GRAD_DWN + ivec2(offx, offy);
 
             // Reproject the current pixel into the previous frame (flat space)
-            vec4 motion = texelFetch(framebufMotion_Sampler, p, 0);
+            vec4 motion = texelFetch(framebufMotion_Sampled, p, 0);
             ivec2 p_flat = q2CheckerToFlat(p, width);
             vec2 pos_prev_flat = (vec2(p_flat) + vec2(0.5)) * vec2(inv_width, inv_height) + motion.xy;
             ivec2 pp_flat = ivec2(floor(pos_prev_flat * vec2(width, height)));
@@ -79,7 +79,7 @@ void main()
             // Don't reuse the same pixel if it was a gradient sample on the
             // previous frame (carrying the same RNG forward would add bias).
             ivec2 pos_grad_prev = pp / Q2_GRAD_DWN;
-            uint prev_grad_sample_pos = texelFetch(framebufQ2GradSmplPos_Prev_Sampler, pos_grad_prev, 0).x;
+            uint prev_grad_sample_pos = texelFetch(framebufQ2GradSmplPos_Prev_Sampled, pos_grad_prev, 0).x;
             ivec2 stratum_prev = ivec2(
                 (prev_grad_sample_pos >> (Q2_STRATUM_OFFSET_SHIFT * 0)) & Q2_STRATUM_OFFSET_MASK,
                 (prev_grad_sample_pos >> (Q2_STRATUM_OFFSET_SHIFT * 1)) & Q2_STRATUM_OFFSET_MASK);
@@ -89,8 +89,8 @@ void main()
             }
 
             // Surface matching: depth and geometric normal similarity.
-            float depth_curr = texelFetch(framebufQ2ViewDepth_Sampler, p, 0).r;
-            float depth_prev = texelFetch(framebufQ2ViewDepth_Prev_Sampler, pp, 0).r;
+            float depth_curr = texelFetch(framebufQ2ViewDepth_Sampled, p, 0).r;
+            float depth_prev = texelFetch(framebufQ2ViewDepth_Prev_Sampled, pp, 0).r;
             vec3 geo_normal_curr = texelFetchNormalGeometry(p);
             vec3 geo_normal_prev = texelFetchNormalGeometry_Prev(pp);
 
@@ -99,8 +99,8 @@ void main()
 
             if (dist_depth < 0.1 && dot_geo_normals > 0.9)
             {
-                vec3 prev_hf = q2UnpackRGBE(texelFetch(framebufQ2ColorHF_Prev_Sampler, pp, 0).r);
-                vec3 prev_spec = q2UnpackRGBE(texelFetch(framebufQ2ColorSpec_Prev_Sampler, pp, 0).r);
+                vec3 prev_hf = q2UnpackRGBE(texelFetch(framebufQ2ColorHF_Prev_Sampled, pp, 0).r);
+                vec3 prev_spec = q2UnpackRGBE(texelFetch(framebufQ2ColorSpec_Prev_Sampled, pp, 0).r);
                 vec2 prev_lum = vec2(getLuminance(prev_hf), getLuminance(prev_spec));
 
                 // Pick the brightest pixel in the stratum: avoids bright trails
@@ -135,29 +135,29 @@ void main()
     const ivec2 ipos = pos_grad * Q2_GRAD_DWN + found_offset;
 
     imageStore(framebufQ2RngSeed, ipos,
-               texelFetch(framebufQ2RngSeed_Prev_Sampler, found_pos_prev, 0));
+               texelFetch(framebufQ2RngSeed_Prev_Sampled, found_pos_prev, 0));
 
     imageStore(framebufNormal, ipos,
-               texelFetch(framebufNormal_Prev_Sampler, found_pos_prev, 0));
+               texelFetch(framebufNormal_Prev_Sampled, found_pos_prev, 0));
     imageStore(framebufMetallicRoughness, ipos,
-               texelFetch(framebufMetallicRoughness_Prev_Sampler, found_pos_prev, 0));
+               texelFetch(framebufMetallicRoughness_Prev_Sampled, found_pos_prev, 0));
     imageStore(framebufSurfacePosition, ipos,
-               texelFetch(framebufSurfacePosition_Prev_Sampler, found_pos_prev, 0));
+               texelFetch(framebufSurfacePosition_Prev_Sampled, found_pos_prev, 0));
 
-    vec4 view_direction = texelFetch(framebufViewDirection_Prev_Sampler, found_pos_prev, 0);
-    if (wasOnlyPrimary(texelFetch(framebufThroughput_Sampler, ipos, 0).a))
+    vec4 view_direction = texelFetch(framebufViewDirection_Prev_Sampled, found_pos_prev, 0);
+    if (wasOnlyPrimary(texelFetch(framebufThroughput_Sampled, ipos, 0).a))
     {
-        const vec3 surface_pos = texelFetch(framebufSurfacePosition_Prev_Sampler, found_pos_prev, 0).xyz;
+        const vec3 surface_pos = texelFetch(framebufSurfacePosition_Prev_Sampled, found_pos_prev, 0).xyz;
         view_direction.xyz = normalize(surface_pos - globalUniform.cameraPosition.xyz);
     }
     imageStore(framebufViewDirection, ipos, view_direction);
 
     imageStore(framebufQ2BaseColor, ipos,
-               texelFetch(framebufQ2BaseColor_Prev_Sampler, found_pos_prev, 0));
+               texelFetch(framebufQ2BaseColor_Prev_Sampled, found_pos_prev, 0));
     imageStore(framebufQ2Metallic, ipos,
-               texelFetch(framebufQ2Metallic_Prev_Sampler, found_pos_prev, 0));
+               texelFetch(framebufQ2Metallic_Prev_Sampled, found_pos_prev, 0));
 
     imageStore(framebufAlbedo, getRegularPixFromCheckerboardPix(ipos),
-               texelFetch(framebufAlbedo_Prev_Sampler,
+               texelFetch(framebufAlbedo_Prev_Sampled,
                           getRegularPixFromCheckerboardPix(found_pos_prev), 0));
 }

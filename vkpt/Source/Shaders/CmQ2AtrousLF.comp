@@ -40,7 +40,7 @@ layout(push_constant, std140) uniform IterationInfo
     uint iteration;
 } push;
 
-Q2SH q2LoadSH(sampler2D img_shY, sampler2D img_CoCg, ivec2 p)
+Q2SH q2LoadSH(texture2D img_shY, texture2D img_CoCg, ivec2 p)
 {
     Q2SH r;
     r.shY = texelFetch(img_shY, p, 0);
@@ -50,8 +50,8 @@ Q2SH q2LoadSH(sampler2D img_shY, sampler2D img_CoCg, ivec2 p)
 
 void
 filter_image(
-    sampler2D img_lf_shY,
-    sampler2D img_lf_CoCg,
+    texture2D img_lf_shY,
+    texture2D img_lf_CoCg,
     out Q2SH filtered_lf)
 {
     ivec2 ipos_lowres = ivec2(gl_GlobalInvocationID);
@@ -68,8 +68,8 @@ filter_image(
 
     // Load the parameters of the anchor pixel
     vec3 geo_normal_center = texelFetchNormalGeometry(ipos_hires);
-    float depth_center = texelFetch(framebufQ2ViewDepth_Sampler, ipos_hires, 0).r;
-    float fwidth_depth = texelFetch(framebufDepthGrad_Sampler, ipos_hires, 0).r;
+    float depth_center = texelFetch(framebufQ2ViewDepth_Sampled, ipos_hires, 0).r;
+    float fwidth_depth = texelFetch(framebufDepthGrad_Sampled, ipos_hires, 0).r;
 
     const int step_size = int(1u << (push.iteration - 1));
 
@@ -113,7 +113,7 @@ filter_image(
             // The lighting detail will be partially preserved by spherical harmonics.
             vec3 geo_normal = texelFetchNormalGeometry(p_hires);
 
-            float depth = texelFetch(framebufQ2ViewDepth_Sampler, p_hires, 0).r;
+            float depth = texelFetch(framebufQ2ViewDepth_Sampled, p_hires, 0).r;
 
             float dist_z = abs(depth_center - depth) * fwidth_depth * Q2_FLT_ATROUS_DEPTH;
             w *= exp(-dist_z / float(step_size * Q2_GRAD_DWN));
@@ -159,8 +159,8 @@ filter_image(
 // The fireflies this pass was re-enabled for turned out to come from the sun's contribution
 // to an indirect bounce (rt_sun_bounce_scale / rt_sun_bounce_range), not from the LF channel.
 void deflicker_image(
-    sampler2D img_lf_shY,
-    sampler2D img_lf_CoCg,
+    texture2D img_lf_shY,
+    texture2D img_lf_CoCg,
     out Q2SH filtered_lf)
 {
     ivec2 ipos_lowres = ivec2(gl_GlobalInvocationID);
@@ -177,7 +177,7 @@ void deflicker_image(
 
     // The anchor is the only pixel of the low-res entry that has depth and normal.
     vec3 geo_normal_center = texelFetchNormalGeometry(ipos_hires);
-    float depth_center = texelFetch(framebufQ2ViewDepth_Sampler, ipos_hires, 0).r;
+    float depth_center = texelFetch(framebufQ2ViewDepth_Sampled, ipos_hires, 0).r;
 
     // Boundaries for the checkerboard field, either left or right half of the screen
     const int width = int(globalUniform.renderWidth);
@@ -211,7 +211,7 @@ void deflicker_image(
                     || any(greaterThanEqual(p_hires, ivec2(field_right, height))))
                 continue;
 
-            float depth = texelFetch(framebufQ2ViewDepth_Sampler, p_hires, 0).r;
+            float depth = texelFetch(framebufQ2ViewDepth_Sampled, p_hires, 0).r;
             vec3 geo_normal = texelFetchNormalGeometry(p_hires);
 
             float dist_depth = abs(depth_center - depth) / max(abs(depth_center), 1e-6);
@@ -259,19 +259,19 @@ void main()
     switch(push.iteration)
     {
     case 0:
-        deflicker_image(framebufQ2AtrousPingLF_SH_Sampler, framebufQ2AtrousPingLF_COCG_Sampler, filtered_lf);
+        deflicker_image(framebufQ2AtrousPingLF_SH_Sampled, framebufQ2AtrousPingLF_COCG_Sampled, filtered_lf);
         Q2_STORE_SH(framebufQ2AtrousPongLF_SH, framebufQ2AtrousPongLF_COCG, ipos, filtered_lf);
         break;
     case 1:
-        filter_image(framebufQ2AtrousPongLF_SH_Sampler, framebufQ2AtrousPongLF_COCG_Sampler, filtered_lf);
+        filter_image(framebufQ2AtrousPongLF_SH_Sampled, framebufQ2AtrousPongLF_COCG_Sampled, filtered_lf);
         Q2_STORE_SH(framebufQ2AtrousPingLF_SH, framebufQ2AtrousPingLF_COCG, ipos, filtered_lf);
         break;
     case 2:
-        filter_image(framebufQ2AtrousPingLF_SH_Sampler, framebufQ2AtrousPingLF_COCG_Sampler, filtered_lf);
+        filter_image(framebufQ2AtrousPingLF_SH_Sampled, framebufQ2AtrousPingLF_COCG_Sampled, filtered_lf);
         Q2_STORE_SH(framebufQ2AtrousPongLF_SH, framebufQ2AtrousPongLF_COCG, ipos, filtered_lf);
         break;
     case 3:
-        filter_image(framebufQ2AtrousPongLF_SH_Sampler, framebufQ2AtrousPongLF_COCG_Sampler, filtered_lf);
+        filter_image(framebufQ2AtrousPongLF_SH_Sampled, framebufQ2AtrousPongLF_COCG_Sampled, filtered_lf);
         Q2_STORE_SH(framebufQ2AtrousPingLF_SH, framebufQ2AtrousPingLF_COCG, ipos, filtered_lf);
         break;
     }

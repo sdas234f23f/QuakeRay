@@ -47,12 +47,12 @@ vec2 getSrcUV(const ivec2 upsampledPix)
     return (vec2(upsampledPix) + 0.5) * getInverseUpscampledSize();
 }
 
-vec3 getSample(sampler2D srcSampler, const vec2 uv)
+vec3 getSample(texture2D srcTexture, sampler srcSampler, const vec2 uv)
 {
-    return textureLod(srcSampler, uv, 0).rgb;
+    return textureLod(sampler2D(srcTexture, srcSampler), uv, 0).rgb;
 }
 
-vec3 filterTent3x3(sampler2D srcSampler, const vec2 centerUV)
+vec3 filterTent3x3(texture2D srcTexture, sampler srcSampler, const vec2 centerUV)
 {
     const vec2 invSrcSize = getInverseSrcSize();
 
@@ -74,7 +74,7 @@ vec3 filterTent3x3(sampler2D srcSampler, const vec2 centerUV)
 
     for (int i = 0; i < 9; i++)
     {
-        r += weights[i] * getSample(srcSampler, centerUV + offsets[i] * invSrcSize);
+        r += weights[i] * getSample(srcTexture, srcSampler, centerUV + offsets[i] * invSrcSize);
     }
 
     return r;
@@ -93,11 +93,11 @@ void main()
 
     switch (stepIndex)
     {
-        case 4: imageStore(framebufBloom_Mip4,   upsampledPix, vec4(filterTent3x3(framebufBloom_Mip5_Sampler, srcUV), 0.0)); break;
-        case 3: imageStore(framebufBloom_Mip3,   upsampledPix, vec4(filterTent3x3(framebufBloom_Mip4_Sampler, srcUV), 0.0)); break;
-        case 2: imageStore(framebufBloom_Mip2,   upsampledPix, vec4(filterTent3x3(framebufBloom_Mip3_Sampler, srcUV), 0.0)); break;
-        case 1: imageStore(framebufBloom_Mip1,   upsampledPix, vec4(filterTent3x3(framebufBloom_Mip2_Sampler, srcUV), 0.0)); break;
-        case 0: imageStore(framebufBloom_Result, upsampledPix, vec4(filterTent3x3(framebufBloom_Mip1_Sampler, srcUV), 0.0)); break;
+        case 4: imageStore(framebufBloom_Mip4,   upsampledPix, vec4(filterTent3x3(framebufBloom_Mip5_Sampled, framebufBloom_Mip5_Sampler, srcUV), 0.0)); break;
+        case 3: imageStore(framebufBloom_Mip3,   upsampledPix, vec4(filterTent3x3(framebufBloom_Mip4_Sampled, framebufBloom_Mip4_Sampler, srcUV), 0.0)); break;
+        case 2: imageStore(framebufBloom_Mip2,   upsampledPix, vec4(filterTent3x3(framebufBloom_Mip3_Sampled, framebufBloom_Mip3_Sampler, srcUV), 0.0)); break;
+        case 1: imageStore(framebufBloom_Mip1,   upsampledPix, vec4(filterTent3x3(framebufBloom_Mip2_Sampled, framebufBloom_Mip2_Sampler, srcUV), 0.0)); break;
+        case 0: imageStore(framebufBloom_Result, upsampledPix, vec4(filterTent3x3(framebufBloom_Mip1_Sampled, framebufBloom_Mip1_Sampler, srcUV), 0.0)); break;
     }
 }
 

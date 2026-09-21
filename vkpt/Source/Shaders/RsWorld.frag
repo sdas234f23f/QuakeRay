@@ -63,7 +63,7 @@ void main()
 
     vec3 sp = volume_toSamplePosition_T(
         worldpos.xyz, globalUniform.volumeViewProj, globalUniform.cameraPosition.xyz );
-    vec3 illum = textureLod( g_illuminationVolume_Sampler, sp, 0.0 ).rgb;
+    vec3 illum = textureLod( sampler3D( g_illuminationVolume_Sampled, g_illuminationVolume_Sampler ), sp, 0.0 ).rgb;
 
     outColor.rgb *= illum;
 #else

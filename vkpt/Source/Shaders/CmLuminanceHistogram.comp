@@ -43,7 +43,7 @@ void main()
 
     const bool validThread = !any(greaterThanEqual(ipos, screenSize));
 
-    const vec3 input_color = validThread ? texelFetch(framebufPreFinal_Sampler, ipos, 0).rgb : vec3(0.0);
+    const vec3 input_color = validThread ? texelFetch(framebufPreFinal_Sampled, ipos, 0).rgb : vec3(0.0);
 
     const uint linear_idx = gl_LocalInvocationIndex;
 

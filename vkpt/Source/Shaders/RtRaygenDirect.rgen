@@ -46,7 +46,7 @@ void main()
 {
     const ivec2 pix = ivec2(gl_LaunchIDEXT.xy);
 
-    const uint seed = texelFetch(framebufQ2RngSeed_Sampler, pix, 0).r;
+    const uint seed = texelFetch(framebufQ2RngSeed_Sampled, pix, 0).r;
 
     const Surface surf = fetchGbufferSurface(pix);
 
@@ -58,7 +58,7 @@ void main()
     }
 
     const bool isGradient = q2GetIsGradient(pix);
-    const uint cluster = texelFetch(framebufQ2Cluster_Sampler, pix, 0).r;
+    const uint cluster = texelFetch(framebufQ2Cluster_Sampled, pix, 0).r;
 
     const float alpha = square(surf.roughness);
     const float phongExp = q2RoughnessSquareToSpecPower(alpha);

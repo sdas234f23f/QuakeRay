@@ -99,7 +99,7 @@ vec4 volume_sample( const vec3 world )
     vec3 sp = volume_toSamplePosition_T(
         world, globalUniform.volumeViewProj, globalUniform.cameraPosition.xyz );
 
-    return textureLod( g_volumetric_Sampler, sp, 0.0 );
+    return textureLod( sampler3D( g_volumetric_Sampled, g_volumetric_Sampler ), sp, 0.0 );
 }
 
 vec4 volume_sample_Prev( const ivec3 curcell )
@@ -109,7 +109,7 @@ vec4 volume_sample_Prev( const ivec3 curcell )
     vec3 spPrev = volume_toSamplePosition_T(
         curworld, globalUniform.volumeViewProj_Prev, globalUniform.cameraPositionPrev.xyz );
 
-    return textureLod( g_volumetric_Sampler_Prev, spPrev, 0.0 );
+    return textureLod( sampler3D( g_volumetric_Sampled_Prev, g_volumetric_Sampler_Prev ), spPrev, 0.0 );
 }
 
 vec4 volume_sampleDithered( const vec3 world, const vec3 rnd01, float ditherRadius )
@@ -124,7 +124,7 @@ vec4 volume_sampleDithered( const vec3 world, const vec3 rnd01, float ditherRadi
     sp += ditherRadius * ( rnd01 * 2 - 1 ) /
           vec3( VOLUMETRIC_SIZE_X, VOLUMETRIC_SIZE_Y, VOLUMETRIC_SIZE_Z );
 
-    return textureLod( g_volumetric_Sampler, sp, 0.0 );
+    return textureLod( sampler3D( g_volumetric_Sampled, g_volumetric_Sampler ), sp, 0.0 );
 }
 
 

@@ -225,7 +225,7 @@ TextureManager::TextureManager( VkDevice                                       _
 
 
     textureDesc = std::make_shared< TextureDescriptors >(
-        device, samplerMgr, maxTextureCount, BINDING_TEXTURES );
+        device, samplerMgr, maxTextureCount, BINDING_TEXTURES, BINDING_TEXTURES_SAMPLER );
     textureUploader = std::make_shared< TextureUploader >( device, std::move( _memAllocator ) );
 
     textures.resize( maxTextureCount );

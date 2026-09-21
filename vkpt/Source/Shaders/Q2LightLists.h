@@ -75,7 +75,7 @@ bool q2GetIsGradient(const ivec2 pix)
         return false;
     }
 
-    const uint u = texelFetch(framebufQ2GradSmplPos_Sampler, pix / Q2_GRAD_DWN, 0).r;
+    const uint u = texelFetch(framebufQ2GradSmplPos_Sampled, pix / Q2_GRAD_DWN, 0).r;
     if (u == 0u)
     {
         return false;

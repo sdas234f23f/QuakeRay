@@ -73,12 +73,15 @@
 layout(set = DESC_SET_TLAS, binding = BINDING_ACCELERATION_STRUCTURE_MAIN)   uniform accelerationStructureEXT topLevelAS;
 
 #ifdef DESC_SET_CUBEMAPS
-layout(set = DESC_SET_CUBEMAPS, binding = BINDING_CUBEMAPS) uniform samplerCube globalCubemaps[];
+layout(set = DESC_SET_CUBEMAPS, binding = BINDING_CUBEMAPS) uniform textureCube globalCubemaps[];
+layout(set = DESC_SET_CUBEMAPS, binding = BINDING_CUBEMAPS_SAMPLER) uniform sampler globalCubemaps_Sampler[];
 #endif
 
 #ifdef DESC_SET_RENDER_CUBEMAP
-layout(set = DESC_SET_RENDER_CUBEMAP, binding = BINDING_RENDER_CUBEMAP) uniform samplerCube renderCubemap;
-layout(set = DESC_SET_RENDER_CUBEMAP, binding = BINDING_RENDER_CUBEMAP_ENV) uniform samplerCube renderCubemapEnv;
+layout(set = DESC_SET_RENDER_CUBEMAP, binding = BINDING_RENDER_CUBEMAP) uniform textureCube renderCubemap;
+layout(set = DESC_SET_RENDER_CUBEMAP, binding = BINDING_RENDER_CUBEMAP_SAMPLER) uniform sampler renderCubemap_Sampler;
+layout(set = DESC_SET_RENDER_CUBEMAP, binding = BINDING_RENDER_CUBEMAP_ENV) uniform textureCube renderCubemapEnv;
+layout(set = DESC_SET_RENDER_CUBEMAP, binding = BINDING_RENDER_CUBEMAP_ENV_SAMPLER) uniform sampler renderCubemapEnv_Sampler;
 #endif
 
 #ifdef DESC_SET_PORTALS
@@ -272,7 +275,7 @@ vec3 getSkyPrimary(vec3 direction)
 #ifdef DESC_SET_RENDER_CUBEMAP
     if (skyType == SKY_TYPE_RASTERIZED_GEOMETRY || skyType == SKY_TYPE_PROCEDURAL)
     {
-        return texture(renderCubemap, direction).rgb;
+        return texture(samplerCube(renderCubemap, renderCubemap_Sampler), direction).rgb;
     }
 #endif
 
@@ -280,7 +283,7 @@ vec3 getSkyPrimary(vec3 direction)
     {
         direction = mat3(globalUniform.skyCubemapRotationTransform) * direction;
         
-        return texture(globalCubemaps[nonuniformEXT(globalUniform.skyCubemapIndex)], direction).rgb;
+        return texture(samplerCube(globalCubemaps[nonuniformEXT(globalUniform.skyCubemapIndex)], globalCubemaps_Sampler[nonuniformEXT(globalUniform.skyCubemapIndex)]), direction).rgb;
     }
 
     return globalUniform.skyColorDefault.xyz;
@@ -302,19 +305,19 @@ vec3 getSkyFiltered(vec3 direction, float lod)
 #ifdef DESC_SET_RENDER_CUBEMAP
     if (skyType == SKY_TYPE_RASTERIZED_GEOMETRY)
     {
-        return textureLod(renderCubemap, direction, lod).rgb;
+        return textureLod(samplerCube(renderCubemap, renderCubemap_Sampler), direction, lod).rgb;
     }
 
     if (skyType == SKY_TYPE_PROCEDURAL)
     {
-        return textureLod(renderCubemapEnv, direction, lod).rgb;
+        return textureLod(samplerCube(renderCubemapEnv, renderCubemapEnv_Sampler), direction, lod).rgb;
     }
 #endif
 
     if (skyType == SKY_TYPE_CUBEMAP)
     {
         direction = mat3(globalUniform.skyCubemapRotationTransform) * direction;
-        return textureLod(globalCubemaps[nonuniformEXT(globalUniform.skyCubemapIndex)], direction, lod).rgb;
+        return textureLod(samplerCube(globalCubemaps[nonuniformEXT(globalUniform.skyCubemapIndex)], globalCubemaps_Sampler[nonuniformEXT(globalUniform.skyCubemapIndex)]), direction, lod).rgb;
     }
 
     return globalUniform.skyColorDefault.xyz;

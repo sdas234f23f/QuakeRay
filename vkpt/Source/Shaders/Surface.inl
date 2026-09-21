@@ -56,22 +56,22 @@ Surface fetchGbufferSurface(const ivec2 pix)
     }
     
     // framebufAlbedo ALWAYS uses regular layout because of the sky rasterization pass  
-    s.albedo = texelFetch(framebufAlbedo_Sampler, getRegularPixFromCheckerboardPix(pix), 0).rgb;
-    s.emission = getLuminance(texelFetch(framebufScreenEmisRT_Sampler, getRegularPixFromCheckerboardPix(pix), 0).rgb);   
+    s.albedo = texelFetch(framebufAlbedo_Sampled, getRegularPixFromCheckerboardPix(pix), 0).rgb;
+    s.emission = getLuminance(texelFetch(framebufScreenEmisRT_Sampled, getRegularPixFromCheckerboardPix(pix), 0).rgb);   
     {
-        vec4 posEnc             = texelFetch(framebufSurfacePosition_Sampler, pix, 0);
+        vec4 posEnc             = texelFetch(framebufSurfacePosition_Sampled, pix, 0);
         s.position              = posEnc.xyz;
         s.instCustomIndex       = floatBitsToUint(posEnc.a);
     }
     {
-        vec2 metallicRoughness  = texelFetch(framebufMetallicRoughness_Sampler, pix, 0).xy;
+        vec2 metallicRoughness  = texelFetch(framebufMetallicRoughness_Sampled, pix, 0).xy;
         s.specularColor         = getSpecularColor(s.albedo, metallicRoughness[0]);
         s.roughness             = metallicRoughness[1];
     }
     s.normalGeom                = texelFetchNormalGeometry(pix);
     s.normal                    = texelFetchNormal(pix);
-    s.toViewerDir               = -texelFetch(framebufViewDirection_Sampler, pix, 0).xyz;
-    s.cluster                   = texelFetch(framebufQ2Cluster_Sampler, pix, 0).r;
+    s.toViewerDir               = -texelFetch(framebufViewDirection_Sampled, pix, 0).xyz;
+    s.cluster                   = texelFetch(framebufQ2Cluster_Sampled, pix, 0).r;
     return s;
 }
 
@@ -82,12 +82,12 @@ Surface fetchGbufferSurface_NoAlbedoViewDir_Prev(const ivec2 pix)
     s.albedo = vec3(1.0);
     s.emission = 0.0;
     {
-        vec4 posEnc             = texelFetch(framebufSurfacePosition_Prev_Sampler, pix, 0);
+        vec4 posEnc             = texelFetch(framebufSurfacePosition_Prev_Sampled, pix, 0);
         s.position              = posEnc.xyz;
         s.instCustomIndex       = floatBitsToUint(posEnc.a);
     }
     {
-        vec2 metallicRoughness  = texelFetch(framebufMetallicRoughness_Prev_Sampler, pix, 0).xy;
+        vec2 metallicRoughness  = texelFetch(framebufMetallicRoughness_Prev_Sampled, pix, 0).xy;
         s.specularColor         = getSpecularColor(s.albedo, metallicRoughness[0]);
         s.roughness             = metallicRoughness[1];
     }

@@ -41,7 +41,7 @@ layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 // (the raw LF signal is too sparse for the per-sample HF approach).
 vec2 q2GetLFGradient(ivec2 ipos, int width, int height, float inv_width, float inv_height)
 {
-    vec4 motion = texelFetch(framebufMotion_Sampler, ipos, 0);
+    vec4 motion = texelFetch(framebufMotion_Sampled, ipos, 0);
     ivec2 ipos_flat = q2CheckerToFlat(ipos, width);
     vec2 pos_prev_flat = (vec2(ipos_flat) + vec2(0.5)) * vec2(inv_width, inv_height) + motion.xy;
     ivec2 pp_flat = ivec2(floor(pos_prev_flat * vec2(width, height)));
@@ -53,8 +53,8 @@ vec2 q2GetLFGradient(ivec2 ipos, int width, int height, float inv_width, float i
 
     ivec2 pp = q2FlatToChecker(pp_flat, width);
 
-    float lum_curr = texelFetch(framebufQ2ColorLF_SH_Sampler, ipos, 0).w;
-    float lum_prev = texelFetch(framebufQ2HistColorLF_SH_Prev_Sampler, pp, 0).w;
+    float lum_curr = texelFetch(framebufQ2ColorLF_SH_Sampled, ipos, 0).w;
+    float lum_prev = texelFetch(framebufQ2HistColorLF_SH_Prev_Sampled, pp, 0).w;
 
     // Return raw colors; normalization happens after the blur (gradient atrous).
     return vec2(lum_curr, lum_prev);
@@ -77,7 +77,7 @@ void main()
     const float inv_width = 1.0 / globalUniform.renderWidth;
     const float inv_height = 1.0 / globalUniform.renderHeight;
 
-    uint u = texelFetch(framebufQ2GradSmplPos_Sampler, ipos, 0).r;
+    uint u = texelFetch(framebufQ2GradSmplPos_Sampled, ipos, 0).r;
 
     vec2 grad_lf = vec2(0);
     float grad_hf = 0;
@@ -92,10 +92,10 @@ void main()
 
         ivec2 grad_sample_pos_curr = ipos * Q2_GRAD_DWN + grad_strata_pos;
 
-        vec2 prev_hf_spec_lum = texelFetch(framebufQ2GradHFSpecPing_Sampler, ipos, 0).xy;
+        vec2 prev_hf_spec_lum = texelFetch(framebufQ2GradHFSpecPing_Sampled, ipos, 0).xy;
 
-        vec3 curr_hf = q2UnpackRGBE(texelFetch(framebufQ2ColorHF_Sampler, grad_sample_pos_curr, 0).r);
-        vec3 curr_spec = q2UnpackRGBE(texelFetch(framebufQ2ColorSpec_Sampler, grad_sample_pos_curr, 0).r);
+        vec3 curr_hf = q2UnpackRGBE(texelFetch(framebufQ2ColorHF_Sampled, grad_sample_pos_curr, 0).r);
+        vec3 curr_spec = q2UnpackRGBE(texelFetch(framebufQ2ColorSpec_Sampled, grad_sample_pos_curr, 0).r);
 
         grad_hf = q2GetGradient(getLuminance(curr_hf), prev_hf_spec_lum.x);
         grad_spec = q2GetGradient(getLuminance(curr_spec), prev_hf_spec_lum.y);

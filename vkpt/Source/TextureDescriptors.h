@@ -31,7 +31,7 @@ namespace vkpt
 class TextureDescriptors
 {
 public:
-    explicit TextureDescriptors(VkDevice device, std::shared_ptr<SamplerManager> samplerManager, uint32_t maxTextureCount, uint32_t bindingIndex);
+    explicit TextureDescriptors(VkDevice device, std::shared_ptr<SamplerManager> samplerManager, uint32_t maxTextureCount, uint32_t bindingIndex, uint32_t samplerBindingIndex);
     ~TextureDescriptors();
 
     TextureDescriptors(const TextureDescriptors &other) = delete;
@@ -71,7 +71,10 @@ private:
     VkDevice device;
     std::shared_ptr<SamplerManager> samplerManager;
 
+    // The table is split: the image views and the sampler states live in two
+    // separate bindings, because a descriptor is either a view or a sampler
     uint32_t bindingIndex;
+    uint32_t samplerBindingIndex;
 
     VkDescriptorPool descPool;
     VkDescriptorSetLayout descLayout;
@@ -82,6 +85,7 @@ private:
 
     uint32_t currentWriteCount;
     std::vector<VkDescriptorImageInfo> writeImageInfos;
+    std::vector<VkDescriptorImageInfo> writeSamplerInfos;
     std::vector<VkWriteDescriptorSet> writeInfos;
 
     std::vector<UpdatedDescCache> writeCache[MAX_FRAMES_IN_FLIGHT];

@@ -41,7 +41,7 @@ void main()
         return;
     }
 
-    const vec3 bloom = globalUniform.bloomIntensity * textureLod(framebufBloom_Result_Sampler, uv, 0).rgb;
+    const vec3 bloom = globalUniform.bloomIntensity * textureLod(sampler2D(framebufBloom_Result_Sampled, framebufBloom_Result_Sampler), uv, 0).rgb;
     
     vec3 c = effect_loadFromSource(pix) + bloom;
     effect_storeToTarget(c, pix);

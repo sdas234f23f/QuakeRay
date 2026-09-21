@@ -37,7 +37,7 @@ vec4 safe_load(ivec2 pos)
     if(pos.x < 0 || pos.y < 0 || pos.x >= int(globalUniform.renderWidth) || pos.y >= int(globalUniform.renderHeight))
         return vec4(0);
 
-    return texelFetch(framebufQ2Color_Sampler, pos, 0);
+    return texelFetch(framebufQ2Color_Sampled, pos, 0);
 }
 
 void main()
@@ -52,12 +52,12 @@ void main()
     // position of this output pixel in the checkerboarded Q2Color
     const ivec2 ipos = getCheckerboardPix(opos);
 
-    vec4 center = texelFetch(framebufQ2Color_Sampler, ipos, 0);
+    vec4 center = texelFetch(framebufQ2Color_Sampled, ipos, 0);
 
     // Split surfaces (water/glass) contain refl/refr in different checkerboard fields -
     // cross-resolve them from the other parity side.
     vec4 color = center;
-    if (wasSplit(texelFetch(framebufThroughput_Sampler, ipos, 0).a))
+    if (wasSplit(texelFetch(framebufThroughput_Sampled, ipos, 0).a))
     {
         const int sep = getCheckerboardSeparatorX();
         const int other_side_offset = (ipos.x < sep) ? sep : -sep;

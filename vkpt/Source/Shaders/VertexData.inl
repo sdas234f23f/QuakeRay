@@ -542,7 +542,7 @@ void unpackVisibilityBuffer(
     bary = vec2(v[2], v[3]);
 }
 
-// v must be fetched from framebufVisibilityBuffer_Prev_Sampler
+// v must be fetched from framebufVisibilityBuffer_Prev_Sampled
 bool unpackPrevVisibilityBuffer(const vec4 v, out vec3 prevPos)
 {
     int prevInstanceID, instCustomIndex;

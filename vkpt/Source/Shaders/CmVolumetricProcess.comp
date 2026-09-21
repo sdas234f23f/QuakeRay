@@ -65,13 +65,13 @@ void main()
     const int y = int( gl_GlobalInvocationID.y );
 
 
-    vec4 accum = texelFetch( g_volumetric_Sampler, ivec3( x, y, 0 ), 0 );
+    vec4 accum = texelFetch( g_volumetric_Sampled, ivec3( x, y, 0 ), 0 );
     store( ivec3( x, y, 0 ), accum );
 
     for( int z = 1; z < VOLUMETRIC_SIZE_Z; z++ )
     {
         const ivec3 cell = ivec3( x, y, z );
-        const vec4  v    = texelFetch( g_volumetric_Sampler, cell, 0 );
+        const vec4  v    = texelFetch( g_volumetric_Sampled, cell, 0 );
 
         accum = accumulateScattering( accum, v );
 

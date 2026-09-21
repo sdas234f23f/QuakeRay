@@ -47,7 +47,7 @@ void main()
 
     // Q2RTX uses TEX_PT_VIEW_DEPTH_A (positive primary view depth). The
     // reflection pass stores a negative view depth there, so take abs().
-    const float referenceViewDepth = abs(texelFetch(framebufQ2ViewDepth_Sampler, getCheckerboardPix(iPosition), 0).r);
+    const float referenceViewDepth = abs(texelFetch(framebufQ2ViewDepth_Sampled, getCheckerboardPix(iPosition), 0).r);
     const ivec2 lowResOrigin = iPosition >> 1;
 
     const ivec2 lowResSize = ivec2((globalUniform.renderWidth + 1) / 2, (globalUniform.renderHeight + 1) / 2);
@@ -64,8 +64,8 @@ void main()
             if (any(greaterThanEqual(highResPos, ivec2(globalUniform.renderWidth, globalUniform.renderHeight))))
                 continue;
 
-            const vec4 color = texelFetch(framebufGodRays_Sampler, lowResPos, 0);
-            const float viewDepth = abs(texelFetch(framebufQ2ViewDepth_Sampler, getCheckerboardPix(highResPos), 0).r);
+            const vec4 color = texelFetch(framebufGodRays_Sampled, lowResPos, 0);
+            const float viewDepth = abs(texelFetch(framebufQ2ViewDepth_Sampled, getCheckerboardPix(highResPos), 0).r);
 
             // depth-aware (bilateral) and spatial weights, exactly as Q2RTX
             float weight = clamp(1.0 - 10.0 * abs(viewDepth - referenceViewDepth) / max(abs(referenceViewDepth), 1e-6), 0.0, 1.0);

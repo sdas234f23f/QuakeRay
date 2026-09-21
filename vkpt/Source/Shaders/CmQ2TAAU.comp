@@ -69,7 +69,7 @@ BicubicCatmullRom(vec2 UV, vec2 texSize, out vec2 Sample[3], out vec2 Weight[3])
 
 /* uv is in pixel coordinates */
 vec4
-sample_texture_catmull_rom(sampler2D tex, vec2 uv)
+sample_texture_catmull_rom(texture2D tex, sampler texSampler, vec2 uv)
 {
     vec4 sum = vec4(0);
     vec2 sampleLoc[3], sampleWeight[3];
@@ -79,7 +79,7 @@ sample_texture_catmull_rom(sampler2D tex, vec2 uv)
         for(int j = 0; j < 3; j++)
         {
             vec2 uvv = vec2(sampleLoc[j].x, sampleLoc[i].y);
-            vec4 c = textureLod(tex, uvv, 0);
+            vec4 c = textureLod(sampler2D(tex, texSampler), uvv, 0);
             sum += c * vec4(sampleWeight[j].x * sampleWeight[i].y);
         }
     }
@@ -111,7 +111,7 @@ void main()
     const vec2 nearest_render_pos = (vec2(opos) + vec2(0.5)) * render_to_output - vec2(0.5) - sub_pixel_jitter;
     const ivec2 int_render_pos = ivec2(clamp(round(nearest_render_pos), vec2(0), vec2(renderWidth - 1, renderHeight - 1)));
 
-    const vec3 color_center_raw = texelFetch(framebufFinal_Sampler, int_render_pos, 0).rgb;
+    const vec3 color_center_raw = texelFetch(framebufFinal_Sampled, int_render_pos, 0).rgb;
 
     const float flt_taa_anti_sparkle = 0.25;
     const float anti_sparkle_scale = pow(min(1.0, flt_taa_anti_sparkle), -0.25);
@@ -128,7 +128,7 @@ void main()
                     continue;
                 ivec2 p = int_render_pos + ivec2(xx, yy);
                 p = clamp(p, ivec2(0), ivec2(renderWidth - 1, renderHeight - 1));
-                vec3 c = texelFetch(framebufFinal_Sampler, p, 0).rgb;
+                vec3 c = texelFetch(framebufFinal_Sampled, p, 0).rgb;
                 mom1 += c;
                 mom2 += c * c;
             }
@@ -158,7 +158,7 @@ void main()
             {
                 ivec2 p = int_render_pos + ivec2(xx, yy);
                 p = clamp(p, ivec2(0), ivec2(renderWidth - 1, renderHeight - 1));
-                vec2 m = texelFetch(framebufMotionDlss_Sampler, p, 0).rg;
+                vec2 m = texelFetch(framebufMotionDlss_Sampled, p, 0).rg;
                 float l = dot(m, m);
                 if(l > len)
                 {
@@ -180,7 +180,7 @@ void main()
     && all(lessThan(ivec2(pos_prev), ivec2(outWidth, outHeight) - 1)))
     {
         // Motion vector was valid - sample the previous frame's TAA output
-        vec3 color_prev = sample_texture_catmull_rom(framebufQ2TaaHistory_Prev_Sampler, pos_prev).rgb;
+        vec3 color_prev = sample_texture_catmull_rom(framebufQ2TaaHistory_Prev_Sampled, framebufQ2TaaHistory_Prev_Sampler, pos_prev).rgb;
 
         if(!any(isnan(color_prev)))
         {

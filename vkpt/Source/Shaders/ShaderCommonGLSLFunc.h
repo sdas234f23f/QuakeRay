@@ -63,26 +63,36 @@ layout(
 
 
 #ifdef DESC_SET_TEXTURES
+// The bindless table is split: the sampled view and the sampler state live in
+// separate bindings, because a single descriptor can not be both a sampled
+// image and a sampler in Vulkan (or in D3D12). Both arrays are indexed by the
+// same texture index.
 layout(
     set = DESC_SET_TEXTURES,
     binding = BINDING_TEXTURES)
-    uniform sampler2D globalTextures[];
+    uniform texture2D globalTextures[];
+
+layout(
+    set = DESC_SET_TEXTURES,
+    binding = BINDING_TEXTURES_SAMPLER)
+    uniform sampler globalTextures_Sampler[];
 
 #define getTexture(idx) globalTextures[nonuniformEXT(idx)]
+#define getTextureSampler(idx) globalTextures_Sampler[nonuniformEXT(idx)]
 
 vec4 getTextureSample(uint textureIndex, const vec2 texCoord)
 {
-    return texture(globalTextures[nonuniformEXT(textureIndex)], texCoord);
+    return texture(sampler2D(getTexture(textureIndex), getTextureSampler(textureIndex)), texCoord);
 }
 
 vec4 getTextureSampleLod(uint textureIndex, const vec2 texCoord, float lod)
 {
-    return textureLod(globalTextures[nonuniformEXT(textureIndex)], texCoord, lod);
+    return textureLod(sampler2D(getTexture(textureIndex), getTextureSampler(textureIndex)), texCoord, lod);
 }
 
 vec4 getTextureSampleGrad(uint textureIndex, const vec2 texCoord, const vec2 dPdx, const vec2 dPdy)
 {
-    return textureGrad(globalTextures[nonuniformEXT(textureIndex)], texCoord, dPdx, dPdy);
+    return textureGrad(sampler2D(getTexture(textureIndex), getTextureSampler(textureIndex)), texCoord, dPdx, dPdy);
 }
 #endif // DESC_SET_TEXTURES
 
@@ -217,17 +227,26 @@ layout(set = DESC_SET_LIGHT_SOURCES, binding = BINDING_LIGHT_SOURCES_Q2_CLUSTER_
 layout(set = DESC_SET_VOLUMETRIC, binding = BINDING_VOLUMETRIC_STORAGE, rgba16f) 
 uniform image3D g_volumetric;
 
+layout(set = DESC_SET_VOLUMETRIC, binding = BINDING_VOLUMETRIC_SAMPLED) 
+uniform texture3D g_volumetric_Sampled;
+
 layout(set = DESC_SET_VOLUMETRIC, binding = BINDING_VOLUMETRIC_SAMPLER) 
-uniform sampler3D g_volumetric_Sampler;
+uniform sampler g_volumetric_Sampler;
+
+layout(set = DESC_SET_VOLUMETRIC, binding = BINDING_VOLUMETRIC_SAMPLED_PREV) 
+uniform texture3D g_volumetric_Sampled_Prev;
 
 layout(set = DESC_SET_VOLUMETRIC, binding = BINDING_VOLUMETRIC_SAMPLER_PREV) 
-uniform sampler3D g_volumetric_Sampler_Prev;
+uniform sampler g_volumetric_Sampler_Prev;
 
 layout(set = DESC_SET_VOLUMETRIC, binding = BINDING_VOLUMETRIC_ILLUMINATION, r11f_g11f_b10f) 
 uniform image3D g_illuminationVolume;
 
+layout(set = DESC_SET_VOLUMETRIC, binding = BINDING_VOLUMETRIC_ILLUMINATION_SAMPLED) 
+uniform texture3D g_illuminationVolume_Sampled;
+
 layout(set = DESC_SET_VOLUMETRIC, binding = BINDING_VOLUMETRIC_ILLUMINATION_SAMPLER) 
-uniform sampler3D g_illuminationVolume_Sampler;
+uniform sampler g_illuminationVolume_Sampler;
 #endif
 
 
@@ -268,9 +287,9 @@ vec2 getPrevScreenPos(const vec2 motionCurToPrev, const ivec2 pix)
     return ((vec2(pix) + vec2(0.5)) * invScreenSize + motionCurToPrev) * screenSize;
 }
 
-vec2 getPrevScreenPos(sampler2D motionSampler, const ivec2 pix)
+vec2 getPrevScreenPos(texture2D motionTexture, const ivec2 pix)
 {
-    return getPrevScreenPos(texelFetch(motionSampler, pix, 0).rg, pix);
+    return getPrevScreenPos(texelFetch(motionTexture, pix, 0).rg, pix);
 }
 
 /*
@@ -388,12 +407,12 @@ float getAntilagAlpha(const float gradSample, const float normFactor)
 
 #define SH_COMPRESSION_MULTIPLIER 1000 
 
-SH texelFetchSH(sampler2D samplerIndirR, sampler2D samplerIndirG, sampler2D samplerIndirB, ivec2 pix)
+SH texelFetchSH(texture2D textureIndirR, texture2D textureIndirG, texture2D textureIndirB, ivec2 pix)
 {
     SH sh;
-    sh.r = texelFetch(samplerIndirR, pix, 0) / SH_COMPRESSION_MULTIPLIER;
-    sh.g = texelFetch(samplerIndirG, pix, 0) / SH_COMPRESSION_MULTIPLIER;
-    sh.b = texelFetch(samplerIndirB, pix, 0) / SH_COMPRESSION_MULTIPLIER;
+    sh.r = texelFetch(textureIndirR, pix, 0) / SH_COMPRESSION_MULTIPLIER;
+    sh.g = texelFetch(textureIndirG, pix, 0) / SH_COMPRESSION_MULTIPLIER;
+    sh.b = texelFetch(textureIndirB, pix, 0) / SH_COMPRESSION_MULTIPLIER;
 
     return sh;
 }
@@ -401,27 +420,27 @@ SH texelFetchSH(sampler2D samplerIndirR, sampler2D samplerIndirG, sampler2D samp
 SH texelFetchUnfilteredIndirectSH(ivec2 pix)
 {
     return texelFetchSH(
-        framebufUnfilteredIndirectSH_R_Sampler,
-        framebufUnfilteredIndirectSH_G_Sampler,
-        framebufUnfilteredIndirectSH_B_Sampler,
+        framebufUnfilteredIndirectSH_R_Sampled,
+        framebufUnfilteredIndirectSH_G_Sampled,
+        framebufUnfilteredIndirectSH_B_Sampled,
         pix);
 }
 
 SH texelFetchIndirAccumSH(ivec2 pix)
 {
     return texelFetchSH(
-        framebufIndirAccumSH_R_Sampler,
-        framebufIndirAccumSH_G_Sampler, 
-        framebufIndirAccumSH_B_Sampler, 
+        framebufIndirAccumSH_R_Sampled,
+        framebufIndirAccumSH_G_Sampled, 
+        framebufIndirAccumSH_B_Sampled, 
         pix);
 }
 
 SH texelFetchIndirAccumSH_Prev(ivec2 pix)
 {
     return texelFetchSH(
-        framebufIndirAccumSH_R_Prev_Sampler,
-        framebufIndirAccumSH_G_Prev_Sampler,
-        framebufIndirAccumSH_B_Prev_Sampler,
+        framebufIndirAccumSH_R_Prev_Sampled,
+        framebufIndirAccumSH_G_Prev_Sampled,
+        framebufIndirAccumSH_B_Prev_Sampled,
         pix);
 }
 
@@ -465,40 +484,40 @@ void imageStoreIndirPongSH(ivec2 pix, const SH sh)
 
 vec3 texelFetchNormal(const ivec2 pix)
 {
-    return decodeNormal(texelFetch(framebufNormal_Sampler, pix, 0).r);
+    return decodeNormal(texelFetch(framebufNormal_Sampled, pix, 0).r);
 } 
 
 vec3 texelFetchNormal_Prev(const ivec2 pix)
 {
-    return decodeNormal(texelFetch(framebufNormal_Prev_Sampler, pix, 0).r);
+    return decodeNormal(texelFetch(framebufNormal_Prev_Sampled, pix, 0).r);
 }
 
 vec3 texelFetchNormalGeometry(const ivec2 pix)
 {
-    return decodeNormal(texelFetch(framebufNormalGeometry_Sampler, pix, 0).r);
+    return decodeNormal(texelFetch(framebufNormalGeometry_Sampled, pix, 0).r);
 }
 
 vec3 texelFetchNormalGeometry_Prev(const ivec2 pix)
 {
-    return decodeNormal(texelFetch(framebufNormalGeometry_Prev_Sampler, pix, 0).r);
+    return decodeNormal(texelFetch(framebufNormalGeometry_Prev_Sampled, pix, 0).r);
 }
 
 uvec4 textureGatherEncNormalGeometry_Prev(const vec2 uv)
 {
     // get R components of 4 texels 
-    return textureGather(framebufNormalGeometry_Prev_Sampler, uv, 0);
+    return textureGather(usampler2D(framebufNormalGeometry_Prev_Sampled, framebufNormalGeometry_Prev_Sampler), uv, 0);
 }
 
 uint texelFetchEncNormal(const ivec2 pix)
 {
     // fetch encoded normal
-    return texelFetch(framebufNormal_Sampler, pix, 0).r;
+    return texelFetch(framebufNormal_Sampled, pix, 0).r;
 }
 
 uint texelFetchEncNormalGeometry(const ivec2 pix)
 {
     // fetch encoded geometry normal
-    return texelFetch(framebufNormalGeometry_Sampler, pix, 0).r;
+    return texelFetch(framebufNormalGeometry_Sampled, pix, 0).r;
 }
 
 void imageStoreNormal(const ivec2 pix, const vec3 normal)
@@ -513,7 +532,7 @@ void imageStoreNormalGeometry(const ivec2 pix, const vec3 normal)
 
 bool isSkyPix(const ivec2 pix)
 {
-    return texelFetch(framebufIsSky_Sampler, pix, 0).r != 0;
+    return texelFetch(framebufIsSky_Sampled, pix, 0).r != 0;
 }
 
 // t == 0
@@ -536,7 +555,7 @@ bool wasSplit( float t )
 
 bool needResolveCheckerboard( const ivec2 checkerboardPix )
 {
-    float t = texelFetch( framebufThroughput_Sampler, checkerboardPix, 0 ).a;
+    float t = texelFetch( framebufThroughput_Sampled, checkerboardPix, 0 ).a;
     return wasSplit( t );
 }
 #endif // DESC_SET_FRAMEBUFFERS

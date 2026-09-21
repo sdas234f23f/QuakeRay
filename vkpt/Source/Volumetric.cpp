@@ -331,14 +331,26 @@ void vkpt::Volumetric::CreateDescriptors()
             .stageFlags      = VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_COMPUTE_BIT,
         },
         {
+            .binding         = BINDING_VOLUMETRIC_SAMPLED,
+            .descriptorType  = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+            .descriptorCount = 1,
+            .stageFlags      = VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+        },
+        {
             .binding         = BINDING_VOLUMETRIC_SAMPLER,
-            .descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .descriptorType  = VK_DESCRIPTOR_TYPE_SAMPLER,
+            .descriptorCount = 1,
+            .stageFlags      = VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+        },
+        {
+            .binding         = BINDING_VOLUMETRIC_SAMPLED_PREV,
+            .descriptorType  = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
             .descriptorCount = 1,
             .stageFlags      = VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
         },
         {
             .binding         = BINDING_VOLUMETRIC_SAMPLER_PREV,
-            .descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .descriptorType  = VK_DESCRIPTOR_TYPE_SAMPLER,
             .descriptorCount = 1,
             .stageFlags      = VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
         },
@@ -349,8 +361,14 @@ void vkpt::Volumetric::CreateDescriptors()
             .stageFlags      = VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_COMPUTE_BIT,
         },
         {
+            .binding         = BINDING_VOLUMETRIC_ILLUMINATION_SAMPLED,
+            .descriptorType  = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+            .descriptorCount = 1,
+            .stageFlags      = VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+        },
+        {
             .binding         = BINDING_VOLUMETRIC_ILLUMINATION_SAMPLER,
-            .descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .descriptorType  = VK_DESCRIPTOR_TYPE_SAMPLER,
             .descriptorCount = 1,
             .stageFlags      = VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_COMPUTE_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
         },
@@ -430,13 +448,28 @@ void vkpt::Volumetric::UpdateDescriptors()
                 .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
             },
             {
-                .sampler     = volumeSampler,
+                .sampler     = VK_NULL_HANDLE,
                 .imageView   = scattering[ i ].view,
                 .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
             },
             {
                 .sampler     = volumeSampler,
+                .imageView   = VK_NULL_HANDLE,
+                .imageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+            },
+            {
+                .sampler     = VK_NULL_HANDLE,
                 .imageView   = scattering[ Utils::GetPreviousByModulo( i, MAX_FRAMES_IN_FLIGHT ) ].view,
+                .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+            },
+            {
+                .sampler     = volumeSampler,
+                .imageView   = VK_NULL_HANDLE,
+                .imageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+            },
+            {
+                .sampler     = VK_NULL_HANDLE,
+                .imageView   = illumination.view,
                 .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
             },
             {
@@ -446,8 +479,8 @@ void vkpt::Volumetric::UpdateDescriptors()
             },
             {
                 .sampler     = volumeSampler,
-                .imageView   = illumination.view,
-                .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+                .imageView   = VK_NULL_HANDLE,
+                .imageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
             },
         };
         
@@ -464,11 +497,29 @@ void vkpt::Volumetric::UpdateDescriptors()
             {
                 .sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                 .dstSet          = descSets[ i ],
+                .dstBinding      = BINDING_VOLUMETRIC_SAMPLED,
+                .dstArrayElement = 0,
+                .descriptorCount = 1,
+                .descriptorType  = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+                .pImageInfo      = &imgs[ 1 ],
+            },
+            {
+                .sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                .dstSet          = descSets[ i ],
                 .dstBinding      = BINDING_VOLUMETRIC_SAMPLER,
                 .dstArrayElement = 0,
                 .descriptorCount = 1,
-                .descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                .pImageInfo      = &imgs[ 1 ],
+                .descriptorType  = VK_DESCRIPTOR_TYPE_SAMPLER,
+                .pImageInfo      = &imgs[ 2 ],
+            },
+            {
+                .sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                .dstSet          = descSets[ i ],
+                .dstBinding      = BINDING_VOLUMETRIC_SAMPLED_PREV,
+                .dstArrayElement = 0,
+                .descriptorCount = 1,
+                .descriptorType  = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+                .pImageInfo      = &imgs[ 3 ],
             },
             {
                 .sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
@@ -476,8 +527,8 @@ void vkpt::Volumetric::UpdateDescriptors()
                 .dstBinding      = BINDING_VOLUMETRIC_SAMPLER_PREV,
                 .dstArrayElement = 0,
                 .descriptorCount = 1,
-                .descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                .pImageInfo      = &imgs[ 2 ],
+                .descriptorType  = VK_DESCRIPTOR_TYPE_SAMPLER,
+                .pImageInfo      = &imgs[ 4 ],
             },
             {
                 .sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
@@ -486,7 +537,16 @@ void vkpt::Volumetric::UpdateDescriptors()
                 .dstArrayElement = 0,
                 .descriptorCount = 1,
                 .descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-                .pImageInfo      = &imgs[ 3 ],
+                .pImageInfo      = &imgs[ 5 ],
+            },
+            {
+                .sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                .dstSet          = descSets[ i ],
+                .dstBinding      = BINDING_VOLUMETRIC_ILLUMINATION_SAMPLED,
+                .dstArrayElement = 0,
+                .descriptorCount = 1,
+                .descriptorType  = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+                .pImageInfo      = &imgs[ 6 ],
             },
             {
                 .sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
@@ -494,8 +554,8 @@ void vkpt::Volumetric::UpdateDescriptors()
                 .dstBinding      = BINDING_VOLUMETRIC_ILLUMINATION_SAMPLER,
                 .dstArrayElement = 0,
                 .descriptorCount = 1,
-                .descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                .pImageInfo      = &imgs[ 4 ],
+                .descriptorType  = VK_DESCRIPTOR_TYPE_SAMPLER,
+                .pImageInfo      = &imgs[ 7 ],
             },
         };
 

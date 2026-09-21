@@ -421,28 +421,28 @@ void main()
 
 
     // restore state from primary shader
-    const uvec3 primaryToReflRefrBuf        = texelFetch(framebufPrimaryToReflRefr_Sampler, pix, 0).rgb;
+    const uvec3 primaryToReflRefrBuf        = texelFetch(framebufPrimaryToReflRefr_Sampled, pix, 0).rgb;
     ShHitInfo h;
-    h.albedo                                = texelFetch(framebufAlbedo_Sampler, getRegularPixFromCheckerboardPix(pix), 0).rgb;
-    h.hitPosition                           = texelFetch(framebufSurfacePosition_Sampler, pix, 0).xyz;
+    h.albedo                                = texelFetch(framebufAlbedo_Sampled, getRegularPixFromCheckerboardPix(pix), 0).rgb;
+    h.hitPosition                           = texelFetch(framebufSurfacePosition_Sampled, pix, 0).xyz;
     h.geometryInstanceFlags                 = primaryToReflRefrBuf.r;
     h.portalIndex                           = primaryToReflRefrBuf.b;
     h.normalGeom                            = texelFetchNormalGeometry(pix);
     h.normal                                = texelFetchNormal(pix);
-    h.roughness                             = texelFetch( framebufMetallicRoughness_Sampler, pix, 0 ).g;
-    const vec3  motionBuf                   = texelFetch(framebufMotion_Sampler, pix, 0).rgb;
+    h.roughness                             = texelFetch( framebufMetallicRoughness_Sampled, pix, 0 ).g;
+    const vec3  motionBuf                   = texelFetch(framebufMotion_Sampled, pix, 0).rgb;
     vec2        motionCurToPrev             = motionBuf.rg;
     float       motionDepthLinearCurToPrev  = motionBuf.b;
-    float       firstHitDepthLinear         = texelFetch(framebufDepthWorld_Sampler, pix, 0).r;
-    vec3        screenEmission              = texelFetch(framebufScreenEmisRT_Sampler, getRegularPixFromCheckerboardPix(pix), 0).rgb;
-    vec3        acidFog                     = texelFetch(framebufAcidFogRT_Sampler, getRegularPixFromCheckerboardPix(pix), 0).rgb;
-    vec3        throughput                  = texelFetch(framebufThroughput_Sampler, pix, 0).rgb;
+    float       firstHitDepthLinear         = texelFetch(framebufDepthWorld_Sampled, pix, 0).r;
+    vec3        screenEmission              = texelFetch(framebufScreenEmisRT_Sampled, getRegularPixFromCheckerboardPix(pix), 0).rgb;
+    vec3        acidFog                     = texelFetch(framebufAcidFogRT_Sampled, getRegularPixFromCheckerboardPix(pix), 0).rgb;
+    vec3        throughput                  = texelFetch(framebufThroughput_Sampled, pix, 0).rgb;
     ShPayload currentPayload;
     currentPayload.instIdAndIndex           = primaryToReflRefrBuf.g;
 
     // Q2RTX-style accumulated fog from the primary pass; the reflection
     // segments are blended on top of it below (nearest fog in front).
-    vec4 q2FogAccum = texelFetch(framebufQ2FogAccum_Sampler, pix, 0);
+    vec4 q2FogAccum = texelFetch(framebufQ2FogAccum_Sampled, pix, 0);
 
 
 
@@ -669,7 +669,7 @@ void main()
     // Q2RTX-style G-buffer. Negative depth so the ASVGF filters don't bleed
     // across reflection/refraction boundaries; the half-cone angle for the
     // accumulated-cone LOD is taken from the primary pass (Q2RTX convention).
-    const float q2HalfConeAngle = texelFetch(framebufQ2BounceThroughput_Sampler, pix, 0).w;
+    const float q2HalfConeAngle = texelFetch(framebufQ2BounceThroughput_Sampled, pix, 0).w;
     storeQ2GBuffer(pix, h.albedo, mix(0.04, 1.0, h.metallic), h.metallic, h.roughness,
                    -fullPathLength, q2HalfConeAngle, q2LastSegmentLen,
                    vec3(0.0), 0.0, q2FogAccum, h.cluster);
@@ -706,7 +706,7 @@ void main()
     }
 
     // restore state from primary shader
-    const uvec3 primaryToReflRefrBuf = texelFetch(framebufPrimaryToReflRefr_Sampler, pix, 0).rgb;
+    const uvec3 primaryToReflRefrBuf = texelFetch(framebufPrimaryToReflRefr_Sampled, pix, 0).rgb;
 
     // The loop below can only write anything if the primary surface is one of the
     // five kinds it handles, and at i == 0 that is decided by exactly the two
@@ -722,7 +722,7 @@ void main()
             (isPortalFromFlags(primaryFlags) && primaryToReflRefrBuf.b != PORTAL_INDEX_NONE);
         if (!primaryNeedsReflRefr && (primaryFlags & GEOM_INST_FLAG_REFLECT) != 0)
         {
-            primaryNeedsReflRefr = texelFetch(framebufMetallicRoughness_Sampler, pix, 0).g < globalUniform.minRoughness;
+            primaryNeedsReflRefr = texelFetch(framebufMetallicRoughness_Sampled, pix, 0).g < globalUniform.minRoughness;
         }
         if (!primaryNeedsReflRefr)
         {
@@ -731,29 +731,29 @@ void main()
     }
 
     ShHitInfo h;
-    h.albedo                            = texelFetch(framebufAlbedo_Sampler, getRegularPixFromCheckerboardPix(pix), 0).rgb;
-    h.hitPosition                       = texelFetch(framebufSurfacePosition_Sampler, pix, 0).xyz;
+    h.albedo                            = texelFetch(framebufAlbedo_Sampled, getRegularPixFromCheckerboardPix(pix), 0).rgb;
+    h.hitPosition                       = texelFetch(framebufSurfacePosition_Sampled, pix, 0).xyz;
     h.geometryInstanceFlags             = primaryToReflRefrBuf.r;
     h.portalIndex                       = primaryToReflRefrBuf.b;
     h.normalGeom                        = texelFetchNormalGeometry(pix);
     h.normal                            = texelFetchNormal(pix);
-    h.metallic                          = texelFetch(framebufMetallicRoughness_Sampler, pix, 0).r;
-    h.roughness                         = texelFetch(framebufMetallicRoughness_Sampler, pix, 0).g;
-    const vec3  motionBuf               = texelFetch(framebufMotion_Sampler, pix, 0).rgb;
+    h.metallic                          = texelFetch(framebufMetallicRoughness_Sampled, pix, 0).r;
+    h.roughness                         = texelFetch(framebufMetallicRoughness_Sampled, pix, 0).g;
+    const vec3  motionBuf               = texelFetch(framebufMotion_Sampled, pix, 0).rgb;
     vec2        motionCurToPrev         = motionBuf.rg;
     float       motionDepthLinearCurToPrev = motionBuf.b;
-    const float firstHitDepthLinear     = texelFetch(framebufDepthWorld_Sampler, pix, 0).r;
-    vec3        screenEmission          = texelFetch(framebufScreenEmisRT_Sampler, getRegularPixFromCheckerboardPix(pix), 0).rgb;
-    vec3        acidFog                 = texelFetch(framebufAcidFogRT_Sampler, getRegularPixFromCheckerboardPix(pix), 0).rgb;
-    vec3        throughput              = texelFetch(framebufThroughput_Sampler, pix, 0).rgb;
+    const float firstHitDepthLinear     = texelFetch(framebufDepthWorld_Sampled, pix, 0).r;
+    vec3        screenEmission          = texelFetch(framebufScreenEmisRT_Sampled, getRegularPixFromCheckerboardPix(pix), 0).rgb;
+    vec3        acidFog                 = texelFetch(framebufAcidFogRT_Sampled, getRegularPixFromCheckerboardPix(pix), 0).rgb;
+    vec3        throughput              = texelFetch(framebufThroughput_Sampled, pix, 0).rgb;
     ShPayload currentPayload;
     currentPayload.instIdAndIndex       = primaryToReflRefrBuf.g;
 
     // Q2RTX-style G-buffer from the primary pass
-    const vec4 q2BaseColor              = texelFetch(framebufQ2BaseColor_Sampler, pix, 0);
-    const float q2HalfConeAngle         = texelFetch(framebufQ2BounceThroughput_Sampler, pix, 0).w;
-    vec4 q2Transparent                  = texelFetch(framebufQ2Transparent_Sampler, pix, 0);
-    vec4 q2FogAccum                     = texelFetch(framebufQ2FogAccum_Sampler, pix, 0);
+    const vec4 q2BaseColor              = texelFetch(framebufQ2BaseColor_Sampled, pix, 0);
+    const float q2HalfConeAngle         = texelFetch(framebufQ2BounceThroughput_Sampled, pix, 0).w;
+    vec4 q2Transparent                  = texelFetch(framebufQ2Transparent_Sampled, pix, 0);
+    vec4 q2FogAccum                     = texelFetch(framebufQ2FogAccum_Sampled, pix, 0);
 
     RayCone rayCone;
     rayCone.width = 0;

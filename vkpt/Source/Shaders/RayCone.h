@@ -120,7 +120,7 @@ DerivativeSet getTriangleUVDerivativesFromRayCone(
 
 vec4 getTextureSampleDerivU(uint textureIndex, const vec2 texCoord, const float uDeriv)
 {
-    return textureGrad(globalTextures[nonuniformEXT(textureIndex)], texCoord, vec2(uDeriv, 0), vec2(0, uDeriv));
+    return textureGrad(sampler2D(getTexture(textureIndex), getTextureSampler(textureIndex)), texCoord, vec2(uDeriv, 0), vec2(0, uDeriv));
 }
 
 vec4 getTextureSampleDerivSet(uint textureIndex, const vec2 texCoord, const DerivativeSet derivSet, int index)

@@ -53,14 +53,14 @@ void main()
     // reflected/refracted path (Q2RTX integrates fog per-ray in the path
     // tracer instead). Skip reflection/refraction pixels - marking them with
     // fog along the primary ray produces artifacts at reflection boundaries.
-    const float splitFlag = texelFetch(framebufThroughput_Sampler, cbPix, 0).a;
+    const float splitFlag = texelFetch(framebufThroughput_Sampled, cbPix, 0).a;
     if (splitFlag != 0.0)
     {
         return;
     }
 
     // distance to the visible surface (checkerboarded depth)
-    const float depth = texelFetch(framebufDepthWorld_Sampler, cbPix, 0).r;
+    const float depth = texelFetch(framebufDepthWorld_Sampled, cbPix, 0).r;
     // for sky pixels extend the fog to the end of the volumes
     const float t = (depth > MAX_RAY_LENGTH) ? 1e6 : max(depth, 0.0);
 
@@ -72,6 +72,6 @@ void main()
         return;
     }
 
-    const vec3 hdr = texelFetch(framebufFinal_Sampler, pix, 0).rgb;
+    const vec3 hdr = texelFetch(framebufFinal_Sampled, pix, 0).rgb;
     imageStore(framebufFinal, pix, vec4(q2ApplyFog(fog1, fog2, t, hdr), 0));
 }

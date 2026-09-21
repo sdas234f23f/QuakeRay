@@ -67,7 +67,7 @@ vkpt::CubemapManager::CubemapManager(
     }
 
     imageLoader = std::make_shared<ImageLoader>(std::move(_userFileLoad));
-    cubemapDesc = std::make_shared<TextureDescriptors>(device, samplerManager, MAX_CUBEMAP_COUNT, BINDING_CUBEMAPS);
+    cubemapDesc = std::make_shared<TextureDescriptors>(device, samplerManager, MAX_CUBEMAP_COUNT, BINDING_CUBEMAPS, BINDING_CUBEMAPS_SAMPLER);
     cubemapUploader = std::make_shared<CubemapUploader>(device, allocator);
 
     for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)

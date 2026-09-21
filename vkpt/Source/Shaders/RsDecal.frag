@@ -37,7 +37,7 @@ void main()
 
     const ShDecalInstance decal = decalInstances[instanceIndex];
     
-    const vec3 worldPosition = texelFetch(framebufSurfacePosition_Sampler, pix, 0).xyz;
+    const vec3 worldPosition = texelFetch(framebufSurfacePosition_Sampled, pix, 0).xyz;
     const mat4 worldToLocal = inverse(decal.transform); // TODO: on CPU
     const vec4 localPosition = worldToLocal * vec4(worldPosition, 1.0);
 

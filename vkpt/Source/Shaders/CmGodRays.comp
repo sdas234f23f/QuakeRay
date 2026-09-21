@@ -44,7 +44,8 @@ layout(push_constant, std140) uniform PushConstants
     uint passIndex;
 } push;
 
-layout(set = DESC_SET_GOD_RAYS_SHADOW, binding = 0) uniform sampler2D texShadowMap;
+layout(set = DESC_SET_GOD_RAYS_SHADOW, binding = 0) uniform texture2D texShadowMap;
+layout(set = DESC_SET_GOD_RAYS_SHADOW, binding = 1) uniform sampler texShadowMap_Sampler;
 
 layout(set = DESC_SET_GOD_RAYS_PARAMS, binding = 0) readonly buffer GodRaysParams_BT
 {
@@ -66,7 +67,7 @@ float GetShadow(vec3 worldPos)
     uvz.x = uvz.x * 0.5 + 0.5;
     uvz.y = 0.5 - 0.5 * uvz.y;
 
-    float depthOpaque = textureLod(texShadowMap, uvz.xy, 0).x;
+    float depthOpaque = textureLod(sampler2D(texShadowMap, texShadowMap_Sampler), uvz.xy, 0).x;
 
     // Q2RTX comparison (god_rays.comp GetShadow): depthOpaque > uvz.z, no bias
     // here. The anti-leak offset is applied by the caller, which shifts the
@@ -138,7 +139,7 @@ void main()
         }
 
         const vec2 mapUv = (vec2(pixelPos) + 0.5) / vec2(screenSize);
-        const float dOpaque = textureLod(texShadowMap, mapUv, 0).x;
+        const float dOpaque = textureLod(sampler2D(texShadowMap, texShadowMap_Sampler), mapUv, 0).x;
         imageStore(framebufGodRays, pixelPos, vec4(dOpaque * 0.25, dOpaque * 0.25, dOpaque * 0.25, 0.0));
         return;
     }
@@ -172,16 +173,16 @@ void main()
     // of the primary pass.
     if (push.passIndex != 0)
     {
-        const float q2Depth = texelFetch(framebufQ2ViewDepth_Sampler, cbPix, 0).x;
+        const float q2Depth = texelFetch(framebufQ2ViewDepth_Sampled, cbPix, 0).x;
         if (q2Depth >= 0.0)
         {
             return;
         }
     }
 
-    const vec3 surfacePos = texelFetch(framebufSurfacePosition_Sampler, cbPix, 0).xyz;
-    const vec3 direction  = texelFetch(framebufViewDirection_Sampler, cbPix, 0).xyz;
-    const vec3 throughput = texelFetch(framebufThroughput_Sampler, cbPix, 0).xyz;
+    const vec3 surfacePos = texelFetch(framebufSurfacePosition_Sampled, cbPix, 0).xyz;
+    const vec3 direction  = texelFetch(framebufViewDirection_Sampled, cbPix, 0).xyz;
+    const vec3 throughput = texelFetch(framebufThroughput_Sampled, cbPix, 0).xyz;
 
     // In the reflection pass the march follows the reflected segment only,
     // starting at the reflection point (surfacePos - direction * segmentLen);
@@ -189,11 +190,11 @@ void main()
     float rayDistance;
     if (push.passIndex != 0)
     {
-        rayDistance = texelFetch(framebufQ2GodRaysThroughputDist_Sampler, cbPix, 0).w;
+        rayDistance = texelFetch(framebufQ2GodRaysThroughputDist_Sampled, cbPix, 0).w;
     }
     else
     {
-        rayDistance = texelFetch(framebufDepthWorld_Sampler, cbPix, 0).x;
+        rayDistance = texelFetch(framebufDepthWorld_Sampled, cbPix, 0).x;
     }
 
     // Q2RTX marches sky pixels too, so the sun shafts are visible in the sky

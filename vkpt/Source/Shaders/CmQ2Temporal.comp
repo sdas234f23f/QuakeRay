@@ -52,7 +52,7 @@ shared vec4 s_lf_shy[GROUP_SIZE][GROUP_SIZE];
 shared vec2 s_lf_cocg[GROUP_SIZE][GROUP_SIZE];
 shared float s_depth_width[GROUP_SIZE / Q2_GRAD_DWN][GROUP_SIZE / Q2_GRAD_DWN];
 
-Q2SH q2LoadSH(sampler2D img_shY, sampler2D img_CoCg, ivec2 p)
+Q2SH q2LoadSH(texture2D img_shY, texture2D img_CoCg, ivec2 p)
 {
     Q2SH r;
     r.shY = texelFetch(img_shY, p, 0);
@@ -75,9 +75,9 @@ preload()
         int yy = int(floor(t));
 
         ivec2 ipos = groupBase + ivec2(xx, yy);
-        float depth = texelFetch(framebufQ2ViewDepth_Sampler, ipos, 0).r;
+        float depth = texelFetch(framebufQ2ViewDepth_Sampled, ipos, 0).r;
         vec3 normal = texelFetchNormal(ipos);
-        vec3 color_hf = q2UnpackRGBE(texelFetch(framebufQ2ColorHF_Sampler, ipos, 0).r);
+        vec3 color_hf = q2UnpackRGBE(texelFetch(framebufQ2ColorHF_Sampled, ipos, 0).r);
 
         s_normal_lum[yy][xx] = uvec2(packHalf2x16(vec2(normal.xy)), packHalf2x16(vec2(normal.z, getLuminance(color_hf))));
         s_depth[yy][xx] = depth;
@@ -104,11 +104,11 @@ main()
     barrier();
 
     ivec2 ipos = ivec2(gl_GlobalInvocationID);
-    vec4 motion = texelFetch(framebufMotion_Sampler, ipos, 0);
-    const float gradDepth = texelFetch(framebufDepthGrad_Sampler, ipos, 0).r;
+    vec4 motion = texelFetch(framebufMotion_Sampled, ipos, 0);
+    const float gradDepth = texelFetch(framebufDepthGrad_Sampled, ipos, 0).r;
 
     // Find out if this pixel belongs to a checkerboard-split-path surface (water/glass)
-    const float wasSplit = texelFetch(framebufThroughput_Sampler, ipos, 0).a;
+    const float wasSplit = texelFetch(framebufThroughput_Sampled, ipos, 0).a;
     const bool is_checkerboarded_surface = wasSplit > 0.5;
 
     // On a single GPU we can access both checkerboard fields for higher sampling quality
@@ -139,7 +139,7 @@ main()
     float lum_curr_hf;
     get_shared_data(ivec2(0), depth_curr, normal_curr, lum_curr_hf);
 
-    vec2 metal_rough = texelFetch(framebufMetallicRoughness_Sampler, ipos, 0).xy;
+    vec2 metal_rough = texelFetch(framebufMetallicRoughness_Sampled, ipos, 0).xy;
     float shininess = clamp(2.0 / square(square(metal_rough.y)) - 2.0, 0.0, 32.0);
 
     vec3 geo_normal_curr = texelFetchNormalGeometry(ipos);
@@ -187,7 +187,7 @@ main()
                 p = q2FlatToChecker(p, width);
             }
 
-            float depth_prev = texelFetch(framebufQ2ViewDepth_Prev_Sampler, p, 0).r;
+            float depth_prev = texelFetch(framebufQ2ViewDepth_Prev_Sampled, p, 0).r;
             vec3  normal_prev = texelFetchNormal_Prev(p);
             vec3  geo_normal_prev = texelFetchNormalGeometry_Prev(p);
 
@@ -211,12 +211,12 @@ main()
                 float w_diff = w[i] * max(dot_normals, 0);
                 float w_spec = w[i] * pow(max(dot_normals, 0), shininess);
 
-                Q2SH hist_color_lf = q2LoadSH(framebufQ2HistColorLF_SH_Prev_Sampler, framebufQ2HistColorLF_COCG_Prev_Sampler, p);
+                Q2SH hist_color_lf = q2LoadSH(framebufQ2HistColorLF_SH_Prev_Sampled, framebufQ2HistColorLF_COCG_Prev_Sampled, p);
                 q2AccumulateSH(temporal_color_lf, hist_color_lf, w_diff);
 
-                temporal_color_hf           += q2UnpackRGBE(texelFetch(framebufQ2HistColorHF_Prev_Sampler, p, 0).r) * w_diff;
-                temporal_color_histlen_spec += texelFetch(framebufQ2FilteredSpec_Prev_Sampler, p, 0) * w_spec;
-                temporal_moments_histlen_hf += texelFetch(framebufQ2HistMomentsHF_Prev_Sampler, p, 0).rgba * w_diff;
+                temporal_color_hf           += q2UnpackRGBE(texelFetch(framebufQ2HistColorHF_Prev_Sampled, p, 0).r) * w_diff;
+                temporal_color_histlen_spec += texelFetch(framebufQ2FilteredSpec_Prev_Sampled, p, 0) * w_spec;
+                temporal_moments_histlen_hf += texelFetch(framebufQ2HistMomentsHF_Prev_Sampled, p, 0).rgba * w_diff;
                 temporal_sum_w_diff         += w_diff;
                 temporal_sum_w_spec         += w_spec;
             }
@@ -272,9 +272,9 @@ main()
     }
 
     // Load the target pixel colors for all channels
-    Q2SH color_curr_lf = q2LoadSH(framebufQ2ColorLF_SH_Sampler, framebufQ2ColorLF_COCG_Sampler, ipos);
-    vec3 color_curr_hf = q2UnpackRGBE(texelFetch(framebufQ2ColorHF_Sampler, ipos, 0).r);
-    vec3 color_curr_spec = q2UnpackRGBE(texelFetch(framebufQ2ColorSpec_Sampler, ipos, 0).r);
+    Q2SH color_curr_lf = q2LoadSH(framebufQ2ColorLF_SH_Sampled, framebufQ2ColorLF_COCG_Sampled, ipos);
+    vec3 color_curr_hf = q2UnpackRGBE(texelFetch(framebufQ2ColorHF_Sampled, ipos, 0).r);
+    vec3 color_curr_spec = q2UnpackRGBE(texelFetch(framebufQ2ColorSpec_Sampled, ipos, 0).r);
 
     Q2SH out_color_lf;
     vec3 out_color_hf;
@@ -285,8 +285,8 @@ main()
     // 1/3 res: CmQ2GradientReproject + Img + Atrous). After the 7 atrous
     // iterations the LF result is in Q2GradLFPong and the HF/SPEC result
     // (after 3 iterations) in Q2GradHFSpecPong. Clamped like Q2RTX.
-    float grad_lf = texelFetch(framebufQ2GradLFPong_Sampler, ipos / Q2_GRAD_DWN, 0).x;
-    vec2 grad_hf_spec = texelFetch(framebufQ2GradHFSpecPong_Sampler, ipos / Q2_GRAD_DWN, 0).xy;
+    float grad_lf = texelFetch(framebufQ2GradLFPong_Sampled, ipos / Q2_GRAD_DWN, 0).x;
+    vec2 grad_hf_spec = texelFetch(framebufQ2GradHFSpecPong_Sampled, ipos / Q2_GRAD_DWN, 0).xy;
     grad_lf = clamp(grad_lf, 0.0, 1.0);
     grad_hf_spec = clamp(grad_hf_spec, vec2(0.0), vec2(1.0));
 
