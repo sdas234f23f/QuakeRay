@@ -9,6 +9,10 @@
 // Every declaration of the header is touched, because dxc drops what stays unused. The two
 // probes have to be edited together: a resource that is touched on one side only is reported as
 // a mismatch, which is exactly the point.
+//
+// RayCone.hlsli has no probe pair of its own: it declares no resource, but it can not be compiled
+// without the accessors of this layer, so it is pinned from here instead (see the block before the
+// store, and the same block in the GLSL half).
 
 #define DESC_SET_GLOBAL_UNIFORM 0
 #define DESC_SET_FRAMEBUFFERS   1
@@ -20,6 +24,11 @@
 #define DESC_SET_DECALS         7
 
 #include "ShaderCommonHLSLFunc.hlsli"
+
+// MATERIAL_MAX_ALBEDO_LAYERS is normally defined by the consuming shader, as a specialization
+// constant or as 0. RayCone.hlsli requires it.
+#define MATERIAL_MAX_ALBEDO_LAYERS 3
+#include "RayCone.hlsli"
 
 #define PROBE_DESC_SET 8
 
@@ -167,6 +176,39 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
 
     // DESC_SET_GLOBAL_UNIFORM: the ray direction helpers
     v += getRayDir(uv).x + getRayDirAX(uv).y + getRayDirAY(uv).z + getPixelUVWithJitter(pix).x;
+
+    // RayCone.hlsli: the cone helpers, and the gradient sample that they build out of the split
+    // table
+    RayCone rayCone;
+    rayCone.width = 0.001;
+    rayCone.spreadAngle = 0.01;
+    propagateRayCone(rayCone, 1.0);
+
+    const float3 worldNormal = float3(0.0, 1.0, 0.0);
+    const float3 vertWorldPositions[3] = { float3(0.0, 0.0, 0.0), float3(1.0, 0.0, 0.0), float3(0.0, 1.0, 0.0) };
+    const float2 vertTexCoords[3] = { float2(0.0, 0.0), float2(1.0, 0.0), float2(0.0, 1.0) };
+
+    v += getUVDerivativesFromRayCone(rayCone, dir, worldNormal, vertWorldPositions, vertTexCoords).x;
+    v += getWaterDerivU(rayCone, dir, worldNormal);
+
+    // `triangle` is a reserved word in HLSL, hence `tri`
+    ShTriangle tri;
+    tri.positions[0] = vertWorldPositions[0];
+    tri.positions[1] = vertWorldPositions[1];
+    tri.positions[2] = vertWorldPositions[2];
+
+    for (int layer = 0; layer < MATERIAL_MAX_ALBEDO_LAYERS; layer++)
+    {
+        // the three GLSL columns, wired into the two rows of the transposed declaration
+        tri.layerTexCoord[layer][0] = float3(vertTexCoords[0].x, vertTexCoords[1].x, vertTexCoords[2].x);
+        tri.layerTexCoord[layer][1] = float3(vertTexCoords[0].y, vertTexCoords[1].y, vertTexCoords[2].y);
+    }
+
+    const DerivativeSet derivSet = getTriangleUVDerivativesFromRayCone(tri, worldNormal, rayCone, dir);
+    v += derivSet.u[0] + derivSet.u[1] + derivSet.u[2];
+
+    v += getTextureSampleDerivU(3, uv, 0.01).x;
+    v += getTextureSampleDerivSet(3, uv, derivSet, 0).y;
 
     // Not under any define
     v += rmeEmissionToScreenEmission(v);
