@@ -43,9 +43,14 @@ RayStats::~RayStats()
     {
         vkDestroyDescriptorSetLayout(device, descSetLayout, nullptr);
     }
-    for (auto &b : buffers)
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
     {
-        b.Destroy();
+        if (mapped[i])
+        {
+            buffers[i].TryUnmap();
+            mapped[i] = nullptr;
+        }
+        buffers[i].Destroy();
     }
 }
 
