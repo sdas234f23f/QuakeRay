@@ -353,6 +353,13 @@ VulkanDevice::~VulkanDevice()
     blueNoise.reset();
     textureManager.reset();
     cubemapManager.reset();
+
+    // not covered by the list above: these own device resources too, and as
+    // members they would otherwise be destroyed after DestroyDevice()
+    passTimings.reset();
+    q2Denoiser.reset();
+    rayStats.reset();
+
     memAllocator.reset();
 
     vkDestroySurfaceKHR(instance, surface, nullptr);
