@@ -157,9 +157,7 @@ void unpackGeometryAndPrimitiveIndex(uint geomAndPrimIndex, out int geometryInde
 
 #ifdef DESC_SET_GLOBAL_UNIFORM
 #ifdef DESC_SET_VERTEX_DATA
-// The GLSL side includes VertexData.inl here. Its HLSL port has to be brought together with the
-// first shader that needs it, so that the two can not go out of sync in the meantime.
-#error VertexData.inl has no HLSL port yet: port it next to the shader that defines DESC_SET_VERTEX_DATA
+#include "VertexData.hlsli"
 #endif
 #endif
 
