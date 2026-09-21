@@ -30,6 +30,7 @@
 #include "Utils.h"
 #include "Const.h"
 #include "Generated/ShaderCommonC.h"
+#include "RHI/NvrhiFrameSkeleton.h"
 
 using namespace vkpt;
 
@@ -1230,6 +1231,42 @@ void VulkanDevice::Render(VkCommandBuffer cmd, const RgDrawFrameInfo &drawInfo)
     passTimings->Mark(cmd, frameIndex, GPU_PASS_COUNT);
 }
 
+bool VulkanDevice::RenderThroughRhi()
+{
+    if (nvrhiFrameSkeleton->IsUnavailable())
+    {
+        return false;
+    }
+
+    const uint32_t frameIndex = currentFrameState.GetFrameIndex();
+
+    // The RHI pass waits on the acquire semaphore itself, so the semaphore is
+    // taken away from the renderer: it may be waited on only once per signal.
+    VkPipelineStageFlags semaphoreWaitStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+    const VkSemaphore semaphoreToWait = currentFrameState.GetSemaphoreForWaitAndRemove(&semaphoreWaitStage);
+
+    assert(semaphoreToWait != VK_NULL_HANDLE);
+
+    if (!nvrhiFrameSkeleton->Render(swapchain.get(), semaphoreToWait, renderFinishedSemaphores[frameIndex]))
+    {
+        // Give it back: the renderer will submit the frame itself.
+        currentFrameState.SetSemaphore(semaphoreToWait, semaphoreWaitStage);
+        return false;
+    }
+
+    // The renderer has not recorded anything into the frame, but its command
+    // buffer still has to be submitted: BeginFrame recorded uploads into it, and
+    // its fence is what the next BeginFrame waits for. The swapchain image is
+    // already acquired by the RHI pass above, so there is nothing to wait on.
+    cmdManager->Submit(currentFrameState.GetCmdBuffer(), frameFences[frameIndex]);
+
+    // The RHI pass signals renderFinishedSemaphores[frameIndex].
+    swapchain->Present(queues, renderFinishedSemaphores[frameIndex]);
+
+    frameId++;
+    return true;
+}
+
 void VulkanDevice::EndFrame(VkCommandBuffer cmd)
 {
     uint32_t frameIndex = currentFrameState.GetFrameIndex();
@@ -1313,6 +1350,14 @@ void VulkanDevice::DrawFrame(const RgDrawFrameInfo *drawInfo)
     }
 
     textureManager->CheckForHotReload(cmd, frameIndex);
+
+    // The RHI frame skeleton takes over the frame: the pass is drawn and
+    // submitted through the RHI layer, the renderer is skipped.
+    if (nvrhiFrameSkeleton != nullptr && RenderThroughRhi())
+    {
+        currentFrameState.OnEndFrame();
+        return;
+    }
 
     if (renderResolution.Width() > 0 && renderResolution.Height() > 0)
     {

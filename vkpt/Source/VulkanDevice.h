@@ -70,6 +70,7 @@ namespace vkpt
 {
 
 class NvrhiContext;
+class NvrhiFrameSkeleton;
 struct NvrhiRequirements;
 
 class VulkanDevice
@@ -157,6 +158,10 @@ private:
 
     VkCommandBuffer BeginFrame(const RgStartFrameInfo &startInfo);
     void Render(VkCommandBuffer cmd, const RgDrawFrameInfo &drawInfo);
+    // Draws the current frame through the RHI layer and submits it, together with
+    // the command buffer of the frame. Returns false if the frame has to be drawn
+    // by the renderer instead.
+    bool RenderThroughRhi();
     void EndFrame(VkCommandBuffer cmd);
 
 private:
@@ -242,6 +247,9 @@ private:
 
     // RHI device (NVIDIA NVRHI) created over the Vulkan device above.
     std::unique_ptr<NvrhiContext>           nvrhi;
+    // The RHI frame skeleton: the first frame pass that is recorded through the
+    // RHI layer. Null unless 'rhiframe' is set in vkpt.txt.
+    std::shared_ptr<NvrhiFrameSkeleton>     nvrhiFrameSkeleton;
 
     // Q2RTX-style fog volumes (host data, uploaded into the uniform each frame)
     std::array<RgFogVolume, RG_MAX_FOG_VOLUMES> fogVolumes{};

@@ -49,6 +49,10 @@ std::vector<std::string> NvrhiRequirements::GetUnsupported() const
     {
         unsupported.push_back("shaderStorageImageArrayNonUniformIndexing");
     }
+    if (!dynamicRendering)
+    {
+        unsupported.push_back("dynamicRendering");
+    }
 
     return unsupported;
 }
@@ -60,13 +64,18 @@ bool NvrhiRequirements::IsCriticalSupported() const
         && descriptorBindingUpdateUnusedWhilePending
         && descriptorBindingSampledImageUpdateAfterBind
         && descriptorBindingStorageImageUpdateAfterBind
-        && descriptorBindingStorageBufferUpdateAfterBind;
+        && descriptorBindingStorageBufferUpdateAfterBind
+        && dynamicRendering;
 }
 
 NvrhiRequirements QueryNvrhiRequirements(VkPhysicalDevice physDevice)
 {
+    VkPhysicalDeviceVulkan13Features supported13 = {};
+    supported13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
+
     VkPhysicalDeviceVulkan12Features supported12 = {};
     supported12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+    supported12.pNext = &supported13;
 
     VkPhysicalDeviceFeatures2 features2 = {};
     features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
@@ -76,6 +85,7 @@ NvrhiRequirements QueryNvrhiRequirements(VkPhysicalDevice physDevice)
 
     NvrhiRequirements requirements;
     requirements.timelineSemaphore = supported12.timelineSemaphore == VK_TRUE;
+    requirements.dynamicRendering = supported13.dynamicRendering == VK_TRUE;
 
     requirements.descriptorBindingSampledImageUpdateAfterBind  = supported12.descriptorBindingSampledImageUpdateAfterBind == VK_TRUE;
     requirements.descriptorBindingStorageImageUpdateAfterBind  = supported12.descriptorBindingStorageImageUpdateAfterBind == VK_TRUE;

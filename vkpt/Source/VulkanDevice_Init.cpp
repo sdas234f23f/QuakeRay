@@ -30,6 +30,7 @@
 #include "Generated/ShaderCommonC.h"
 #include "LibraryConfig.h"
 #include "RHI/NvrhiContext.h"
+#include "RHI/NvrhiFrameSkeleton.h"
 #include "RHI/NvrhiRequirements.h"
 
 using namespace vkpt;
@@ -306,11 +307,35 @@ VulkanDevice::VulkanDevice( const RgInstanceCreateInfo* info )
     framebuffers->Subscribe(rasterizer);
     framebuffers->Subscribe(decalManager);
     framebuffers->Subscribe(amdFsr);
+
+    // The RHI frame skeleton draws the frame through the RHI layer instead of
+    // the renderer above. Off by default: enabled by 'rhiframe' in vkpt.txt.
+    if (libconfig.rhiFrameSkeleton)
+    {
+        if (nvrhi != nullptr)
+        {
+            nvrhiFrameSkeleton = std::make_shared<NvrhiFrameSkeleton>(
+                nvrhi->GetDevice(),
+                swapchain.get(),
+                info->pShaderFolderPath,
+                [this](const char *pMessage) { Print(pMessage); });
+
+            swapchain->Subscribe(nvrhiFrameSkeleton);
+        }
+        else
+        {
+            Print("Warning: RHI: 'rhiframe' is ignored, there is no RHI device");
+        }
+    }
 }
 
 VulkanDevice::~VulkanDevice()
 {
     vkDeviceWaitIdle(device);
+
+    // the skeleton wraps the swapchain images with the RHI device, so it has to
+    // be released before both of them
+    nvrhiFrameSkeleton.reset();
 
     // the RHI device holds Vulkan objects created from this device,
     // so it has to be released before them
@@ -639,6 +664,8 @@ void VulkanDevice::CreateDevice()
     vulkan13Features.pNext = nullptr; // end of chain
     vulkan13Features.computeFullSubgroups = 1;
     vulkan13Features.subgroupSizeControl = 1;
+    // The RHI layer records every pass with vkCmdBeginRendering.
+    vulkan13Features.dynamicRendering = 1;
 
     vulkan12Features.pNext = &vulkan13Features;  // chain: vk12 → vk13
 

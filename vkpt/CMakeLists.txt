@@ -84,6 +84,7 @@ set(vkpt_SOURCES
     Source/RayStats.cpp
     Source/PassTimings.cpp
     Source/RHI/NvrhiContext.cpp
+    Source/RHI/NvrhiFrameSkeleton.cpp
     Source/RHI/NvrhiRequirements.cpp
     Source/WorldLights.cpp
 )

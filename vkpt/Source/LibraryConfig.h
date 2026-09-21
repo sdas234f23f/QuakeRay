@@ -31,6 +31,9 @@ namespace vkpt::LibraryConfig
         bool developerMode = false;
         bool dlssValidation = false;
         bool fpsMonitor = false;
+        // Draws the frame through the RHI layer instead of the renderer.
+        // Only for the bring-up of the RHI frame skeleton.
+        bool rhiFrameSkeleton = false;
     };
 
     namespace detail
@@ -52,6 +55,10 @@ namespace vkpt::LibraryConfig
             else if (entry == "fpsmonitor")
             {
                 dst.fpsMonitor = true;
+            }
+            else if (entry == "rhiframe")
+            {
+                dst.rhiFrameSkeleton = true;
             }
         }
     }

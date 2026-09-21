@@ -30,13 +30,17 @@ struct NvrhiRequirements
 
     bool shaderStorageImageArrayNonUniformIndexing = false;
 
+    // Vulkan 1.3: every pass the RHI layer records is a dynamic rendering pass.
+    bool dynamicRendering = false;
+
     // Names of the requirements the driver does not support. Empty when the
     // physical device can satisfy all of them.
     std::vector<std::string> GetUnsupported() const;
 
     // Requirements the RHI layer cannot work without: without timeline
-    // semaphores it cannot submit, and every descriptor set layout it creates
-    // uses partially bound bindings. The texel buffer flavours are left out:
+    // semaphores it cannot submit, every descriptor set layout it creates
+    // uses partially bound bindings, and every pass it records is drawn with
+    // dynamic rendering. The texel buffer flavours are left out:
     // NVRHI only needs them for layouts the application describes itself.
     bool IsCriticalSupported() const;
 };
