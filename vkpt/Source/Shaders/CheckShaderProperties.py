@@ -553,25 +553,25 @@ def checkPair(name, allowList):
     hlslPath = name + HLSL_SUFFIX
 
     if not os.path.isfile(glslPath):
-        return 0, [TAB + "skipped: " + glslPath + " does not exist"]
+        return 0, [TAB + "skipped: " + glslPath + " does not exist"], True
 
     glslSpvPath = TEMP_FOLDER_PATH + baseName + ".glsl.spv"
     hlslSpvPath = TEMP_FOLDER_PATH + baseName + ".hlsl.spv"
 
     success, compilerOutput = compileShader(glslPath, glslSpvPath, isHLSL=False)
     if not success:
-        return 1, [TAB + "glslc failed", compilerOutput]
+        return 1, [TAB + "glslc failed", compilerOutput], False
 
     success, compilerOutput = compileShader(hlslPath, hlslSpvPath, isHLSL=True)
     if not success:
-        return 1, [TAB + "dxc failed", compilerOutput]
+        return 1, [TAB + "dxc failed", compilerOutput], False
 
     glslTxtPath = TEMP_FOLDER_PATH + baseName + ".glsl.spv.txt"
     hlslTxtPath = TEMP_FOLDER_PATH + baseName + ".hlsl.spv.txt"
 
     for spvPath, txtPath in [(glslSpvPath, glslTxtPath), (hlslSpvPath, hlslTxtPath)]:
         if not disassemble(spvPath, txtPath)[0]:
-            return 1, [TAB + "spirv-dis failed"]
+            return 1, [TAB + "spirv-dis failed"], False
 
     with open(glslTxtPath, "r", encoding="utf-8") as f:
         glslModule = Module(f.read(), transposeMatrices=True)
@@ -581,7 +581,7 @@ def checkPair(name, allowList):
     messages, mismatches = compareProperties(name, glslModule.getPropertySet(),
         hlslModule.getPropertySet(), allowList)
 
-    return mismatches, messages
+    return mismatches, messages, False
 
 
 def resolveProbeName(name):
@@ -625,16 +625,19 @@ def main():
 
     allowList = readAllowList()
     mismatches = 0
+    skipped = 0
 
     for pair in pairs:
         print("=== " + pair)
-        pairMismatches, messages = checkPair(pair, allowList)
+        pairMismatches, messages, pairSkipped = checkPair(pair, allowList)
         mismatches += pairMismatches
 
         for message in messages:
             print(message)
 
-        if pairMismatches == 0:
+        if pairSkipped:
+            skipped += 1
+        elif pairMismatches == 0:
             print(TAB + "all properties match")
 
     if mismatches > 0:
@@ -642,6 +645,11 @@ def main():
         print("> " + str(mismatches) + " propertie(s) do not match. Fix them in HLSL, or add a")
         print("> justified line to " + ALLOW_LIST_FILE_NAME + ".")
         return 1
+
+    if skipped > 0:
+        print("")
+        print("> " + str(skipped) + " pair(s) were skipped: nothing was checked for them. A pair")
+        print("> is named after its HLSL file, e.g. ShaderCommon.probe.comp or EfWaves.comp.")
 
     return 0
 
