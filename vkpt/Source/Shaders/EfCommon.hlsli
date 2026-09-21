@@ -117,7 +117,16 @@ float3 effect_loadFromSource_Centered(float2 centered)
 }
 
 
-// TODO: DESC_SET_RANDOM is not ported yet: it needs Random.h, and no ported effect uses it.
+// Like the GLSL one, this block pulls Random.hlsli in itself, so the shader has to have included
+// the generated header and Utils.hlsli first. The helpers are pinned by the Random probe; the
+// block itself declares no descriptor.
+#ifdef DESC_SET_RANDOM
+#include "Random.hlsli"
+float effect_getRandomSample(int2 pix, uint frameIndex)
+{
+    return rnd16(getRandomSeed(pix, frameIndex), RANDOM_SALT_POSTEFFECT);
+}
+#endif
 
 // Need these functions as R10G11B10 doesn't allow negative values,
 // and I/Q components can be <0
