@@ -22,6 +22,14 @@ if (-not (Get-Command glslc -ErrorAction SilentlyContinue)) {
     throw "glslc not found. Install the Vulkan SDK or set VULKAN_SDK."
 }
 
+# dxc ships with the Vulkan SDK; the Windows SDK also has one. It is only required while HLSL
+# shaders exist, i.e. from the first ported file until the GLSL sources are gone.
+$hlslSources = @(Get-ChildItem -Path $shaderSrc -Filter "*.hlsl" -ErrorAction SilentlyContinue)
+if ($hlslSources.Count -gt 0 -and -not (Get-Command dxc -ErrorAction SilentlyContinue)) {
+    throw ("dxc not found, but $($hlslSources.Count) HLSL shader file(s) are present. " +
+           "Install the Vulkan SDK or set VULKAN_SDK.")
+}
+
 if ($GenCommon) {
     Push-Location (Join-Path $PSScriptRoot "vkpt\Source\Generated")
     try {

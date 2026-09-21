@@ -29,10 +29,26 @@ CACHE_FOLDER_PATH           = "Build/"
 OUTPUT_FOLDER_PATH          = "../../Build/"
 CACHE_FILE_NAME             = "GenerateShadersCache.txt"
 EXTENSIONS                  = [ ".comp", ".vert", "frag", ".rgen", ".rahit", ".rchit", ".rmiss" ]
-DEPENDENCY_EXTENSIONS       = [ ".h", ".inl" ]
+DEPENDENCY_EXTENSIONS       = [ ".h", ".inl", ".glsl", ".hlsl", ".hlsli" ]
 DEPENDENCY_FOLDERS          = { "", "../Generated/" }
-DEPENDENCY_FOLDERS_IGNORE   = [ CACHE_FOLDER_PATH, ".vscode/" ]
+DEPENDENCY_FOLDERS_IGNORE   = [ CACHE_FOLDER_PATH, ".vscode/", "GLSL/" ]
 DEPENDENCY_IGNORE           = [ "BlueNoiseFileNames.h", "ShaderCommonC.h", "ShaderCommonCFramebuf.h" ]
+
+# HLSL sources are named <name><stage>.hlsl (e.g. CmBloomUpsample.comp.hlsl), so the produced
+# blob keeps the name the host already looks up (CmBloomUpsample.comp.spv). Plain .hlsl and
+# .hlsli files are headers and are never compiled on their own.
+# Ported shaders move their GLSL original to GLSL/ so that CheckShaderProperties.py can keep
+# comparing them against the HLSL replacement.
+HLSL_SUFFIX                 = ".hlsl"
+HLSL_PROFILES               = {
+    ".comp":    "cs_6_2",
+    ".vert":    "vs_6_2",
+    "frag":     "fs_6_2",
+    ".rgen":    "lib_6_3",
+    ".rahit":   "lib_6_3",
+    ".rchit":   "lib_6_3",
+    ".rmiss":   "lib_6_3",
+}
 
 
 CACHE_FILE_DEPENDENCY_MAP_SEPARATOR_LINE = "DEPENDENCY\n"
@@ -68,6 +84,53 @@ def getDependentFoldersProcArg():
     return [a for p in DEPENDENCY_FOLDERS if p != "" for a in ("-I", p)]
 
 
+def getHLSLStage(filename):
+    if not filename.endswith(HLSL_SUFFIX):
+        return None
+
+    for ext in EXTENSIONS:
+        if filename.endswith(ext + HLSL_SUFFIX):
+            return ext
+
+    return None
+
+
+def isShaderSource(filename):
+    return any([filename.endswith(ext) for ext in EXTENSIONS]) or getHLSLStage(filename) is not None
+
+
+def getOutputFilename(filename):
+    base = os.path.basename(filename)
+
+    if base.endswith(HLSL_SUFFIX):
+        base = base[:-len(HLSL_SUFFIX)]
+
+    return OUTPUT_FOLDER_PATH + base + ".spv"
+
+
+# Returns the command line that compiles the shader to the SPIR-V blob the host loads.
+# GLSL goes through glslc, HLSL goes through dxc, which emits SPIR-V for Vulkan and can also
+# emit DXIL for D3D12 from the very same source.
+def getCompileCommand(filename, outputFilename):
+    stage = getHLSLStage(filename)
+
+    if stage is None:
+        return [
+            "glslc", "--target-env=vulkan1.2"
+            ] + getDependentFoldersProcArg() + [
+            filename,
+            "-o", outputFilename]
+
+    return [
+        "dxc",
+        "-spirv",
+        "-T", HLSL_PROFILES[stage],
+        "-fspv-target-env=vulkan1.2"
+        ] + getDependentFoldersProcArg() + [
+        filename,
+        "-Fo", outputFilename]
+
+
 def abspath(filename):
     return os.path.abspath(filename).replace('\\','/')
 
@@ -98,6 +161,9 @@ def main():
         print("-r        : same as \"-rebuild\"")
         print("-g        : same as \"-gencomm\"")
         print("-ps       : same as \"-psout\"")
+        print("")
+        print("GLSL shaders are compiled with glslc, HLSL shaders (<name>.<stage>.hlsl)")
+        print("are compiled with dxc into the very same <name>.<stage>.spv blobs.")
         return
 
     forceRebuild = False
@@ -216,9 +282,8 @@ def main():
 
     for filenameRelative in os.listdir():
         filename = abspath(filenameRelative)
-        isShader = any([filename.endswith(ext) for ext in EXTENSIONS])
 
-        if not isShader:
+        if not isShaderSource(filename):
             continue
 
         if ' ' in filename:
@@ -228,7 +293,7 @@ def main():
         lastModifTime = int(pathlib.Path(filename).stat().st_mtime)
         isOutdated = filename in cache and lastModifTime != cache[filename]
 
-        outputFilename = OUTPUT_FOLDER_PATH + os.path.basename(filename) + ".spv"
+        outputFilename = getOutputFilename(filename)
 
         if filename not in dependencyMap or isOutdated:
             dependencyMap[filename] = set()
@@ -245,23 +310,41 @@ def main():
         if filename not in cache or isOutdated or not os.path.exists(outputFilename) or wereDependentModified(dependencyMap, modifiedDependent, cache, filename):
             print("> Building " + os.path.basename(filename))
 
-            r = subprocess.run([
-                "glslc", "--target-env=vulkan1.2"
-                ] + getDependentFoldersProcArg() + [
-                filename, 
-                "-o", outputFilename], 
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            command = getCompileCommand(filename, outputFilename)
 
-            if len(r.stdout) > 0:
+            try:
+                r = subprocess.run(command,
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                compilerOutput = r.stdout
+                isFailed = r.returncode != 0
+            except FileNotFoundError:
+                compilerOutput = "> " + command[0] + " is not in PATH"
+                isFailed = True
+
+            if isFailed:
                 if powerShellOutput:
-                    printInPowerShell(r.stdout, "Red")
+                    printInPowerShell(compilerOutput, "Red")
                 else:
-                    print(r.stdout)
+                    print(compilerOutput)
 
                 msgErrorCount += 1
+
+                # Do not leave the previously built blob behind: a failed build must not be
+                # masked by deploying the stale one.
+                if os.path.exists(outputFilename):
+                    os.remove(outputFilename)
+
                 if filename in cache:
                     del cache[filename]
             else:
+                # dxc prints warnings that do not fail the build, e.g. about attributes that
+                # only apply to one of the two backends.
+                if len(compilerOutput) > 0:
+                    if powerShellOutput:
+                        printInPowerShell(compilerOutput, "Yellow")
+                    else:
+                        print(compilerOutput)
+
                 cache[filename] = lastModifTime
 
             msgWasAnyShaderRebuilt = True

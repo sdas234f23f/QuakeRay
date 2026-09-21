@@ -20,3 +20,4 @@ crash.log
 *.npy
 *.pdb
 *.diff.txt
+__pycache__/

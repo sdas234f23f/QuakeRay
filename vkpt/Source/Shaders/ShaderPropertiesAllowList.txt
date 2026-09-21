@@ -1,0 +1,10 @@
+# Properties that are deliberately different between a GLSL shader and its HLSL replacement.
+#
+# Format: <fragment of "ShaderName propertyKey"> = <reason>
+#
+# The first line whose fragment occurs in the reported path wins, so an entry can name a whole
+# shader ("EfWaves.comp"), a single property, or anything in between. A matching difference is
+# printed as [allowed] instead of failing the check.
+#
+# Add a line only when the difference is understood and harmless for the host, and write down why.
+# Everything else is a bug in the HLSL and must be fixed there.
