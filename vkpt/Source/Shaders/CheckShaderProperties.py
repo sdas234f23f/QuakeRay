@@ -287,11 +287,18 @@ class Module:
         return blocks
 
     def unwrapBlock(self, typeId):
-        """Steps over the one-member struct that glslang wraps a uniform block in.
+        """Steps over the wrappers that spell one memory layout in two different shapes.
 
         glslang emits a uniform block as a struct holding a single struct member at offset
         0, dxc puts the members of the block directly into the block. Stepping over the
         wrapper on both sides makes the two spellings comparable.
+
+        A single-instance storage block (``buffer B { T x; }``) has no HLSL spelling: a struct
+        member of a block cannot be addressed in HLSL, so the port is ``StructuredBuffer<T>``
+        (read) or ``RWStructuredBuffer<T>`` (written), and dxc describes that as an array of
+        the struct. Stepping over that array compares the layout of the element, which is
+        what the host binds for both spellings; the offsets of every member and the stride
+        between elements stay under check.
         """
         while True:
             op, members = self.typeOf(typeId)
@@ -299,9 +306,17 @@ class Module:
                 return typeId
             if self.memberDecorations.get((typeId, 0), {}).get("Offset", ["?"])[0] != "0":
                 return typeId
-            if self.typeOf(members[0])[0] != "OpTypeStruct":
-                return typeId
-            typeId = members[0]
+
+            memberOp, memberOperands = self.typeOf(members[0])
+            if memberOp == "OpTypeStruct":
+                typeId = members[0]
+                continue
+            if memberOp in ["OpTypeRuntimeArray", "OpTypeArray"]:
+                elementId = memberOperands[0]
+                if self.typeOf(elementId)[0] == "OpTypeStruct":
+                    typeId = elementId
+                    continue
+            return typeId
 
     def pointee(self, id):
         op, o = self.typeOf(id)

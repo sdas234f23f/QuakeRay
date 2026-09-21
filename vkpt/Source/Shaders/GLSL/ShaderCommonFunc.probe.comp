@@ -1,0 +1,178 @@
+#version 460
+
+#extension GL_EXT_nonuniform_qualifier : require
+#extension GL_EXT_samplerless_texture_functions : require
+
+// Hand written counterpart of Probes/ShaderCommonFunc.probe.comp.hlsl.
+//
+// The generated header has its own probe pair (ShaderCommon.probe.*), which covers the constants,
+// the structs and every framebuffer. This pair covers the rest of the shader common surface:
+// ShaderCommonGLSLFunc.h against ShaderCommonHLSLFunc.hlsli. Both probes define the same descriptor
+// set indices, touch the same resources and call the same helper functions, so
+// CheckShaderProperties.py can compare what glslc and dxc make of them.
+
+#define DESC_SET_GLOBAL_UNIFORM 0
+#define DESC_SET_FRAMEBUFFERS   1
+#define DESC_SET_TEXTURES       2
+#define DESC_SET_TONEMAPPING    3
+#define DESC_SET_LIGHT_SOURCES  4
+#define DESC_SET_VOLUMETRIC     5
+#define DESC_SET_LENS_FLARES    6
+#define DESC_SET_DECALS         7
+
+#include "ShaderCommonGLSLFunc.h"
+
+#define PROBE_DESC_SET 8
+
+layout(set = PROBE_DESC_SET, binding = 0, std430) writeonly buffer ProbeOutput_BT
+{
+    float probeOutput[];
+};
+
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+
+void main()
+{
+    float v = 0.0;
+
+    const ivec2 pix = ivec2(2, 3);
+    const vec2 uv = vec2(0.5);
+    const vec3 dir = vec3(0.0, 0.0, 1.0);
+    const vec3 volUVW = vec3(0.5);
+
+    // ShGlobalUniform is declared by ShaderCommonGLSLFunc.h, the ray direction helpers below use it.
+    v += globalUniform.renderWidth + globalUniform.renderHeight +
+         globalUniform.jitterX + globalUniform.jitterY +
+         globalUniform.view[0][0] + globalUniform.invView[0][0] + globalUniform.invProjection[0][0];
+
+    // DESC_SET_TEXTURES, the split bindless table
+    v += getTextureSample(0, uv).x;
+    v += getTextureSampleLod(1, uv, 0.0).y;
+    v += getTextureSampleGrad(2, uv, uv, uv).z;
+
+    // Index packing helpers
+    int instanceId = 0;
+    int instanceCustomIndex = 0;
+    int geometryIndex = 0;
+    int primitiveIndex = 0;
+
+    unpackInstanceIdAndCustomIndex(packInstanceIdAndCustomIndex(1, 2), instanceId, instanceCustomIndex);
+    unpackGeometryAndPrimitiveIndex(packGeometryAndPrimitiveIndex(1, 2), geometryIndex, primitiveIndex);
+
+    v += float(packInstanceIdAndCustomIndex(1, 2)) +
+         float(unpackInstanceIdAndCustomIndex(packInstanceIdAndCustomIndex(1, 2)).x) +
+         float(packGeometryAndPrimitiveIndex(1, 2)) +
+         float(unpackGeometryAndPrimitiveIndex(packGeometryAndPrimitiveIndex(1, 2)).y) +
+         float(instanceId + instanceCustomIndex + geometryIndex + primitiveIndex);
+
+    // DESC_SET_TONEMAPPING: a single instance block, so every access is `tonemapping.field`
+    v += tonemapping.tmExposureBias + tonemapping.tmExposureSpeedDown +
+         tonemapping.tmExposureSpeedUp + tonemapping.tmLowPercentile +
+         tonemapping.tmHighPercentile + tonemapping.tmMinLuminance + tonemapping.tmMaxLuminance +
+         tonemapping.tmNoiseBlend + tonemapping.tmNoiseStops + tonemapping.tmDynRangeStops +
+         tonemapping.tmReinhard + tonemapping.tmKneeStart + tonemapping.tmWhitePoint +
+         tonemapping.tmSlopeBlurSigma + tonemapping.frameTime + float(tonemapping.resetCurve) +
+         tonemapping.kneeW + tonemapping.kneeA + tonemapping.kneeB +
+         float(tonemapping.histogram[0]) + tonemapping.curve[0] + tonemapping.normalized[0] +
+         tonemapping.adaptedLuminance + tonemapping.avgLuminance;
+
+    // DESC_SET_LIGHT_SOURCES
+    v += lightSources[0].color.x + lightSources_Prev[0].color.x;
+    v += float(lightSources_Index_PrevToCur[0]) + float(lightSources_Index_CurToPrev[0]) +
+         float(q2LightListOffsets[0]) + float(q2LightListLights[0]) +
+         float(talCdf[0]) + float(q2ClusterSkyVis[0]);
+    q2LightStats[0] = 1u;
+
+    // DESC_SET_VOLUMETRIC
+    imageStore(g_volumetric, ivec3(0), vec4(v));
+    imageStore(g_illuminationVolume, ivec3(0), vec4(v));
+
+    v += textureLod(sampler3D(g_volumetric_Sampled, g_volumetric_Sampler), volUVW, 0.0).x;
+    v += textureLod(sampler3D(g_volumetric_Sampled_Prev, g_volumetric_Sampler_Prev), volUVW, 0.0).x;
+    v += textureLod(sampler3D(g_illuminationVolume_Sampled, g_illuminationVolume_Sampler), volUVW, 0.0).x;
+
+    // DESC_SET_LENS_FLARES
+    v += lensFlareCullingInput[0].positionToCheck_X;
+    lensFlareDrawCmds[0] = lensFlareCullingInput[0];
+    lensFlareDrawCmdsCount = 1u;
+
+    // DESC_SET_DECALS
+    v += decalInstances[0].transform[0][0];
+    decalInstances[0].textureAlbedoAlpha = 0u;
+
+    // DESC_SET_FRAMEBUFFERS: the SH accessors
+    SH sh = irradianceToSH(vec3(v), dir);
+
+    imageStoreUnfilteredIndirectSH(pix, sh);
+    imageStoreIndirAccumSH(pix, sh);
+    imageStoreIndirPingSH(pix, sh);
+    imageStoreIndirPongSH(pix, sh);
+
+    sh = imageLoadUnfilteredIndirectSH(pix);
+    sh = texelFetchUnfilteredIndirectSH(pix);
+    sh = texelFetchIndirAccumSH(pix);
+    sh = texelFetchIndirAccumSH_Prev(pix);
+    sh = texelFetchSH(
+        framebufUnfilteredIndirectSH_R_Sampled,
+        framebufUnfilteredIndirectSH_G_Sampled,
+        framebufUnfilteredIndirectSH_B_Sampled,
+        pix);
+
+    accumulateSH(sh, mixSH(sh, sh, 0.5), 0.5);
+    multiplySH(sh, 0.5);
+
+    // glslang keeps a texture alive when it is only an argument of a helper, dxc drops it
+    // and keeps the SRV in the descriptor set. Both probes read the SH textures explicitly so
+    // that the descriptors of both sides can be compared.
+    v += texelFetch(framebufUnfilteredIndirectSH_R_Sampled, pix, 0).x;
+    v += texelFetch(framebufUnfilteredIndirectSH_G_Sampled, pix, 0).y;
+    v += texelFetch(framebufUnfilteredIndirectSH_B_Sampled, pix, 0).z;
+
+    v += texelFetch(framebufIndirAccumSH_R_Sampled, pix, 0).x;
+    v += texelFetch(framebufIndirAccumSH_G_Sampled, pix, 0).y;
+    v += texelFetch(framebufIndirAccumSH_B_Sampled, pix, 0).z;
+    v += texelFetch(framebufIndirAccumSH_R_Prev_Sampled, pix, 0).x;
+    v += texelFetch(framebufIndirAccumSH_G_Prev_Sampled, pix, 0).y;
+    v += texelFetch(framebufIndirAccumSH_B_Prev_Sampled, pix, 0).z;
+
+    v += getSHColor(sh).x + SHToIrradiance(sh, dir).x;
+
+    // DESC_SET_FRAMEBUFFERS: normals, sky and the checkerboard/reprojection helpers
+    imageStoreNormal(pix, texelFetchNormal(pix));
+    imageStoreNormalGeometry(pix, texelFetchNormalGeometry(pix));
+
+    v += texelFetchNormal_Prev(pix).x + texelFetchNormalGeometry_Prev(pix).x;
+    v += float(texelFetchEncNormal(pix)) + float(texelFetchEncNormalGeometry(pix));
+
+    v += float(textureGatherEncNormalGeometry_Prev(uv).x);
+    v += float(textureGatherEncNormalGeometry_Prev(uv).w);
+
+    v += isSkyPix(pix) ? 1.0 : 0.0;
+    v += needResolveCheckerboard(pix) ? 1.0 : 0.0;
+
+    v += float(wasOnlyPrimary(v)) + float(wasWithoutSplit(v)) + float(wasSplit(v));
+
+    const ivec3 renderArea = getCheckerboardedRenderArea(pix);
+
+    v += float(getCheckerboardSeparatorX()) + float(isRegularPixOdd(pix)) + float(isCheckerboardPixOdd(pix));
+    v += float(getCheckerboardPix(pix).x) + float(getRegularPixFromCheckerboardPix(pix).x);
+    v += float(renderArea.z);
+
+    v += testPixInRenderArea(pix, renderArea) ? 1.0 : 0.0;
+    v += testReprojectedDepth(v, v, 0.0) ? 1.0 : 0.0;
+    v += testReprojectedNormal(dir, dir) ? 1.0 : 0.0;
+    v += testReprojectedNormalEnc(dir, texelFetchEncNormal(pix)) ? 1.0 : 0.0;
+
+    v += getAntilagAlpha(v, 1.0);
+
+    v += getPrevScreenPos(vec2(0.0, 0.0), pix).x;
+    v += getPrevScreenPos(framebufAlbedo_Sampled, pix).y;
+
+    // DESC_SET_GLOBAL_UNIFORM: the ray direction helpers
+    v += getRayDir(uv).x + getRayDirAX(uv).y + getRayDirAY(uv).z + getPixelUVWithJitter(pix).x;
+
+    // Not under any define
+    v += rmeEmissionToScreenEmission(v);
+
+    probeOutput[0] = v;
+}
