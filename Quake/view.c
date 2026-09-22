@@ -91,16 +91,13 @@ Used by view and sv_user
 float V_CalcRoll (vec3_t angles, vec3_t velocity)
 {
 	vec3_t forward, right, up;
-	float  sign;
-	float  side;
-	float  value;
 
 	AngleVectors (angles, forward, right, up);
-	side = DotProduct (velocity, right);
-	sign = side < 0 ? -1 : 1;
+	float side = DotProduct(velocity, right);
+	float sign = side < 0 ? -1 : 1;
 	side = fabs (side);
 
-	value = cl_rollangle.value;
+	float value = cl_rollangle.value;
 	//	if (cl.inwater)
 	//		value *= 6;
 
@@ -120,13 +117,10 @@ V_CalcBob
 */
 float V_CalcBob (void)
 {
-	float bob;
-	float cycle;
-
 	if (!cl_bobcycle.value) /* Avoid divide-by-zero, don't bob */
 		return 0.0f;
 
-	cycle = cl.time - (int)(cl.time / cl_bobcycle.value) * cl_bobcycle.value;
+	float cycle = cl.time - (int)(cl.time / cl_bobcycle.value) * cl_bobcycle.value;
 	cycle /= cl_bobcycle.value;
 	if (cycle < cl_bobup.value)
 		cycle = M_PI * cycle / cl_bobup.value;
@@ -136,7 +130,7 @@ float V_CalcBob (void)
 	// bob is proportional to velocity in the xy plane
 	// (don't count Z, or jumping messes it up)
 
-	bob = sqrt (cl.velocity[0] * cl.velocity[0] + cl.velocity[1] * cl.velocity[1]) * cl_bob.value;
+	float bob = sqrt(cl.velocity[0] * cl.velocity[0] + cl.velocity[1] * cl.velocity[1]) * cl_bob.value;
 	// Con_Printf ("speed: %5.1f\n", VectorLength(cl.velocity));
 	bob = bob * 0.3 + bob * 0.7 * sin (cycle);
 	if (bob > 4)
@@ -189,8 +183,6 @@ lookspring is non 0, or when
 */
 void V_DriftPitch (void)
 {
-	float delta, move;
-
 	if (noclip_anglehack || !cl.onground || cls.demoplayback)
 	// FIXME: noclip_anglehack is set on the server, so in a nonlocal game this won't work.
 	{
@@ -215,7 +207,7 @@ void V_DriftPitch (void)
 		return;
 	}
 
-	delta = cl.statsf[STAT_IDEALPITCH] - cl.viewangles[PITCH];
+	float delta = cl.statsf[STAT_IDEALPITCH] - cl.viewangles[PITCH];
 
 	if (!delta)
 	{
@@ -223,7 +215,7 @@ void V_DriftPitch (void)
 		return;
 	}
 
-	move = host_frametime * cl.pitchvel;
+	float move = host_frametime * cl.pitchvel;
 	cl.pitchvel += host_frametime * v_centerspeed.value;
 
 	// Con_Printf ("move: %f (%f)\n", move, host_frametime);
@@ -272,20 +264,15 @@ V_ParseDamage
 */
 void V_ParseDamage (void)
 {
-	int       armor, blood;
 	vec3_t    from;
-	int       i;
 	vec3_t    forward, right, up;
-	entity_t *ent;
-	float     side;
-	float     count;
 
-	armor = MSG_ReadByte ();
-	blood = MSG_ReadByte ();
-	for (i = 0; i < 3; i++)
+	int armor = MSG_ReadByte();
+	int blood = MSG_ReadByte();
+	for (int i = 0; i < 3; i++)
 		from[i] = MSG_ReadCoord (cl.protocolflags);
 
-	count = blood * 0.5 + armor * 0.5;
+	float count = blood * 0.5 + armor * 0.5;
 	if (count < 10)
 		count = 10;
 
@@ -319,14 +306,14 @@ void V_ParseDamage (void)
 	//
 	// calculate view angle kicks
 	//
-	ent = &cl.entities[cl.viewentity];
+	entity_t* ent = &cl.entities[cl.viewentity];
 
 	VectorSubtract (from, ent->origin, from);
 	VectorNormalize (from);
 
 	AngleVectors (ent->angles, forward, right, up);
 
-	side = DotProduct (from, right);
+	float side = DotProduct(from, right);
 	v_dmg_roll = count * side * v_kickroll.value;
 
 	side = DotProduct (from, forward);
@@ -428,7 +415,7 @@ void V_CalcPowerupCshift (void)
 		cl.cshifts[CSHIFT_POWERUP].destcolor[2] = 0;
 		cl.cshifts[CSHIFT_POWERUP].percent = 30;
 	}
-	else 
+	else
 		cl.cshifts[CSHIFT_POWERUP].percent = 0;
 }
 
@@ -439,16 +426,14 @@ V_CalcBlend
 */
 void V_CalcBlend (void)
 {
-	float   r, g, b, a, a2;
-	int     j;
 	cvar_t *cshiftpercent_cvars[NUM_CSHIFTS] = {&gl_cshiftpercent_contents, &gl_cshiftpercent_damage, &gl_cshiftpercent_bonus, &gl_cshiftpercent_powerup};
 
-	r = 0;
-	g = 0;
-	b = 0;
-	a = 0;
+	float r = 0;
+	float g = 0;
+	float b = 0;
+	float a = 0;
 
-	for (j = 0; j < NUM_CSHIFTS; j++)
+	for (int j = 0; j < NUM_CSHIFTS; j++)
 	{
 		if (!gl_cshiftpercent.value)
 			continue;
@@ -458,7 +443,7 @@ void V_CalcBlend (void)
 			continue;
 		// johnfitz
 
-		a2 = ((cl.cshifts[j].percent * gl_cshiftpercent.value) / 100.0) / 255.0;
+		float a2 = ((cl.cshifts[j].percent * gl_cshiftpercent.value) / 100.0) / 255.0;
 		// QuakeSpasm -- also scale by the specific gl_cshiftpercent_* cvar
 		a2 *= (cshiftpercent_cvars[j]->value / 100.0);
 		// QuakeSpasm
@@ -484,21 +469,18 @@ V_UpdateBlend -- johnfitz -- V_UpdatePalette cleaned up and renamed
 */
 static void V_UpdateBlend (void)
 {
-	int      i, j;
-	qboolean blend_changed;
-
 	V_CalcPowerupCshift ();
 
-	blend_changed = false;
+	qboolean blend_changed = false;
 
-	for (i = 0; i < NUM_CSHIFTS; i++)
+	for (int i = 0; i < NUM_CSHIFTS; i++)
 	{
 		if (cl.cshifts[i].percent != cl.prev_cshifts[i].percent)
 		{
 			blend_changed = true;
 			cl.prev_cshifts[i].percent = cl.cshifts[i].percent;
 		}
-		for (j = 0; j < 3; j++)
+		for (int j = 0; j < 3; j++)
 			if (cl.cshifts[i].destcolor[j] != cl.prev_cshifts[i].destcolor[j])
 			{
 				blend_changed = true;
@@ -543,12 +525,11 @@ CalcGunAngle
 */
 void CalcGunAngle (void)
 {
-	float        yaw, pitch, move;
 	static float oldyaw = 0;
 	static float oldpitch = 0;
 
-	yaw = r_refdef.viewangles[YAW];
-	pitch = -r_refdef.viewangles[PITCH];
+	float yaw = r_refdef.viewangles[YAW];
+	float pitch = -r_refdef.viewangles[PITCH];
 
 	yaw = angledelta (yaw - r_refdef.viewangles[YAW]) * 0.4;
 	if (yaw > 10)
@@ -560,7 +541,7 @@ void CalcGunAngle (void)
 		pitch = 10;
 	if (pitch < -10)
 		pitch = -10;
-	move = host_frametime * 20;
+	float move = host_frametime * 20;
 	if (yaw > oldyaw)
 	{
 		if (oldyaw + move < yaw)
@@ -601,9 +582,7 @@ V_BoundOffsets
 */
 void V_BoundOffsets (void)
 {
-	entity_t *ent;
-
-	ent = &cl.entities[cl.viewentity];
+	entity_t* ent = &cl.entities[cl.viewentity];
 
 	// absolutely bound refresh reletive to entity clipping hull
 	// so the view can never be inside a solid wall
@@ -645,9 +624,7 @@ Roll is induced by movement and damage
 */
 void V_CalcViewRoll (void)
 {
-	float side;
-
-	side = V_CalcRoll (cl.entities[cl.viewentity].angles, cl.velocity);
+	float side = V_CalcRoll(cl.entities[cl.viewentity].angles, cl.velocity);
 	r_refdef.viewangles[ROLL] += side;
 
 	if (v_dmg_time > 0)
@@ -672,13 +649,10 @@ V_CalcIntermissionRefdef
 */
 void V_CalcIntermissionRefdef (void)
 {
-	entity_t *ent, *view;
-	float     old;
-
 	// ent is the player model (visible when out of body)
-	ent = &cl.entities[cl.viewentity];
+	entity_t* ent = &cl.entities[cl.viewentity];
 	// view is the weapon model (only visible from inside body)
-	view = &cl.viewent;
+	entity_t* view = &cl.viewent;
 
 	VectorCopy (ent->origin, r_refdef.vieworg);
 	VectorCopy (ent->angles, r_refdef.viewangles);
@@ -686,7 +660,7 @@ void V_CalcIntermissionRefdef (void)
 	InvalidateTraceLineCache ();
 
 	// allways idle in intermission
-	old = v_idlescale.value;
+	float old = v_idlescale.value;
 	v_idlescale.value = 1;
 	V_AddIdle ();
 	v_idlescale.value = old;
@@ -699,28 +673,26 @@ V_CalcRefdef
 */
 void V_CalcRefdef (void)
 {
-	entity_t     *ent, *view;
 	int           i;
 	vec3_t        forward, right, up;
 	vec3_t        angles;
-	float         bob;
 	static float  oldz = 0;
 	static vec3_t punch = {0, 0, 0}; // johnfitz -- v_gunkick
-	float         delta;             // johnfitz -- v_gunkick
+	// johnfitz -- v_gunkick
 
 	V_DriftPitch ();
 
 	// ent is the player model (visible when out of body)
-	ent = &cl.entities[cl.viewentity];
+	entity_t* ent = &cl.entities[cl.viewentity];
 	// view is the weapon model (only visible from inside body)
-	view = &cl.viewent;
+	entity_t* view = &cl.viewent;
 
 	// transform the view offset by the model's matrix to get the offset from
 	// model origin for the view
 	ent->angles[YAW] = cl.viewangles[YAW];      // the model should face the view dir
 	ent->angles[PITCH] = -cl.viewangles[PITCH]; // the model should face the view dir
 
-	bob = V_CalcBob ();
+	float bob = V_CalcBob();
 
 	// refresh position
 	VectorCopy (ent->origin, r_refdef.vieworg);
@@ -761,7 +733,7 @@ void V_CalcRefdef (void)
 	for (i = 0; i < 3; i++)
 		view->origin[i] += forward[i] * bob * 0.4;
 	view->origin[2] += bob;
-	
+
 	if (CVAR_TO_BOOL (r_viewmodel_quake))
 	{
 		VectorMA (view->origin, 1.5f, vup, view->origin);
@@ -794,7 +766,7 @@ void V_CalcRefdef (void)
 					interval = 0.1;
 
 				// speed determined by how far we need to lerp in 1/10th of a second
-				delta = (v_punchangles[0][i] - v_punchangles[1][i]) * host_frametime / interval;
+				float delta = (v_punchangles[0][i] - v_punchangles[1][i]) * host_frametime / interval;
 
 				if (delta > 0)
 					punch[i] = q_min (punch[i] + delta, v_punchangles[0][i]);
@@ -810,9 +782,7 @@ void V_CalcRefdef (void)
 	if (!noclip_anglehack && cl.onground && ent->origin[2] - oldz > 0) // johnfitz -- added exception for noclip
 	// FIXME: noclip_anglehack is set on the server, so in a nonlocal game this won't work.
 	{
-		float steptime;
-
-		steptime = cl.time - cl.oldtime;
+		float steptime = cl.time - cl.oldtime;
 		if (steptime < 0)
 			// FIXME	I_Error ("steptime < 0");
 			steptime = 0;
