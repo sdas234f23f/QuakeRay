@@ -26,9 +26,10 @@
 //   * mix(a, b, t)                -> lerp(a, b, t), same definition
 
 
-#pragma once
 
 
+#ifndef SPHERICAL_HARMONICS_HLSLI_
+#define SPHERICAL_HARMONICS_HLSLI_
 struct SH
 {
     float4 r;
@@ -131,3 +132,5 @@ void multiplySH(inout SH x, float a)
     x.g *= a;
     x.b *= a;
 }
+
+#endif // SPHERICAL_HARMONICS_HLSLI_

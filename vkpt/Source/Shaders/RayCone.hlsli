@@ -18,7 +18,6 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-#pragma once
 
 // HLSL counterpart of RayCone.h. Like the GLSL one it includes nothing itself: the shader has to
 // pull in Structs.hlsli (ShTriangle), ShaderCommonHLSLFunc.hlsli (the split texture table and its
@@ -27,18 +26,24 @@
 // Ray Tracing Gems 2. Chapter 7: Texture Coordinate Gradients Estimation for Ray Cones
 //
 // Spellings that had to change:
-//   * GLSL mat3x2 -> float2x3, the transposed declaration every matrix of the port uses: a column
-//     of the GLSL matrix is a row of the HLSL one, so the local copy is spelled
-//     transpose(tri.layerTexCoord[i]) and the body below then reads like the GLSL one again
+//   * GLSL mat3x2 -> float2x3, the transposed declaration every matrix of the port uses. A single
+//     index is a column of the GLSL matrix and a row of the HLSL one, so the local copy of the
+//     layer texture coordinates is spelled transpose(tri.layerTexCoord[i]) and the body below then
+//     reads like the GLSL one again
+//   * triangle.positions[i] is such a column read on a mat3, so it becomes
+//     getColumn(tri.positions, i), the construction HitInfo.hlsli takes the geometric normal from
 //   * textureGrad(sampler2D(getTexture(i), getTextureSampler(i)), uv, dx, dy) -> the split table
 //     helper getTextureSampleGrad(i, uv, dx, dy) of ShaderCommonHLSLFunc.hlsli, with vec2(uDeriv,
 //     0) as float2(uDeriv, 0.0), because a scalar argument does not broadcast into a vector
 //   * `triangle` is a reserved word in HLSL, as the point/line/triangle primitives of the geometry
 //     shader are, so the parameter of getTriangleUVDerivativesFromRayCone is called `tri`
 //
-// What did not change: the DerivativeSet members, the early-out arithmetic, the `const` qualifiers
-// and the fact that `u` is left untouched above MATERIAL_MAX_ALBEDO_LAYERS, as in GLSL.
+// What did not change: the DerivativeSet members, the normalTerm / projectedConeWidth /
+// visibleAreaRatio arithmetic that all three functions share, the `const` qualifiers and the fact
+// that `u` is left untouched above MATERIAL_MAX_ALBEDO_LAYERS, as in GLSL.
 
+#ifndef RAY_CONE_HLSLI_
+#define RAY_CONE_HLSLI_
 struct RayCone
 {
     float width;
@@ -105,8 +110,8 @@ DerivativeSet getTriangleUVDerivativesFromRayCone(
     const RayCone rayCone, 
     const float3 rayDir)
 {
-    const float3 edge10 = tri.positions[1] - tri.positions[0];
-    const float3 edge20 = tri.positions[2] - tri.positions[0];
+    const float3 edge10 = getColumn(tri.positions, 1) - getColumn(tri.positions, 0);
+    const float3 edge20 = getColumn(tri.positions, 2) - getColumn(tri.positions, 0);
     const float3 faceNormal = cross(edge10, edge20);
     float quadArea = length(faceNormal);
 
@@ -143,3 +148,5 @@ float4 getTextureSampleDerivSet(uint textureIndex, const float2 texCoord, const 
 {
     return getTextureSampleDerivU(textureIndex, texCoord, derivSet.u[index]);
 }
+
+#endif // RAY_CONE_HLSLI_

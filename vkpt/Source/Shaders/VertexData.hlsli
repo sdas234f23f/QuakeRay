@@ -18,7 +18,6 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-#pragma once
 
 // HLSL counterpart of VertexData.inl. Like the GLSL one it includes nothing itself: the shader has
 // to pull in ShaderCommonHLSLFunc.hlsli (globalUniform, the index packers) first, and to define
@@ -33,8 +32,15 @@
 // Spellings that had to change:
 //   * GLSL uvec3 -> uint3, and GLSL `vec3(v)` -> HLSL float3(v.x, v.y, v.z): a scalar does not
 //     broadcast into a vector in HLSL, so a one-component construction lists every component
-//   * every GLSL `m * v` became mul(v, m), and GLSL mat3(inst.model) became (float3x3)inst.model,
-//     which dxc reads as the upper left submatrix, exactly as GLSL does
+//   * every GLSL `m * v` became mul(m, v), the operand order of the GLSL source, and GLSL
+//     mat3(inst.model) became (float3x3)inst.model, which dxc reads as the upper left submatrix,
+//     exactly as GLSL does
+//   * every matrix member that the GLSL body fills or reads column by column keeps those columns
+//     here: a single index of an HLSL matrix is a row, so `tr.positions[i] = v` has no counterpart
+//     and the columns are transposed into the member instead
+//     (tr.positions = transpose(float3x3(a, b, c))), while a column that is read back is taken from
+//     transpose, the way the getColumn helper of ShaderCommonHLSLFunc.hlsli spells it (that helper
+//     is declared below this header, after it is included, so it can not be called from here)
 //   * ShTriangle.layerTexCoord is three GLSL columns of two floats, so its transposed declaration
 //     holds what those columns held: makeTriangle builds each of the two rows out of the three
 //     vertices, and getTangent takes that shape and transposes it back for its own u1/u2
@@ -45,6 +51,8 @@
 // order in which the vertex data is looked up, the const qualifiers, the compile time `#ifdef`
 // gating, and the commented out getGeometryInstanceMaterialLayer at the end.
 
+#ifndef VERTEX_DATA_HLSLI_
+#define VERTEX_DATA_HLSLI_
 #ifdef DESC_SET_GLOBAL_UNIFORM
 #ifdef DESC_SET_VERTEX_DATA
 
@@ -180,8 +188,8 @@ float3 getPrevDynamicVerticesPositions(uint index)
 // columns of two floats that the GLSL body subtracts.
 float4 getTangent(const float3x3 localPos, const float3 normal, const float2x3 texCoord)
 {
-    const float3 e1 = localPos[1] - localPos[0];
-    const float3 e2 = localPos[2] - localPos[0];
+    const float3 e1 = transpose(localPos)[1] - transpose(localPos)[0];
+    const float3 e2 = transpose(localPos)[2] - transpose(localPos)[0];
 
     const float3x2 tc = transpose(texCoord);
     const float2 u1 = tc[1] - tc[0];
@@ -205,13 +213,11 @@ ShTriangle makeTriangle(const ShVertex a, const ShVertex b, const ShVertex c)
 {    
     ShTriangle tr;
 
-    tr.positions[0] = a.position.xyz;
-    tr.positions[1] = b.position.xyz;
-    tr.positions[2] = c.position.xyz;
+    // the GLSL body fills both matrices column by column, which HLSL can not: the three columns
+    // become the three rows of the constructor, transposed into the member
+    tr.positions = transpose(float3x3(a.position.xyz, b.position.xyz, c.position.xyz));
 
-    tr.normals[0] = a.normal.xyz;
-    tr.normals[1] = b.normal.xyz;
-    tr.normals[2] = c.normal.xyz;
+    tr.normals = transpose(float3x3(a.normal.xyz, b.normal.xyz, c.normal.xyz));
 
     // three GLSL columns of two floats, written as the two rows of the transposed declaration
     tr.layerTexCoord[0][0] = float3(a.texCoord.x, b.texCoord.x, c.texCoord.x);
@@ -227,7 +233,7 @@ ShTriangle makeTriangle(const ShVertex a, const ShVertex b, const ShVertex c)
     tr.lightStyleIndices = a.lightStyles;
 
     // get very coarse normal for triangle to determine bitangent's handedness
-    tr.tangent = getTangent(tr.positions, safeNormalize(tr.normals[0] + tr.normals[1] + tr.normals[2]), tr.layerTexCoord[0]);
+    tr.tangent = getTangent(tr.positions, safeNormalize(transpose(tr.normals)[0] + transpose(tr.normals)[1] + transpose(tr.normals)[2]), tr.layerTexCoord[0]);
 
     return tr;
 }
@@ -285,9 +291,10 @@ ShTriangle getTriangle(int instanceID, int instanceCustomIndex, int localGeometr
         }
 
         // to world space
-        tr.positions[0] = mul(float4(tr.positions[0], 1.0), inst.model).xyz;
-        tr.positions[1] = mul(float4(tr.positions[1], 1.0), inst.model).xyz;
-        tr.positions[2] = mul(float4(tr.positions[2], 1.0), inst.model).xyz;
+        tr.positions = transpose(float3x3(
+            mul(inst.model, float4(transpose(tr.positions)[0], 1.0)).xyz,
+            mul(inst.model, float4(transpose(tr.positions)[1], 1.0)).xyz,
+            mul(inst.model, float4(transpose(tr.positions)[2], 1.0)).xyz));
         
         // dynamic     -- use prev model matrix and prev positions if exist
         const bool hasPrevInfo = inst.prevBaseVertexIndex != UINT32_MAX;
@@ -303,15 +310,14 @@ ShTriangle getTriangle(int instanceID, int instanceCustomIndex, int localGeometr
                 float4(getPrevDynamicVerticesPositions(prevVertIndices[2]), 1.0)
             };
 
-            tr.prevPositions[0] = mul(prevLocalPos[0], inst.prevModel).xyz;
-            tr.prevPositions[1] = mul(prevLocalPos[1], inst.prevModel).xyz;
-            tr.prevPositions[2] = mul(prevLocalPos[2], inst.prevModel).xyz;
+            tr.prevPositions = transpose(float3x3(
+                mul(inst.prevModel, prevLocalPos[0]).xyz,
+                mul(inst.prevModel, prevLocalPos[1]).xyz,
+                mul(inst.prevModel, prevLocalPos[2]).xyz));
         }
         else
         {
-            tr.prevPositions[0] = tr.positions[0];
-            tr.prevPositions[1] = tr.positions[1];
-            tr.prevPositions[2] = tr.positions[2];
+            tr.prevPositions = tr.positions;
         }
     }
     else
@@ -327,15 +333,16 @@ ShTriangle getTriangle(int instanceID, int instanceCustomIndex, int localGeometr
 
         const float4 prevLocalPos[3] =
         {
-            float4(tr.positions[0], 1.0),
-            float4(tr.positions[1], 1.0),
-            float4(tr.positions[2], 1.0)
+            float4(transpose(tr.positions)[0], 1.0),
+            float4(transpose(tr.positions)[1], 1.0),
+            float4(transpose(tr.positions)[2], 1.0)
         };
 
         // to world space
-        tr.positions[0] = mul(prevLocalPos[0], inst.model).xyz;
-        tr.positions[1] = mul(prevLocalPos[1], inst.model).xyz;
-        tr.positions[2] = mul(prevLocalPos[2], inst.model).xyz;
+        tr.positions = transpose(float3x3(
+            mul(inst.model, prevLocalPos[0]).xyz,
+            mul(inst.model, prevLocalPos[1]).xyz,
+            mul(inst.model, prevLocalPos[2]).xyz));
         
         const bool isMovable = (inst.flags & GEOM_INST_FLAG_IS_MOVABLE) != 0;
         const bool hasPrevInfo = inst.prevBaseVertexIndex != UINT32_MAX;
@@ -346,15 +353,14 @@ ShTriangle getTriangle(int instanceID, int instanceCustomIndex, int localGeometr
         {
             // static geoms' local positions are constant, 
             // only model matrices are changing
-            tr.prevPositions[0] = mul(prevLocalPos[0], inst.prevModel).xyz;
-            tr.prevPositions[1] = mul(prevLocalPos[1], inst.prevModel).xyz;
-            tr.prevPositions[2] = mul(prevLocalPos[2], inst.prevModel).xyz;
+            tr.prevPositions = transpose(float3x3(
+                mul(inst.prevModel, prevLocalPos[0]).xyz,
+                mul(inst.prevModel, prevLocalPos[1]).xyz,
+                mul(inst.prevModel, prevLocalPos[2]).xyz));
         }
         else
         {
-            tr.prevPositions[0] = tr.positions[0];
-            tr.prevPositions[1] = tr.positions[1];
-            tr.prevPositions[2] = tr.positions[2];
+            tr.prevPositions = tr.positions;
         }
     }
 
@@ -371,10 +377,11 @@ ShTriangle getTriangle(int instanceID, int instanceCustomIndex, int localGeometr
     const float3x3 model3 = (float3x3)inst.model;
 
     // to world space
-    tr.normals[0] = mul(tr.normals[0], model3);
-    tr.normals[1] = mul(tr.normals[1], model3);
-    tr.normals[2] = mul(tr.normals[2], model3);
-    tr.tangent.xyz = mul(tr.tangent.xyz, model3);
+    tr.normals = transpose(float3x3(
+        mul(model3, transpose(tr.normals)[0]),
+        mul(model3, transpose(tr.normals)[1]),
+        mul(model3, transpose(tr.normals)[2])));
+    tr.tangent.xyz = mul(model3, tr.tangent.xyz);
 
 
     tr.geometryInstanceFlags = inst.flags;
@@ -403,18 +410,20 @@ float3x3 getOnlyCurPositions(int globalGeometryIndex, int instanceCustomIndex, i
         const uint3 vertIndices = getVertIndicesDynamic(inst.baseVertexIndex, inst.baseIndexIndex, primitiveId);
 
         // to world space
-        positions[0] = mul(float4(getDynamicVerticesPositions(vertIndices[0]), 1.0), inst.model).xyz;
-        positions[1] = mul(float4(getDynamicVerticesPositions(vertIndices[1]), 1.0), inst.model).xyz;
-        positions[2] = mul(float4(getDynamicVerticesPositions(vertIndices[2]), 1.0), inst.model).xyz;
+        positions = transpose(float3x3(
+            mul(inst.model, float4(getDynamicVerticesPositions(vertIndices[0]), 1.0)).xyz,
+            mul(inst.model, float4(getDynamicVerticesPositions(vertIndices[1]), 1.0)).xyz,
+            mul(inst.model, float4(getDynamicVerticesPositions(vertIndices[2]), 1.0)).xyz));
     }
     else
     {
         const uint3 vertIndices = getVertIndicesStatic(inst.baseVertexIndex, inst.baseIndexIndex, primitiveId);
 
         // to world space
-        positions[0] = mul(float4(getStaticVerticesPositions(vertIndices[0]), 1.0), inst.model).xyz;
-        positions[1] = mul(float4(getStaticVerticesPositions(vertIndices[1]), 1.0), inst.model).xyz;
-        positions[2] = mul(float4(getStaticVerticesPositions(vertIndices[2]), 1.0), inst.model).xyz;
+        positions = transpose(float3x3(
+            mul(inst.model, float4(getStaticVerticesPositions(vertIndices[0]), 1.0)).xyz,
+            mul(inst.model, float4(getStaticVerticesPositions(vertIndices[1]), 1.0)).xyz,
+            mul(inst.model, float4(getStaticVerticesPositions(vertIndices[2]), 1.0)).xyz));
     }
     
     return positions;
@@ -444,9 +453,10 @@ float3x3 getOnlyPrevPositions(int globalGeometryIndex, int instanceCustomIndex, 
                 float4(getPrevDynamicVerticesPositions(prevVertIndices[2]), 1.0)
             };
 
-            prevPositions[0] = mul(prevLocalPos[0], inst.prevModel).xyz;
-            prevPositions[1] = mul(prevLocalPos[1], inst.prevModel).xyz;
-            prevPositions[2] = mul(prevLocalPos[2], inst.prevModel).xyz;
+            prevPositions = transpose(float3x3(
+                mul(inst.prevModel, prevLocalPos[0]).xyz,
+                mul(inst.prevModel, prevLocalPos[1]).xyz,
+                mul(inst.prevModel, prevLocalPos[2]).xyz));
         }
         else
         {
@@ -459,9 +469,10 @@ float3x3 getOnlyPrevPositions(int globalGeometryIndex, int instanceCustomIndex, 
                 float4(getDynamicVerticesPositions(vertIndices[2]), 1.0)
             };
 
-            prevPositions[0] = mul(localPos[0], inst.model).xyz;
-            prevPositions[1] = mul(localPos[1], inst.model).xyz;
-            prevPositions[2] = mul(localPos[2], inst.model).xyz;
+            prevPositions = transpose(float3x3(
+                mul(inst.model, localPos[0]).xyz,
+                mul(inst.model, localPos[1]).xyz,
+                mul(inst.model, localPos[2]).xyz));
         }
     }
     else
@@ -484,15 +495,17 @@ float3x3 getOnlyPrevPositions(int globalGeometryIndex, int instanceCustomIndex, 
         {
             // static geoms' local positions are constant, 
             // only model matrices are changing
-            prevPositions[0] = mul(localPos[0], inst.prevModel).xyz;
-            prevPositions[1] = mul(localPos[1], inst.prevModel).xyz;
-            prevPositions[2] = mul(localPos[2], inst.prevModel).xyz;
+            prevPositions = transpose(float3x3(
+                mul(inst.prevModel, localPos[0]).xyz,
+                mul(inst.prevModel, localPos[1]).xyz,
+                mul(inst.prevModel, localPos[2]).xyz));
         }
         else
         {
-            prevPositions[0] = mul(localPos[0], inst.model).xyz;
-            prevPositions[1] = mul(localPos[1], inst.model).xyz;
-            prevPositions[2] = mul(localPos[2], inst.model).xyz;
+            prevPositions = transpose(float3x3(
+                mul(inst.model, localPos[0]).xyz,
+                mul(inst.model, localPos[1]).xyz,
+                mul(inst.model, localPos[2]).xyz));
         }
     }
 
@@ -543,7 +556,7 @@ bool unpackPrevVisibilityBuffer(const float4 v, out float3 prevPos)
     const float3x3 prevVerts = getOnlyCurPositions(curFrameGlobalGeomIndex, instCustomIndex, primIndex);
     const float3 baryCoords = float3(1.0 - v[2] - v[3], v[2], v[3]);
 
-    prevPos = mul(baryCoords, prevVerts);
+    prevPos = mul(prevVerts, baryCoords);
 
     return true;
 }
@@ -555,3 +568,5 @@ float4x4 getModelMatrix(int instanceID, int localGeometryIndex)
 }
 #endif // DESC_SET_VERTEX_DATA
 #endif // DESC_SET_GLOBAL_UNIFORM
+
+#endif // VERTEX_DATA_HLSLI_

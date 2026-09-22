@@ -3,6 +3,9 @@
 // touched, and CheckShaderProperties.py compares the layouts that glslc and dxc derive from
 // them. Probes are not part of the shader build, so no probe blob is ever shipped.
 
+// The GLSL half reads the columns of the position matrices, so this half needs getColumn to read the
+// same elements. Structs.hlsli does not use the helper itself.
+#include "ShaderCommonHLSLFunc.hlsli"
 #include "Structs.hlsli"
 
 [[vk::binding(0, 0)]] StructuredBuffer<ShTriangle>        t;
@@ -17,8 +20,9 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
     float v = 0.0;
 
     v += t[0].positions[0][0] + t[0].positions[1][1] + t[0].positions[2][2];
-    v += t[0].prevPositions[0][1] + t[0].normals[1][2];
-    v += t[0].layerTexCoord[0][1][0] + t[0].layerTexCoord[1][0][1] + t[0].layerTexCoord[2][1][1];
+    v += getColumn(t[0].prevPositions, 0)[1] + getColumn(t[0].normals, 1)[2];
+    v += getColumn(t[0].layerTexCoord[0], 1)[0] + getColumn(t[0].layerTexCoord[1], 0)[1]
+        + getColumn(t[0].layerTexCoord[2], 1)[1];
     v += t[0].materialColors[2].w;
     v += float(t[0].materials[1].z) + float(t[0].vertexColors[2]);
     v += float(t[0].geometryInstanceFlags);

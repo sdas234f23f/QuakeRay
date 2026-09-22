@@ -40,6 +40,8 @@
 //     and `textureGrad` becomes `SampleGrad`.
 //   * `nonuniformEXT(i)` becomes `NonUniformResourceIndex(i)`.
 
+#ifndef SHADER_COMMON_HLSL_FUNC_HLSLI_
+#define SHADER_COMMON_HLSL_FUNC_HLSLI_
 #include "ShaderCommonHLSL.hlsli"
 #include "Structs.hlsli"
 
@@ -96,6 +98,16 @@ float4 getTextureSampleLod(uint textureIndex, const float2 texCoord, float lod)
 float4 getTextureSampleGrad(uint textureIndex, const float2 texCoord, const float2 dPdx, const float2 dPdy)
 {
     return getTexture(textureIndex).SampleGrad(getTextureSampler(textureIndex), texCoord, dPdx, dPdy);
+}
+
+// The GLSL side asks for the size with textureSize(t, 0), which has no HLSL counterpart: the size
+// is a method of the texture there, and it hands back a ivec2, so the helper returns int2 as well.
+// HitInfo.hlsli is the first user of it.
+int2 getTextureSize(uint textureIndex, uint mipLevel)
+{
+    uint width, height, levelCount;
+    getTexture(textureIndex).GetDimensions(mipLevel, width, height, levelCount);
+    return int2(width, height);
 }
 #endif // DESC_SET_TEXTURES
 
@@ -524,15 +536,26 @@ float rmeEmissionToScreenEmission( float rmeEmis )
 
 
 
+// GLSL takes a single index of a matrix as its column, HLSL takes it as its row, so a column of the
+// GLSL source is the row of the transposed matrix here. Spelling it through transpose keeps the
+// index inside the range of the declared type when the matrix is not square, where the swapped
+// double index `m[j][i]` would not fit. The rule itself is in ShaderCommonHLSL.hlsli.
+float2 getColumn(const float2x3 m, const int i) { return transpose(m)[i]; }
+float3 getColumn(const float3x2 m, const int i) { return transpose(m)[i]; }
+float3 getColumn(const float3x3 m, const int i) { return transpose(m)[i]; }
+float4 getColumn(const float4x4 m, const int i) { return transpose(m)[i]; }
+
+
+
 #ifdef DESC_SET_GLOBAL_UNIFORM
 float3 getRayDir( float2 inUV )
 {
     inUV = inUV * 2.0 - 1.0;
 
-    float4 target   = mul( float4( inUV.x, inUV.y, 1, 1 ), globalUniform.invProjection );
+    float4 target   = mul( globalUniform.invProjection, float4( inUV.x, inUV.y, 1, 1 ) );
     float3 localDir = abs( target.w ) < 0.001 ? target.xyz : target.xyz / target.w;
 
-    float4 rayDir = mul( float4( normalize( localDir ), 0 ), globalUniform.invView );
+    float4 rayDir = mul( globalUniform.invView, float4( normalize( localDir ), 0 ) );
 
     return rayDir.xyz;
 }
@@ -557,3 +580,5 @@ float3 getRayDirAY( float2 inUV )
     return getRayDir( inUV + float2( 0, AY ) );
 }
 #endif // DESC_SET_GLOBAL_UNIFORM
+
+#endif // SHADER_COMMON_HLSL_FUNC_HLSLI_

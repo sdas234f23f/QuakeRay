@@ -7,9 +7,12 @@
 #define DESC_SET_RANDOM 5
 
 // ShaderCommonHLSL.hlsli brings in the generated header and Utils.hlsli, so unlike the GLSL half,
-// which has to name Utils.h itself, this one does not include Utils.hlsli on its own: dxc resolves
-// a file included from two places through two paths as two files and loses its #pragma once.
+// which has to name Utils.h itself, this one does not name Utils.hlsli on its own. Every guarded
+// header of the base carries a content based `#ifndef`, so naming it twice would be harmless.
 #include "ShaderCommonHLSL.hlsli"
+// The probe reads columns of the basis below, so it needs getColumn. Random.hlsli does not use the
+// helper itself, but the GLSL half reads the same columns, so the two halves must read them alike.
+#include "ShaderCommonHLSLFunc.hlsli"
 #include "Random.hlsli"
 
 [[vk::binding(0, 8)]] RWStructuredBuffer<float> o;
@@ -50,7 +53,7 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
     v += b1.z + b2.z;
 
     const float3x3 basis = getONB(n);
-    v += basis[0].y + basis[2].z;
+    v += getColumn(basis, 0).y + getColumn(basis, 2).z;
 
     v += sampleOrientedHemisphere(n, 0.25, 0.75, oneOverPdf).y;
     v += oneOverPdf;

@@ -87,9 +87,10 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
     c.texCoordLayer2 = float2(0.0, 0.0);
 
     const ShTriangle made = makeTriangle(a, b, c);
-    v += made.positions[0].x + made.positions[1].y + made.positions[2].z;
-    v += made.normals[0].z + made.normals[1].x + made.normals[2].y;
-    v += made.layerTexCoord[0][0].x + made.layerTexCoord[1][1].y + made.layerTexCoord[2][0].y;
+    v += getColumn(made.positions, 0).x + getColumn(made.positions, 1).y + getColumn(made.positions, 2).z;
+    v += getColumn(made.normals, 0).z + getColumn(made.normals, 1).x + getColumn(made.normals, 2).y;
+    v += getColumn(made.layerTexCoord[0], 0).x + getColumn(made.layerTexCoord[1], 1).y
+        + getColumn(made.layerTexCoord[2], 0).y;
     v += float(made.materials[0].x) + float(made.materials[1].y) + float(made.materials[2].z);
     v += made.materialColors[0].x + made.materialColors[1].y + made.materialColors[2].z;
     v += float(made.cluster) + float(made.lightStyleIndices) + float(made.vertexColors[0]);
@@ -104,15 +105,15 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
 
     // getTriangle, the whole ShTriangle out of one primitive
     const ShTriangle tri = getTriangle(0, 0, 0, 0);
-    v += tri.positions[0].x + tri.prevPositions[1].y + tri.geomRoughness + tri.geomMetallicity;
-    v += tri.normals[2].z + tri.tangent.w + tri.geomEmission + float(tri.portalIndex);
+    v += getColumn(tri.positions, 0).x + getColumn(tri.prevPositions, 1).y + tri.geomRoughness + tri.geomMetallicity;
+    v += getColumn(tri.normals, 2).z + tri.tangent.w + tri.geomEmission + float(tri.portalIndex);
     v += tri.materialColors[2].z + float(tri.materials[1].y) + float(tri.geometryInstanceFlags);
 
     // The two position matrices
     const float3x3 curPositions = getOnlyCurPositions(0, 0, 0);
     const float3x3 prevPositions = getOnlyPrevPositions(0, 0, 0);
-    v += curPositions[0].x + curPositions[1].y + curPositions[2].z;
-    v += prevPositions[0].x + prevPositions[1].y + prevPositions[2].z;
+    v += getColumn(curPositions, 0).x + getColumn(curPositions, 1).y + getColumn(curPositions, 2).z;
+    v += getColumn(prevPositions, 0).x + getColumn(prevPositions, 1).y + getColumn(prevPositions, 2).z;
 
     // The visibility buffer: its packing, and the three ways of taking it apart
     ShPayload p;

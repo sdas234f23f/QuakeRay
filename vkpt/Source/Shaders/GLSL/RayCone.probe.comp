@@ -1,0 +1,96 @@
+#version 460
+
+#extension GL_EXT_nonuniform_qualifier : require
+#extension GL_EXT_samplerless_texture_functions : require
+
+// Hand written counterpart of Probes/RayCone.probe.comp.hlsl.
+//
+// RayCone.h declares no resource of its own: it takes a ShTriangle by value and reads the geometry
+// out of the columns of it, and it takes the material maps out of the split texture table through
+// the gradient sample. This pair pins that surface on its own, with every function of the header
+// instantiated and every column it reads filled. ShaderCommonFunc.probe.comp, which includes
+// RayCone.h as well, keeps pinning the header in passing. Both halves define the same descriptor
+// set index, touch the same resources and call the same helpers, so CheckShaderProperties.py can
+// compare what glslc and dxc make of them. Probes are not part of the shader build, so no probe
+// blob is ever shipped.
+//
+// The triangle below is deliberately not symmetric, so a column read and a row read of positions
+// give different numbers.
+
+#define DESC_SET_TEXTURES 2
+
+#include "ShaderCommonGLSLFunc.h"
+
+// MATERIAL_MAX_ALBEDO_LAYERS is normally defined by the consuming shader, as a specialization
+// constant or as 0. RayCone.h requires it.
+#define MATERIAL_MAX_ALBEDO_LAYERS 3
+#include "RayCone.h"
+
+#define PROBE_DESC_SET 8
+
+layout(set = PROBE_DESC_SET, binding = 0, std430) writeonly buffer ProbeOutput_BT
+{
+    float probeOutput[];
+};
+
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+
+void main()
+{
+    float v = 0.0;
+
+    const vec2 uv = vec2(0.5);
+    // The direction and the normal are deliberately not perpendicular, and are dyadic so that the dot
+    // product is exact: normalTerm = |dot(dir, worldNormal)| = 0.6875. With a perpendicular pair the
+    // cone-width chain divides by zero, every derivative helper folds to inf, and the fold can no
+    // longer see whether `positions` was read by column or by row (measured: both variants give inf).
+    const vec3 dir = vec3(0.25, 0.5, 0.75);
+    const vec3 worldNormal = vec3(-0.125, 0.875, 0.375);
+
+    // propagateRayCone, on the cone that the helpers below then take by value
+    RayCone rayCone;
+    rayCone.width = 0.001;
+    rayCone.spreadAngle = 0.01;
+
+    propagateRayCone(rayCone, 1.0);
+    v += rayCone.width + rayCone.spreadAngle;
+
+    // getUVDerivativesFromRayCone, over the three vertices of a triangle
+    const vec3 vertWorldPositions[3] = vec3[3](
+        vec3(1.0, 2.0, 3.0), vec3(4.0, 6.0, 9.0), vec3(10.0, 11.0, 13.0));
+    const vec2 vertTexCoords[3] = vec2[3](
+        vec2(0.25, 0.5), vec2(0.75, 0.125), vec2(1.0, 0.875));
+
+    const vec4 uvDeriv =
+        getUVDerivativesFromRayCone(rayCone, dir, worldNormal, vertWorldPositions, vertTexCoords);
+    v += uvDeriv.x + uvDeriv.y + uvDeriv.z + uvDeriv.w;
+
+    // getWaterDerivU, the same arithmetic on a unit quad
+    v += getWaterDerivU(rayCone, dir, worldNormal);
+
+    // getTriangleUVDerivativesFromRayCone: the two column reads of positions, and the layer texture
+    // coordinate matrices, which the HLSL half holds transposed
+    // `triangle` would be a reserved word on the HLSL side, so the halves use `tri`
+    ShTriangle tri;
+    tri.positions[0] = vertWorldPositions[0];
+    tri.positions[1] = vertWorldPositions[1];
+    tri.positions[2] = vertWorldPositions[2];
+
+    // every layer is filled, not just the first one
+    for (int layer = 0; layer < MATERIAL_MAX_ALBEDO_LAYERS; layer++)
+    {
+        tri.layerTexCoord[layer][0] = vertTexCoords[0];
+        tri.layerTexCoord[layer][1] = vertTexCoords[1];
+        tri.layerTexCoord[layer][2] = vertTexCoords[2];
+    }
+
+    const DerivativeSet derivSet = getTriangleUVDerivativesFromRayCone(tri, worldNormal, rayCone, dir);
+    v += derivSet.u[0] + derivSet.u[1] + derivSet.u[2];
+
+    // getTextureSampleDerivU and getTextureSampleDerivSet, the gradient sample and the wrapper that
+    // indexes the set of derivatives
+    v += getTextureSampleDerivU(3, uv, 0.01).x;
+    v += getTextureSampleDerivSet(4, uv, derivSet, 1).y;
+
+    probeOutput[0] = v;
+}

@@ -18,7 +18,6 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-#pragma once
 
 // HLSL counterpart of BRDF.h. Like the GLSL one it includes nothing but Random.hlsli and is
 // compiled from a translation unit that has already pulled in the layer above it: square, M_PI,
@@ -29,11 +28,15 @@
 //   * mix() -> lerp() and inversesqrt() -> rsqrt()
 //   * vec3(x) -> (float3)x, and vec3(0.0) -> (float3)0.0: the four places that build a vector out
 //     of one scalar, which dxc refuses to widen (see Utils.hlsli)
-//   * the two products of sampleSmithGGX are reordered by the usual rule `a * b` -> `mul(b, a)`,
-//     so `transpose(basis) * v` is written `mul(v, transpose(basis))` and `basis * l` is written
-//     `mul(l, basis)`. getONB stores the three basis vectors in basis[0], basis[1], basis[2] on
-//     both sides, which is what makes the rule exact: a GLSL column is an HLSL row, so `ve` is
-//     still v in the normal's space and the returned direction is still back in world space
+//   * the two products of sampleSmithGGX keep the order of their operands, as every product of the
+//     port does: `transpose(basis) * v` is written `mul(transpose(basis), v)` and `basis * l` is
+//     written `mul(basis, l)`. The mirrored spellings `mul(v, transpose(basis))` and `mul(l, basis)`
+//     multiply by the transpose instead, which on a square matrix is invisible in the image and is
+//     how this file was ported at first. getONB hands back the same matrix as the GLSL one
+//     element-wise, so its columns are the three basis vectors as the GLSL has them: the GLSL
+//     `basis[0]`, `basis[1]` and `basis[2]` are `getColumn(basis, 0)`, `getColumn(basis, 1)` and
+//     `getColumn(basis, 2)`, i.e. b1, b2 and n. That is what keeps `ve` in the normal's space and
+//     the returned direction back in world space
 //
 // Like the GLSL one this file contains no descriptor of its own, so nothing pins it: it is
 // compiled from the translation units that use it, and CheckShaderProperties.py covers it through
@@ -44,6 +47,8 @@
 // oneOverPdf, the overload of getFresnelSchlick, and the int literals that are mixed into float
 // expressions (`max(nl, 0)`, `2 - alpha`), which HLSL promotes the way GLSL does.
 
+#ifndef BRDF_HLSLI_
+#define BRDF_HLSLI_
 #include "Random.hlsli"
 
 float roughnessSquaredToSpecPower(in float alpha) {
@@ -228,7 +233,7 @@ float3 sampleSmithGGX(const float3 n, const float3 v, float alpha, float u1, flo
     const float3x3 basis = getONB(n);
 
     // get v in normal's space, basis is orthogonal
-    const float3 ve = mul(v, transpose(basis));
+    const float3 ve = mul(transpose(basis), v);
 
     // microfacet normal
     const float3 m = sampleGGXVNDF(ve, alpha, u1, u2, oneOverPdf);
@@ -239,7 +244,7 @@ float3 sampleSmithGGX(const float3 n, const float3 v, float alpha, float u1, flo
     oneOverPdf *= 4 * dot( ve, m );
 
     // back to world space
-    return mul(l, basis);
+    return mul(basis, l);
 }
 
 float evalSpecularBouncePdf(const float3 n, const float3 v, float alpha, const float3 l)
@@ -267,3 +272,5 @@ float evalSpecularBouncePdf(const float3 n, const float3 v, float alpha, const f
 
     return G1 * D / (4.0 * nv);
 }
+
+#endif // BRDF_HLSLI_

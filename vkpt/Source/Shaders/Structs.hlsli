@@ -18,11 +18,12 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-#pragma once
 
 // HLSL counterpart of Structs.h.
 
 
+#ifndef STRUCTS_HLSLI_
+#define STRUCTS_HLSLI_
 struct ShTriangle
 {
     float3x3 positions;
@@ -69,3 +70,5 @@ struct ShHitInfo
     uint   portalIndex;
     uint   cluster;
 };
+
+#endif // STRUCTS_HLSLI_

@@ -30,10 +30,11 @@
 //   * uint N = 1 << 16                   -> 1u << 16, dxc calls a bare literal shift ambiguous
 //   * saturate() is not defined here, HLSL provides it as a builtin with the same definition
 
-#pragma once
 
 
 
+#ifndef UTILS_HLSLI_
+#define UTILS_HLSLI_
 #define M_PI        3.14159265358979323846
 #define UINT32_MAX  0xFFFFFFFF
 #define UINT16_MAX  65535
@@ -236,3 +237,5 @@ float4 decodeTangent4(const float3 _packed)
 
     return float4(_packed / (1.0 + h * TANGENT_HANDEDNESS_ENCODING_CONST), handedness);
 }
+
+#endif // UTILS_HLSLI_

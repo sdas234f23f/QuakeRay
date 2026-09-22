@@ -26,7 +26,6 @@
 // globalUniform.time.
 //
 
-#pragma once
 
 // HLSL counterpart of TurbWarp.h. Like the GLSL one it includes nothing itself: the shader has to
 // pull in ShaderCommonHLSLFunc.hlsli (globalUniform, GEOM_INST_FLAG_TURB_WARP) and, through it,
@@ -40,6 +39,8 @@
 // The texture coordinate is passed through when the instance is not turbulent, so the caller does
 // not have to test the flag itself.
 
+#ifndef TURB_WARP_HLSLI_
+#define TURB_WARP_HLSLI_
 #ifndef DESC_SET_GLOBAL_UNIFORM
     #error DESC_SET_GLOBAL_UNIFORM must be defined
 #endif
@@ -61,3 +62,5 @@ float2 getSurfaceTexCoord(const uint geometryInstanceFlags, const float2 texCoor
 
     return getTurbWarpUV(texCoord);
 }
+
+#endif // TURB_WARP_HLSLI_

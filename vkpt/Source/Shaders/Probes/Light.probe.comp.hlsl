@@ -1,0 +1,175 @@
+// Hand written counterpart of GLSL/Light.probe.comp.
+//
+// Light.h has no shader stage of its own, so this pair exists to check Light.hlsli against it.
+// RaygenCommon.h is the only consumer of Light.h, and it reaches it after ShaderCommonGLSLFunc.h
+// and Surface.inl, so the probe pulls in the same layer of accessors: the global uniform that
+// getPolySpotFactor reads, the bindless table that sampleTexturedAreaLight and getTalCdfUv read,
+// and the light source buffers that getTalCdfUv reads. Those three sets are the only ones the
+// probe enables, and every resource of them is touched on both halves, because dxc drops a
+// resource that nothing reads after the accessors have been inlined while glslc emits every
+// declaration of the headers.
+//
+// Every struct, every member of every struct and every function of the header is instantiated
+// here, and the GLSL half has to be edited together with this file: what one side reaches and the
+// other does not is reported as a mismatch, which is exactly the point. The two switches are run
+// from LIGHT_TYPE_NONE past the last case, so their default branches are reached as well, and the
+// decode is fed with a value whose numVerts is in range and whose textureIndex is not 0, so both
+// branches of sampleTexturedAreaLight and of getTalCdfUv are compiled.
+//
+// Light.h declares no resource of its own, so what the pair pins is the layout of the light source
+// buffers and of the global uniform that the header reads, together with the properties of the
+// entry point that both compilers derive from calling the whole header.
+
+#define DESC_SET_GLOBAL_UNIFORM 0
+#define DESC_SET_TEXTURES       2
+#define DESC_SET_LIGHT_SOURCES  4
+
+#include "ShaderCommonHLSLFunc.hlsli"
+#include "Light.hlsli"
+
+#define PROBE_DESC_SET 8
+
+[[vk::binding(0, PROBE_DESC_SET)]] RWStructuredBuffer<float> probeOutput;
+
+[numthreads(1, 1, 1)]
+void main(uint3 dispatchThreadID : SV_DispatchThreadID)
+{
+    float v = 0.0;
+
+    const float2 uv = float2(0.5, 0.5);
+    const float2 pointRnd = float2(0.25, 0.75);
+    const float3 surfPosition = float3(0.0, 0.0, 0.0);
+    const float3 cellCenter = float3(1.0, 1.0, 1.0);
+    const float cellRadius = 1.0;
+
+    // ShGlobalUniform, which getPolySpotFactor reads
+    v += globalUniform.polyLightSpotlightFactor;
+
+    // DESC_SET_TEXTURES
+    v += getTextureSampleLod(0, uv, 0.0).x;
+
+    const int2 talTexSize = getTextureSize(0, 0);
+    v += (float)talTexSize.x;
+
+    // DESC_SET_LIGHT_SOURCES
+    v += lightSources[0].color.x + lightSources_Prev[0].color.x;
+    v += (float)(lightSources_Index_PrevToCur[0] + lightSources_Index_CurToPrev[0] +
+                 q2LightListOffsets[0] + q2LightListLights[0] +
+                 talCdf[0] + q2ClusterSkyVis[0]);
+    q2LightStats[0] = 1u;
+
+    // A single encoded light drives every decoder: data_0.w is a texture index and data_2.w is a
+    // vertex count that is in range, so that both branches of the two functions that depend on them
+    // are reachable.
+    ShLightEncoded encoded;
+    encoded.color = float3(0.6, 0.5, 0.4);
+    encoded.lightType = LIGHT_TYPE_SPHERE;
+    encoded.data_0 = float4(1.0, 2.0, 3.0, 4.0);
+    encoded.data_1 = float4(2.0, 3.0, 4.0, 5.0);
+    encoded.data_2 = float4(3.0, 4.0, 5.0, 5.0);
+    encoded.data_3 = float4(0.1, 0.2, 0.3, 0.4);
+    encoded.data_4 = float4(0.5, 0.6, 0.7, 0.8);
+    encoded.data_5 = float4(0.9, 1.0, 1.1, 1.2);
+    encoded.data_6 = float4(1.3, 1.4, 1.5, 1.6);
+    encoded.data_7 = float4(0.0, 1.0, 0.0, 2.0);
+
+    // The five decoders, and through them every member of every light struct
+    const DirectionalLight dirLight = decodeAsDirectionalLight(encoded);
+    v += dirLight.direction.x + dirLight.angularRadius + dirLight.color.y;
+
+    const SphereLight sphLight = decodeAsSphereLight(encoded);
+    v += sphLight.center.x + sphLight.radius + sphLight.color.y + sphLight.normal.z;
+
+    const TriangleLight triLight = decodeAsTriangleLight(encoded);
+    v += triLight.position[0].x + triLight.position[1].y + triLight.position[2].z +
+         triLight.normal.x + triLight.area + triLight.color.y;
+
+    const TexturedAreaLight areaLight = decodeAsTexturedAreaLight(encoded);
+    v += areaLight.A.x + areaLight.B.y + areaLight.C.z +
+         areaLight.normal.x + areaLight.area + areaLight.textureIndex + areaLight.meanEmiss +
+         (float)areaLight.numVerts + areaLight.color.y;
+
+    for (int i = 0; i < MAX_TEXTURED_AREA_LIGHT_VERTS; i++)
+    {
+        v += areaLight.uvVerts[i].x + areaLight.uvVerts[i].y;
+    }
+
+    const SpotLight spotLight = decodeAsSpotLight(encoded);
+    v += spotLight.center.x + spotLight.radius + spotLight.direction.y +
+         spotLight.cosAngleInner + spotLight.color.z + spotLight.cosAngleOuter;
+
+    // The scalar helpers
+    v += getPolySpotFactor(float3(0.0, 0.0, 1.0), float3(0.0, 0.0, 1.0));
+    v += getSpotFactor(0.5, 0.9, 0.1);
+    v += isSphereInFront(float3(0.0, 0.0, 1.0), float3(0.0, 0.0, 0.0), float3(0.0, 0.0, 1.0), 1.0);
+    v += getGeometryFactor(float3(0.0, 0.0, 1.0), float3(0.0, 0.0, 1.0), 2.0);
+    v += getGeometryFactorClamped(float3(0.0, 0.0, 1.0), float3(0.0, 0.0, 1.0), 2.0);
+    v += safeSolidAngle(1.0);
+    v += calcSolidAngleForSphere(1.0, 2.0);
+    v += calcSolidAngleForArea(1.0, float3(0.0, 0.0, 1.0), float3(0.0, 0.0, 1.0), float3(0.0, 0.0, 0.0));
+    v += getLightColorWeight(float3(0.5, 0.5, 0.5));
+
+    // The per shape weights
+    v += getDirectionalLightWeight(sphLight, cellCenter, cellRadius);
+    v += getSphereLightWeight(sphLight, cellCenter, cellRadius);
+    v += getTriangleLightWeight(triLight, cellCenter, cellRadius);
+    v += getTexturedAreaLightWeight(areaLight, cellCenter, cellRadius);
+    v += getSpotLightWeight(spotLight, cellCenter, cellRadius);
+
+    // The textured area light helpers: its centre, the polygon sampler with and without enough
+    // vertices to make a triangle, the uv test likewise, and the tile bounds that the caller
+    // receives through two out parameters
+    v += texturedAreaLightWorldPos(areaLight, uv).x;
+    v += getTexturedAreaLightCenter(areaLight).y;
+    v += sampleConvexPolygon(areaLight.uvVerts, areaLight.numVerts, pointRnd.x, pointRnd.y).x;
+    v += sampleConvexPolygon(areaLight.uvVerts, 2, pointRnd.x, pointRnd.y).y;
+    v += isUvInsideConvexPolygon(areaLight.uvVerts, areaLight.numVerts, uv) ? 1.0 : 0.0;
+    v += isUvInsideConvexPolygon(areaLight.uvVerts, 2, uv) ? 1.0 : 0.0;
+
+    float2 tileMin;
+    float2 tileMax;
+
+    getTalUvTiles(areaLight, tileMin, tileMax);
+    v += tileMin.x + tileMax.y;
+
+    float2 cdfUv;
+
+    if (getTalCdfUv(4u, 0.5, uv, cdfUv))
+    {
+        v += cdfUv.x + cdfUv.y;
+    }
+
+    // The empty sample, whose three members are read here, and every sampler
+    const LightSample empty = emptyLightSample();
+    v += empty.position.x + empty.color.y + empty.dw;
+
+    const LightSample dirSample = sampleDirectionalLight(dirLight, surfPosition, pointRnd);
+    v += dirSample.position.x + dirSample.color.y + dirSample.dw;
+
+    const LightSample sphereSample = sampleSphereLight(sphLight, surfPosition, pointRnd);
+    v += sphereSample.position.x + sphereSample.color.y + sphereSample.dw;
+
+    const LightSample triSample = sampleTriangleLight(triLight, surfPosition, pointRnd);
+    v += triSample.position.x + triSample.color.y + triSample.dw;
+
+    const LightSample areaSample = sampleTexturedAreaLight(areaLight, surfPosition, pointRnd);
+    v += areaSample.position.x + areaSample.color.y + areaSample.dw;
+
+    const LightSample spotSample = sampleSpotLight(spotLight, surfPosition, pointRnd);
+    v += spotSample.position.x + spotSample.color.y + spotSample.dw;
+
+    // The two switches of the header, from LIGHT_TYPE_NONE past the last case so that the default
+    // branch of both is compiled too
+    for (uint lightType = 0u; lightType <= 6u; lightType++)
+    {
+        ShLightEncoded e = encoded;
+        e.lightType = lightType;
+
+        v += getLightWeight(e, cellCenter, cellRadius);
+
+        const LightSample lightSample = sampleLight(e, surfPosition, pointRnd);
+        v += lightSample.position.x + lightSample.color.y + lightSample.dw;
+    }
+
+    probeOutput[0] = v;
+}

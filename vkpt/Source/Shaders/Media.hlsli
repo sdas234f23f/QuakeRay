@@ -18,7 +18,6 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-#pragma once
 
 // HLSL counterpart of Media.h. Like the GLSL one it includes nothing itself: the shader has to pull
 // in ShaderCommonHLSLFunc.hlsli (globalUniform, SHIPPING_HACK) and the generated
@@ -30,6 +29,8 @@
 // geometry-instance flags and every helper name are as in the GLSL original, including the parameter
 // that shadows the `distance` intrinsic.
 
+#ifndef MEDIA_HLSLI_
+#define MEDIA_HLSLI_
 #ifndef DESC_SET_GLOBAL_UNIFORM
     #error DESC_SET_GLOBAL_UNIFORM must be defined
 #endif
@@ -146,3 +147,5 @@ bool isReflectFromFlags(uint geometryInstanceFlags)
 {
     return (geometryInstanceFlags & GEOM_INST_FLAG_REFLECT) != 0;
 }
+
+#endif // MEDIA_HLSLI_

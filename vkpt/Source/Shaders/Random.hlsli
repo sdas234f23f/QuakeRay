@@ -18,7 +18,6 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-#pragma once
 
 // HLSL counterpart of Random.h. Like the GLSL one it includes nothing itself: the shader has to
 // pull in Utils.hlsli (M_PI, safePositiveRcp, UINT8_MAX) and the generated header
@@ -30,13 +29,16 @@
 //     the array slice as the 4th component and widens nothing implicitly, so the arguments are
 //     cast: `t.Load(int4((int)offset.x, (int)offset.y, 0, (int)texIndex))`
 //   * `r == 0 ? 0 : ...` inside a float expression -> `0.0`
-//   * a matrix row can not be passed as an `out` argument, so getONB fills two locals and
-//     assigns the rows (see there)
+//   * a matrix row is not an lvalue and can not be passed as an `out` argument, so getONB builds
+//     the two remaining columns in locals and assembles the matrix afterwards (see there)
 //
-// getONB keeps the GLSL convention of storing the basis vectors in basis[0], basis[1], basis[2].
-// A GLSL column is an HLSL row, so both spellings agree: the caller reads basis[i] and the
-// product `basis * v` becomes `mul(v, basis)`.
+// getONB hands back the same matrix as the GLSL one element-wise, so its columns are the three
+// basis vectors as the GLSL has them: the GLSL `basis[0]`, `basis[1]` and `basis[2]` are
+// `getColumn(basis, 0)`, `getColumn(basis, 1)` and `getColumn(basis, 2)`, i.e. b1, b2 and n.
+// Products keep the order of their operands, so a golden `basis * v` becomes `mul(basis, v)`.
 
+#ifndef RANDOM_HLSLI_
+#define RANDOM_HLSLI_
 #define RANDOM_SALT_DIFF_BOUNCE(bounceIndex) (8 + (bounceIndex))
 #define RANDOM_SALT_SPEC_BOUNCE(bounceIndex) (12 + (bounceIndex))
 #define RANDOM_SALT_POSTEFFECT 16
@@ -175,20 +177,15 @@ void frisvadONB(const float3 n, out float3 b1, out float3 b2)
 
 float3x3 getONB(const float3 n)
 {
-    float3x3 basis;
-    basis[2] = n;
-
-    // a matrix row is not an lvalue that can be passed as an `out` argument, so the rows are
-    // built in locals first
+    // the golden `basis[2] = n; revisedONB(n, basis[0], basis[1]);` fills the matrix column by
+    // column, and a single index on the left of an assignment has no HLSL counterpart because it
+    // writes a row, so the columns are built as rows and transposed (ShaderCommonHLSL.hlsli)
     float3 b1;
     float3 b2;
     revisedONB(n, b1, b2);
     //frisvadONB(n, b1, b2); // Note: buggy for VNDF
 
-    basis[0] = b1;
-    basis[1] = b2;
-
-    return basis;
+    return transpose(float3x3(b1, b2, n));
 }
 
 // Sample direction in a hemisphere oriented to a normal n
@@ -197,7 +194,7 @@ float3 sampleOrientedHemisphere(const float3 n, float u1, float u2, out float on
     /*float3 a = sampleHemisphere(u1, u2, oneOverPdf);
 
     float3x3 basis = getONB(n);
-    return normalize(mul(a, basis));*/
+    return normalize(mul(basis, a));*/
 
     // Ray Tracing Gems, Chapter 16 "Sampling Transformations Zoo"
     float a = 1 - 2 * u1;
@@ -322,3 +319,5 @@ uint getRandomSeed(const int2 pix, uint frameIndex)
 
     return packRandomSeed(texIndex, offset);
 }
+
+#endif // RANDOM_HLSLI_
