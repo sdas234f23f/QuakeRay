@@ -151,11 +151,13 @@ float3 evalBRDFSmithGGX(const float3 n, const float3 v, const float3 l, float al
         return (float3)0.0;
     }
 
-    const float3 F = getFresnelSchlick(nl, specularColor);
-
     // here, microfacet normal is a half-vector,
     // since we know in which direction l should be reflected
     const float3  h = normalize( v + l );
+    const float3 F = getFresnelSchlick(
+        clamp(dot(v, h), 0.0, 1.0),
+        specularColor
+        );
     const float D = D_GGX( dot( n, h ), alpha );
 
     float G2Modif;
