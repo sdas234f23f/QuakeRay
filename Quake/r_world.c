@@ -1594,7 +1594,8 @@ when the texture cannot host a light. The light is collected anew every frame
 depend on cl.time: with R_TextureAnimation every animated texture in the map steps to the next
 frame at the same instant (relative = (int)(cl.time * 10) % anim_total), so a time-dependent pick
 makes the whole set of emissive lights change colour, change size or drop out together, which
-shifts the light array and, with it, every cluster light list. See plan.md, "мерцание по всей сцене".
+shifts the light array and, with it, every cluster light list. See plan.md, the section on the flicker
+of the whole scene.
 
 alt selects the alternate animation the entity is currently in (ent->frame), which is a state change
 and not an animation step, so it is kept. The frame inside that cycle is the first one that can host
