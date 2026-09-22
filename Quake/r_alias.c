@@ -29,7 +29,7 @@ extern cvar_t r_drawflat, gl_fullbrights, r_lerpmodels, r_lerpmove, r_showtris; 
 extern cvar_t scr_fov;
 
 extern cvar_t rt_model_rough, rt_model_metal, rt_enable_pvs;
-extern cvar_t rt_viewm_fovscale, rt_viewm_wide;
+extern cvar_t rt_viewm_fovscale, rt_viewm_wide, rt_viewm_scale;
 extern cvar_t rt_dlight_intensity, rt_dlight_radius;
 extern cvar_t rt_cluster_dlights;
 
@@ -149,13 +149,23 @@ static RgTransform RT_GetAliasModelTransform(const aliashdr_t* paliashdr, lerpda
         fovscaley = CVAR_TO_FLOAT(rt_viewm_fovscale);
     }
 
+    // The model is scaled about its own zero here and the zero itself is moved
+    // towards the eye by V_CalcRefdef, so the whole weapon is scaled about the eye.
+    float viewmscale = 1.0f;
+    if (isfirstperson && CVAR_TO_FLOAT(rt_viewm_scale) > 0)
+    {
+        viewmscale = CVAR_TO_FLOAT(rt_viewm_scale);
+    }
+
     float translation_matrix[16];
-    TranslationMatrix(translation_matrix, paliashdr->scale_origin[0], paliashdr->scale_origin[1] * fovscalex,
-                      paliashdr->scale_origin[2] * fovscaley);
+    TranslationMatrix(translation_matrix, paliashdr->scale_origin[0] * viewmscale,
+                      paliashdr->scale_origin[1] * fovscalex * viewmscale,
+                      paliashdr->scale_origin[2] * fovscaley * viewmscale);
     MatrixMultiply(model_matrix, translation_matrix);
 
     float scale_matrix[16];
-    ScaleMatrix(scale_matrix, paliashdr->scale[0], paliashdr->scale[1] * fovscalex, paliashdr->scale[2] * fovscaley);
+    ScaleMatrix(scale_matrix, paliashdr->scale[0] * viewmscale, paliashdr->scale[1] * fovscalex * viewmscale,
+                paliashdr->scale[2] * fovscaley * viewmscale);
     MatrixMultiply(model_matrix, scale_matrix);
 
     return RT_GetModelTransform(model_matrix);
