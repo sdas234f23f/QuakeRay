@@ -844,7 +844,9 @@ void vkpt::RenderCubemap::DrawProcedural(VkCommandBuffer cmd, const ProceduralSk
     // Clouds off: freeze the animation time so the cached sky isn't re-rendered
     // every frame (only when sun/sky params change).
     // Clouds on: keep the raw time -> the sky re-renders every frame (smooth per-frame drift).
-    if (params.cloudParams[3] <= 0.5f)
+    // Nothing can be seen drifting when the clouds are disabled or their opacity
+    // is 0 (rt_sky_cloud_alpha), so the time is frozen in either case.
+    if (params.cloudParams[3] <= 0.5f || params.skyParams[1] <= 0.0f)
     {
         params.cloudColor[3] = 0.0f;
     }

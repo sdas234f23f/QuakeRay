@@ -555,8 +555,8 @@ static inline uint32_t RT_PackColorToUint32_FromFloat01(float r, float g, float 
 		(color)[2] *= rt_light_color_[2];  \
 	} while (0)
 
-// The tint the sky is drawn with and the colour of the light it casts as one
-// setting (rt_sky_color).
+// The colour of the sky itself (rt_sky_color) and the colour of the light the
+// sky casts, as one setting.
 void RT_GetSkyColor (float color[3]);
 // The colour of the sun (rt_sun_color), independent of the sky: it colours the
 // directional light, and with it the indirect sun, the god rays and the fog's
@@ -571,6 +571,9 @@ void RT_GetSkyCloudsColor (float color[3]);
 void RT_GetLightColor (float color[3]);
 // The colour a light starts from before its own colour and the tint are applied.
 void RT_GetGlobalLightColor (float color[3]);
+// The tint of a sky *texture* (rt_sky_color) as a colour filter over it. The
+// procedural sky does not need it: that one is painted in rt_sky_color itself,
+// and tinting it here would apply the colour to it a second time.
 #define RT_APPLY_SKY_COLOR(color)        \
 	do                                   \
 	{                                    \

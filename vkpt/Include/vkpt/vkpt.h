@@ -1105,18 +1105,22 @@ typedef struct RgDrawFrameTonemappingParams
 typedef struct RgDrawFrameSkyParams
 {
     RgSkyType   skyType;
-    // Used as a main color for RG_SKY_TYPE_COLOR.
+    // The colour of the sky itself, sent by the host as rt_sky_color: for the
+    // procedural sky (RG_SKY_TYPE_PROCEDURAL) it is exactly the colour the sky
+    // is drawn with, and for RG_SKY_TYPE_COLOR it is the colour of the flat sky.
+    // Sky brightness does not belong here; it is skyColorMultiplier below.
     RgFloat3D   skyColorDefault;
     // The colour of the sun's disc in the procedural sky: the sun itself, as
-    // opposed to skyColorDefault above, which tints the atmosphere it hangs in,
-    // so a tinted sky can hold a differently coloured sun. The host sends
-    // rt_sun_color here.
+    // opposed to skyColorDefault above, which is the colour of the sky it hangs
+    // in, so a dark sky can hold a bright sun. The host sends rt_sun_color here.
     // Default: (1, 1, 1)
     RgFloat3D   sunDiscColor;
     // The result sky color is multiplied by this value.
     float       skyColorMultiplier;
-    float       skyColorSaturation;
-    float       skyAmbientLod;
+    // Opacity the procedural clouds are composited over the sky with
+    // (rt_sky_cloud_alpha, 0 = no clouds, 1 = opaque). The name is kept for
+    // compatibility with the tint strength the procedural sky used to have.
+    float       skyColorSaturation;    float       skyAmbientLod;
     RgBool32    skyNee;
     // A point from which rays are traced while using RG_SKY_TYPE_RASTERIZED_GEOMETRY.
     RgFloat3D   skyViewerPosition;

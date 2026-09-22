@@ -751,22 +751,22 @@ void VulkanDevice::Render(VkCommandBuffer cmd, const RgDrawFrameInfo &drawInfo)
             rasterizer->DrawSkyToCubemap(cmd, frameIndex, textureManager, uniform);
             rasterizer->DrawSkyToAlbedo(cmd, frameIndex, textureManager, uniform->GetData()->view, skyViewerPosition.data, uniform->GetData()->projection, jitter, renderResolution);
         }
-        // fill the sky cubemap with a procedural atmosphere (compute)
+        // fill the sky cubemap with the procedural sky (compute)
         else if (uniform->GetData()->skyType == RG_SKY_TYPE_PROCEDURAL)
         {
             RenderCubemap::ProceduralSkyParams p = {};
 
-            // the atmosphere is painted with the sky tint (rt_sky_color), sent by the
-            // host via skyColorDefault; this keeps the tint independent from whether
-            // the sun light is enabled (rt_sun)
-            p.skyTint[0] = uniform->GetData()->skyColorDefault[0];
-            p.skyTint[1] = uniform->GetData()->skyColorDefault[1];
-            p.skyTint[2] = uniform->GetData()->skyColorDefault[2];
+            // the sky is exactly the colour it is set to (rt_sky_color), sent by
+            // the host via skyColorDefault; this keeps the colour independent from
+            // whether the sun light is enabled (rt_sun) and from the sun's own colour
+            p.skyColor[0] = uniform->GetData()->skyColorDefault[0];
+            p.skyColor[1] = uniform->GetData()->skyColorDefault[1];
+            p.skyColor[2] = uniform->GetData()->skyColorDefault[2];
 
             // the disc is the sun itself, so it is drawn with the sun's own colour
             // (rt_sun_color, white when the host does not send one) rather than with
-            // the sky tint above: the sun keeps its colour while the sky around it
-            // is tinted freely. It only reaches the visible cubemap, never the
+            // the sky colour above: the sun keeps its colour while the sky around it
+            // is set freely. It only reaches the visible cubemap, never the
             // envCubemap the indirect sky samples.
             p.sunDiscColor[0] = p.sunDiscColor[1] = p.sunDiscColor[2] = 1.0f;
             if (drawInfo.pSkyParams)
@@ -776,13 +776,15 @@ void VulkanDevice::Render(VkCommandBuffer cmd, const RgDrawFrameInfo &drawInfo)
                 p.sunDiscColor[2] = drawInfo.pSkyParams->sunDiscColor.data[2];
             }
 
+            // The physical sun angular radius the light manager reports is not
+            // used: the disc the sky draws is sized by the display radius in skyParams[3].
             float sunColor[3], sunDir[3], sunAngularRadius = 0.0047f;
             // A directional light is uploaded only while the host has the sun
             // light enabled (rt_sun > 0), so "no directional light" is what
             // rt_sun 0 looks like from here. The sky then has no sun either:
             // sunDirection.w is the amount of sun the sky shows, and at 0 the
-            // mie halo and the disc are dropped while the atmosphere itself
-            // keeps the tint from skyColorDefault above.
+            // disc is dropped while the sky itself keeps the colour from
+            // skyColorDefault above.
             const bool hasSun = scene->GetLightManager()->GetLastDirectionalLight(sunColor, sunDir, &sunAngularRadius);
             p.sunDirection[3] = hasSun ? 1.0f : 0.0f;
             if (hasSun)
@@ -795,33 +797,28 @@ void VulkanDevice::Render(VkCommandBuffer cmd, const RgDrawFrameInfo &drawInfo)
             }
             else
             {
-                // Only centres the rayleigh gradient, so it never shows as a sun,
-                // but it still has to be a normalized vector.
+                // Never read as a sun: sunDirection.w is 0 here, so the disc is
+                // dropped whatever this is, and it only has to be normalized.
                 float d[3] = { 0.3f, 0.5f, 0.8f };
                 const float len = std::sqrt(d[0]*d[0] + d[1]*d[1] + d[2]*d[2]);
                 p.sunDirection[0] = d[0] / len;
                 p.sunDirection[1] = d[1] / len;
                 p.sunDirection[2] = d[2] / len;
             }
-            p.skyTint[3] = sunAngularRadius;
             p.skyParams[0] = uniform->GetData()->skyColorMultiplier;
+            // The sky has no tint strength left to carry, so the host sends the
+            // opacity of its clouds (rt_sky_cloud_alpha) in that slot instead.
             p.skyParams[1] = uniform->GetData()->skyColorSaturation;
-            // Sun disc intensity. The disc used to be painted with the 0..1 sky tint
-            // -- 0.0079 luminance at the default colour, since the tint reaches the
-            // shader twice, once as the colour and once through RT_APPLY_SKY_COLOR --
-            // so it needed a value in the hundreds to become the brightest thing over
-            // the horizon; at 25 it was dimmer than the sky around it. The disc now
-            // carries the sun's own colour, so this constant alone has to supply that
-            // brightness: the old tint luminance times the old 750 (0.0079 * 750 =
-            // 5.9) keeps the disc at the brightness it had. It only reaches the
-            // visible cubemap; the indirect sky samples the disc-less envCubemap, so
-            // this is not a light source.
+            // Sun disc intensity: the disc carries the sun's own colour and is
+            // what makes it brighter than the sky it hangs in. It only reaches
+            // the visible cubemap; the indirect sky samples the disc-less
+            // envCubemap, so this is not a light source.
             p.skyParams[2] = 6.0f; // sun disc intensity
             p.skyParams[3] = 0.025f; // display sun disc angular radius (rad), ~1.4 deg; physical 0.05 deg is sub-pixel
 
             // cloud params are packed into the otherwise-unused skyCubemapRotationTransform field
             // (keeps the public RG_* API unchanged):
-            //   [0..2] cloud color rgb, [3] coverage, [4] density, [5] drift speed, [6] enabled
+            //   [0..2] cloud color rgb, [3] coverage, [4] contour sharpness, [5] drift speed, [6] enabled
             p.cloudColor[3] = uniform->GetData()->time; // cloud animation time
             if (drawInfo.pSkyParams)
             {

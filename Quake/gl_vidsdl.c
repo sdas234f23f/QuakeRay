@@ -181,7 +181,6 @@ task_handle_t prev_end_rendering_task = INVALID_TASK_HANDLE;
 	CVAR_DEF_T (rt_muzzleoffs_z, "100") \
 	\
 	CVAR_DEF_T (rt_sky, "1") \
-	CVAR_DEF_T (rt_sky_tint, "1.0") \
 	CVAR_DEF_T (rt_sky_ambient_lod, "4") \
 	CVAR_DEF_T (rt_sky_nee, "1") \
 	CVAR_DEF_T (rt_physical_sky, "1") \
@@ -191,6 +190,7 @@ task_handle_t prev_end_rendering_task = INVALID_TASK_HANDLE;
 	CVAR_DEF_T (rt_light_color, "255 255 255") \
 	CVAR_DEF_T (rt_sky_clouds, "1") \
 	CVAR_DEF_T (rt_sky_clouds_color, "0 0 0") \
+	CVAR_DEF_T (rt_sky_cloud_alpha, "1.0") \
 	CVAR_DEF_T (rt_sky_cloud_coverage, "0.2") \
 	CVAR_DEF_T (rt_sky_cloud_density, "0.8") \
 	CVAR_DEF_T (rt_sky_cloud_speed, "0.3") \
@@ -1887,14 +1887,19 @@ static void GL_EndRenderingTask (end_rendering_parms_t *parms)
 
 	if (usePhysicalSky)
 	{
+		// The procedural sky is a flat colour and nothing else, so it is given
+		// exactly the colour it is set to; skyBrightness reaches it once, as the
+		// multiplier the shader paints the whole sky with.
 		RT_GetSkyColor (sky_base_color);
 	}
 	else
 	{
+		// The classic sky is a texture, so rt_sky_color is the tint over it;
+		// the procedural sky above is painted in that colour instead.
 		VectorCopy (skyflatcolor, sky_base_color);
+		VectorScale (sky_base_color, skyBrightness, sky_base_color);
+		RT_APPLY_SKY_COLOR (sky_base_color);
 	}
-	VectorScale (sky_base_color, skyBrightness, sky_base_color);
-	RT_APPLY_SKY_COLOR (sky_base_color);
 
 	if (materials_only)
 	{
@@ -1911,7 +1916,10 @@ static void GL_EndRenderingTask (end_rendering_parms_t *parms)
 		.skyColorDefault = RT_VEC3 (sky_base_color),
 		.sunDiscColor = RT_VEC3 (sun_disc_color),
 		.skyColorMultiplier = materials_only ? 0.0f : (usePhysicalSky ? skyBrightness : skyMult * skyBrightness),
-		.skyColorSaturation = CVAR_TO_FLOAT (rt_sky_tint),
+		// The procedural sky has no tint strength any more -- its colour is its
+		// own -- so the slot carries the opacity the clouds are composited with
+		// instead (rt_sky_cloud_alpha); see RgDrawFrameSkyParams.
+		.skyColorSaturation = CVAR_TO_FLOAT (rt_sky_cloud_alpha),
 		.skyAmbientLod = CVAR_TO_FLOAT (rt_sky_ambient_lod),
 		.skyNee = CVAR_TO_FLOAT (rt_sky_nee) > 0.0f,
 		.skyViewerPosition = RT_VEC3 (r_origin),
@@ -1925,6 +1933,8 @@ static void GL_EndRenderingTask (end_rendering_parms_t *parms)
 	if (usePhysicalSky)
 	{
 		float *c = &sky_params.skyCubemapRotationTransform.matrix[0][0];
+		// the cloud settings ride in the otherwise unused rotation matrix of this
+		// sky type (keeps the public RgDrawFrameSkyParams layout unchanged)
 		RT_GetSkyCloudsColor (c);
 		c[3] = CVAR_TO_FLOAT (rt_sky_cloud_coverage);
 		c[4] = CVAR_TO_FLOAT (rt_sky_cloud_density);
