@@ -329,7 +329,11 @@ main()
             const vec3 specular = mix(
                 filtered_spec,
                 indirect,
-                smoothstep(FAKE_ROUGH_SPECULAR_THRESHOLD, FAKE_ROUGH_SPECULAR_THRESHOLD + FAKE_ROUGH_SPECULAR_LENGTH, roughness));
+                smoothstep(
+                        FAKE_ROUGH_SPECULAR_THRESHOLD,
+                        FAKE_ROUGH_SPECULAR_THRESHOLD + FAKE_ROUGH_SPECULAR_LENGTH,
+                        roughness
+                ));
 
             const vec3 ro_s = getSpecularColor(albedo, metallic);
             vec3 ro_d = albedo * (1.0 - metallic);
