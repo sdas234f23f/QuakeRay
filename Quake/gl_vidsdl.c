@@ -257,6 +257,7 @@ task_handle_t prev_end_rendering_task = INVALID_TASK_HANDLE;
 	\
 	CVAR_DEF_T (rt_viewm_fovscale, "1.2") \
 	CVAR_DEF_T (rt_viewm_wide, "1.05") \
+	CVAR_DEF_T (rt_viewm_scale, "0.32") \
 	\
 	CVAR_DEF_T (rt_hud_minimal, "1") \
 	CVAR_DEF_T (rt_hud_padding, "8") \

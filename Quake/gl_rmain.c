@@ -116,6 +116,7 @@ extern cvar_t rt_sun_pitch;
 extern cvar_t rt_sun_yaw;
 extern cvar_t rt_materials_only;
 extern cvar_t rt_cluster_dlights;
+extern cvar_t rt_viewm_scale;
 
 /*
 =================
@@ -265,7 +266,13 @@ float GL_GetCameraNear (float radfovx, float radfovy)
 
     // reduce near clip distance at high FOV's to avoid seeing through walls
     const float d = 12.f * q_min (w, h);
-    return CLAMP (0.5f, d, NEARCLIP);
+
+    // The weapon is drawn smaller and closer by rt_viewm_scale, and the near clip
+    // distance is where "closer" ends: the weapon keeps its picture on screen only if
+    // the clip comes along with it, by the same factor.
+    const float viewmscale = CVAR_TO_FLOAT (rt_viewm_scale) > 0 ? CVAR_TO_FLOAT (rt_viewm_scale) : 1.0f;
+
+    return CLAMP (0.5f * viewmscale, d * viewmscale, NEARCLIP * viewmscale);
 }
 
 float GL_GetCameraFar (void)

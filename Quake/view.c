@@ -79,6 +79,7 @@ double v_punchangles_times[2]; // spike -- times, to avoid assumptions...
 extern qboolean needs_relink;
 
 extern cvar_t rt_hud_minimal;
+extern cvar_t rt_viewm_scale; // matches the transform of the rendered viewmodel
 
 /*
 ===============
@@ -826,6 +827,19 @@ void V_CalcRefdef (void)
 	}
 	else
 		oldz = ent->origin[2];
+
+	// The weapon is drawn smaller by rt_viewm_scale and closer by the same factor:
+	// its zero is moved towards the eye, so the two together leave the picture of the
+	// weapon as it was while the room it takes in the world shrinks with it. The chase
+	// camera reads the origin of the weapon as the eye and draws no weapon, so it is
+	// left the eye it takes.
+	{
+		float viewmscale = CVAR_TO_FLOAT (rt_viewm_scale);
+
+		if (viewmscale > 0.0f && viewmscale != 1.0f && !chase_active.value)
+			for (i = 0; i < 3; i++)
+				view->origin[i] = r_refdef.vieworg[i] + viewmscale * (view->origin[i] - r_refdef.vieworg[i]);
+	}
 
 	if (chase_active.value)
 		Chase_UpdateForDrawing (); // johnfitz
