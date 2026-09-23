@@ -107,6 +107,39 @@ constexpr float CLOUD_SHADOW_MIN_SUN_HEIGHT = 0.05f;
 constexpr uint32_t CLOUD_UPDATE_QUARTERS = 2;
 constexpr uint32_t CLOUD_UPDATE_FRAMES = CLOUD_UPDATE_QUARTERS * CLOUD_UPDATE_QUARTERS;
 
+// Whether two sets of the sky's parameters describe the same look of the cloud
+// layer: the sun, the sky that lights the layer, the layer's own colour and body,
+// and the march through it. The rest of ProceduralSkyParams is where the frame is
+// rather than what is drawn with it -- the time the layer drifts by, the eye's own
+// place, the quarter of the map the frame marches, and where the volume of the
+// layer's shadow stands -- and a frame that differs in those alone is a frame the
+// layer's own cubemap holds.
+bool SameCloudLook(const vkpt::RenderCubemap::ProceduralSkyParams &a,
+                   const vkpt::RenderCubemap::ProceduralSkyParams &b)
+{
+    const auto same = [](const float *x, const float *y, int count)
+    {
+        for (int i = 0; i < count; i++)
+        {
+            if (fabsf(x[i] - y[i]) > 1.0e-4f)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    };
+
+    return same(a.sunDirection, b.sunDirection, 4) &&   // xyz and how much sun the sky shows
+           same(a.skyColor, b.skyColor, 3) &&           // w is unused
+           same(a.skyParams, b.skyParams, 4) &&
+           same(a.sunDiscColor, b.sunDiscColor, 3) &&   // w is unused
+           same(a.cloudColor, b.cloudColor, 3) &&       // w is the time the layer drifts by
+           same(a.cloudParams, b.cloudParams, 4) &&
+           same(a.cloudLayer, b.cloudLayer, 4) &&
+           same(a.cloudMarch, b.cloudMarch, 4);
+}
+
 // What the volume holds is the tau of a column of cloud, so a single channel is
 // all it needs -- and a tau rather than a transmittance because the slices of the
 // volume are read interpolated, which only adds up if what stands between two of
@@ -1792,6 +1825,19 @@ void vkpt::RenderCubemap::DrawProcedural(VkCommandBuffer cmd, const ProceduralSk
     // the level, so the march has to resolve what the finer map can hold.
     params.cloudMarch[0] = float(CLOUDS_VIEW_STEPS[quality]);
     params.cloudMarch[1] = float(CLOUDS_SUN_STEPS[quality]);
+
+    // A frame the look of the layer changed in is not a frame the map can take a
+    // quarter of. The world's shadow of the layer shows such a change on the frame
+    // it is asked for (UpdateCloudShadow compares the sun and the layer's own
+    // settings), and the layer's own light has to keep up with its shadow rather
+    // than come in four parts over four frames -- the sun editor would otherwise
+    // light the ground one way and the clouds another for three frames of every
+    // four. Such a frame fills the whole map at once (CLOUD_UPDATE_FRAMES below).
+    if (mappedProcSkyParams &&
+        !SameCloudLook(*static_cast<const ProceduralSkyParams *>(mappedProcSkyParams), params))
+    {
+        cloudsFullUpdate = true;
+    }
 
     // Clouds off: freeze the animation time so the cached sky isn't re-rendered
     // every frame (only when sun/sky params change).
