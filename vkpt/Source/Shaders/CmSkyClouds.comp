@@ -296,7 +296,7 @@ void main()
             vec3 p = vec3(dir.x * ts + params.cloudAnchor.x,
                           dir.y * ts + params.cloudAnchor.y,
                           dir.z * ts);
-            float density = cloudDensity(layer, p, true);
+            float density = cloudDensity(layer, p, true, step);
 
             if (density > 1.0e-3)
             {
