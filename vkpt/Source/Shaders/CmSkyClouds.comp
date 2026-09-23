@@ -57,6 +57,14 @@ layout(rgba16f, set = 0, binding = 3) uniform imageCube cloudCubemapOut;
 // a march to the sun (CloudShadowMap.h).
 layout(set = 0, binding = 5) uniform sampler3D cloudShadowMap;
 
+// The same cubemap this pass fills (binding 3), read back as its own history: the
+// frames before this one drew this texel too, from taps of the march that are not
+// the taps of this one, and averaging them is what takes the grain of a single walk
+// out of the layer (see how main() blends the two). It is bound apart from binding 3
+// because a storage image and a sampled one are described in different layouts, and
+// this pass reads the cubemap in the very layout it writes it in.
+layout(set = 0, binding = 6) uniform samplerCube cloudCubemapHistory;
+
 layout(std140, set = 0, binding = 1) uniform Params
 {
     vec4 faceBasis[18]; // 6 faces * (right, up, forward)
@@ -68,7 +76,8 @@ layout(std140, set = 0, binding = 1) uniform Params
     vec4 sunDiscColor;  // xyz = colour of the sun (rt_sky_sun_color), w unused
     vec4 cloudLayer;    // x = altitude of the layer's bottom over the eye, y = thickness, z = sunlight strength, w = sky light strength
     vec4 cloudMarch;    // x = view march steps, y = sun march steps, z = detail erosion strength, w = forward scattering (Henyey-Greenstein g)
-    vec4 cloudAnchor;   // xy = the eye's place in the world's horizontal plane, zw unused
+    vec4 cloudAnchor;   // xy = the eye's place in the world's horizontal plane, z = its height in the world, w = which quarter of the map this frame marches (CLOUD_UPDATE_FRAMES meaning the map is new and is filled whole)
+    vec4 cloudAnchorDelta; // xy = how far the eye has moved over the world since the frame before, which is what the history of the layer is read through; zw unused
 } params;
 
 #include "CloudLayer.h"
@@ -79,6 +88,13 @@ layout(std140, set = 0, binding = 1) uniform Params
 // is the light that scatters first: what it does is darken the thick parts of the
 // cloud and leave its rim glowing.
 const float CLOUD_POWDER = 8.0;
+
+// What a frame's walk of the layer is worth against the walks of the frames before
+// it, in the cubemap texel they share (see how main() blends them): a tenth keeps
+// about ten walks in the value, which is forty frames of the quarter the texel is
+// drawn in, and that is as long as the drift of the layer and the movement of the
+// eye can be read through.
+const float CLOUD_ACCUMULATE = 0.1;
 
 // The view steps grow along the ray at this rate: the clouds overhead are the
 // ones the eye resolves, while towards the horizon the layer is a flat deck that
@@ -232,6 +248,20 @@ void main()
 
     bool lit = sunColor.r + sunColor.g + sunColor.b > 0.0 || skyLight.r + skyLight.g + skyLight.b > 0.0;
 
+    // Where the column of cloud this texel is about stands: the point the ray through
+    // it crosses the base of the layer at. That point is the world's and not the
+    // eye's -- the layer is anchored in the world's horizontal plane, which is what
+    // the map of its shadow is laid out by as well (CloudShadowMap.h) -- so an eye
+    // that has moved over the world since the frame before is looking at the same
+    // point through another direction, and the history of the texel is read where it
+    // was, through the direction rebuilt from the point. What is deliberately not in
+    // that: the height of the eye, because the layer is held over the eye and a
+    // direction sees the same column of it from any height.
+    float historySpan = layer.altitude / max(dir.z, 1.0e-3);
+    vec3  historyDir = (dir.z > 1.0e-3)
+        ? normalize(vec3(dir.xy * historySpan + params.cloudAnchorDelta.xy, layer.altitude))
+        : dir;
+
     if (dir.z > 0.0 && lit && opacity > 0.0 && params.cloudParams.w > 0.5 &&
         layer.coverage < 1.0 && layer.density > 0.0)
     {
@@ -248,8 +278,14 @@ void main()
 
         // The seed of the march, and what the places of its samples inside their
         // stretches are drawn with: two rays then see the layer a little differently
-        // rather than through the very same samples.
-        float jitter = hash13(vec3(ipos) * 0.371);
+        // rather than through the very same samples. It carries the frame as well as
+        // the texel -- a walk repeated is an error repeated with it, so the taps of a
+        // texel have to stand elsewhere from one frame to the next for the history
+        // below to be worth averaging -- and what the frame is counted from is the
+        // time the layer drifts by, the one thing of the parameters that moves on its
+        // own.
+        float phase = floor(params.cloudColor.w * 60.0);
+        float jitter = hash13(vec3(ipos) * 0.371 + vec3(phase * 0.719));
         float t = tIn;
         float step = dt;
 
@@ -335,5 +371,21 @@ void main()
 
     // rgb = the light scattered towards the eye, a = how much of the sky behind
     // the layer gets through it
-    imageStore(cloudCubemapOut, ipos, vec4(inscatter * albedo * opacity, mix(1.0, transmittance, opacity)));
+    vec4 drawn = vec4(inscatter * albedo * opacity, mix(1.0, transmittance, opacity));
+
+    // The layer is walked in a handful of taps for a cloud that is worth thousands,
+    // and what that leaves behind is grain. One walk is one grain; the walk of the
+    // frames before this one was drawn from taps that stood elsewhere (the phase of
+    // the march above), and out of the two comes a value closer to the cloud than
+    // either of them is. A map that is new has no history to read -- nor has a frame
+    // the look of the layer changed in, which the host fills whole and which arrives
+    // here as the quarter being CLOUD_UPDATE_FRAMES.
+    vec4 value = drawn;
+
+    if (params.cloudAnchor.w < float(CLOUD_UPDATE_FRAMES))
+    {
+        value = mix(texture(cloudCubemapHistory, historyDir), drawn, CLOUD_ACCUMULATE);
+    }
+
+    imageStore(cloudCubemapOut, ipos, value);
 }
