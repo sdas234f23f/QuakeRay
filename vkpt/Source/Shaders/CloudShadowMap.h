@@ -106,16 +106,24 @@ float cloudShadowTauFromUV(sampler3D shadowVolume, vec2 uv, float height)
 // laid out over, or the clouds cast no shadow at all -- and then the caller
 // answers for the point with a march towards the sun of its own.
 //
+// `blend` is how much of the volume's answer stands: 1 where the volume is read
+// whole, less than that within the band it fades out over (cloudShadowUV). A
+// caller that marches the layer itself where the volume fades -- the sky, which
+// has to shade the horizon the volume does not reach -- blends its own answer in
+// by this rather than switching between the two, which is what keeps the edge of
+// the volume from being a line the eye can find (CmSkyClouds.comp).
+//
 // `height` is the fraction of the layer the point stands at: 0 at its base (a
 // point on the ground), 1 at its top. `sunDir` points towards the sun and
 // `mapPlacement` is where the volume stands (see cloudShadowUV).
-float cloudShadowTau(sampler3D shadowVolume, vec3 worldPos, vec3 sunDir, vec4 mapPlacement, float height)
+float cloudShadowTau(sampler3D shadowVolume, vec3 worldPos, vec3 sunDir, vec4 mapPlacement, float height, out float blend)
 {
     vec2 uv;
-    float blend;
 
-    if (!cloudShadowUV(worldPos, sunDir, mapPlacement, uv, blend) || blend < 0.999)
+    if (!cloudShadowUV(worldPos, sunDir, mapPlacement, uv, blend))
     {
+        blend = 0.0;
+
         return -1.0;
     }
 

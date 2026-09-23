@@ -53,10 +53,12 @@ constexpr uint32_t CLOUDS_SIDE_SIZES[vkpt::RenderCubemap::QUALITY_LEVELS] = { 25
 // edge of a cloud's shadow is drawn with. A level doubles the texels a side over
 // the same CLOUD_SHADOW_EXTENT metres of ground -- four times the volume, and four
 // times the march filling it -- from a texel every four metres at the bottom of the
-// ladder to one every half a metre at the top; the two finest levels share their
-// texel size, a shadow of a cloud being a soft thing that stops paying for the
-// finest texel long before the top of the ladder is reached.
-constexpr uint32_t CLOUD_SHADOW_SIZES[vkpt::RenderCubemap::QUALITY_LEVELS] = { 1024, 2048, 4096, 4096, 8192 };
+// ladder to one every metre at the top. The finest texels stop paying for
+// themselves where they are finer than the cone a cloud's light was walked through
+// (CLOUD_LIGHT_CONE), which is why the middle levels share a size and so do the two
+// above them: what a finer texel would buy there is drawn soft anyway, and every
+// texel costs four slices of two bytes.
+constexpr uint32_t CLOUD_SHADOW_SIZES[vkpt::RenderCubemap::QUALITY_LEVELS] = { 1024, 2048, 2048, 4096, 4096 };
 
 // The slices the volume holds over the height of the layer, the base of the layer
 // in the first and the sky above it in the last (CmCloudShadow.comp fills as many,
