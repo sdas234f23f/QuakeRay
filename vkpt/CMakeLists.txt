@@ -176,3 +176,70 @@ if(WIN32)
     target_link_libraries(vkpt PUBLIC "${vkpt_FFX_API_DIR}/PrebuiltSignedDLL/amd_fidelityfx_vk.lib")
     # amd_fidelityfx_vk.dll is copied next to quakeray.exe in the root CMakeLists
 endif()
+
+# ============================================================================
+# FidelityFX Denoiser (DNSR) — vendored MIT subset of FidelityFX SDK 1.1.4,
+# built from source against the Vulkan backend. See
+# Source/FidelityFX_SDK_1.1.4/README.md for provenance and what was excluded.
+#
+# Built as its own STATIC library so the third-party optimization and warning
+# settings stay out of the vkpt target (the host build uses /WX).
+# ============================================================================
+set(vkpt_FFX_DENOISER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/Source/FidelityFX_SDK_1.1.4/sdk")
+
+# The vendored SDK targets Vulkan 1.3.250+ upstream (CheckVulkanSDKVersion). Older bundled
+# headers may still compile, but warn loudly instead of failing deep inside the SDK.
+if(EXISTS "${Vulkan_INCLUDE_DIR}/vulkan/vulkan_core.h")
+    file(STRINGS "${Vulkan_INCLUDE_DIR}/vulkan/vulkan_core.h" _vk_header_version_line
+         REGEX "^#define VK_HEADER_VERSION[ \t]+[0-9]+")
+    if(_vk_header_version_line MATCHES "[ \t]+([0-9]+)")
+        if(CMAKE_MATCH_1 LESS 250)
+            message(WARNING "Vulkan headers at ${Vulkan_INCLUDE_DIR} are VK_HEADER_VERSION "
+                            "${CMAKE_MATCH_1}; the FidelityFX Denoiser expects 250 (Vulkan 1.3.250) "
+                            "or newer. Install a current Vulkan SDK if the build fails.")
+        endif()
+    endif()
+    unset(_vk_header_version_line)
+endif()
+
+set(ffx_denoiser_SOURCES
+    "${vkpt_FFX_DENOISER_DIR}/src/backends/vk/ffx_vk.cpp"
+    "${vkpt_FFX_DENOISER_DIR}/src/backends/shared/ffx_shader_blobs.cpp"
+    "${vkpt_FFX_DENOISER_DIR}/src/backends/shared/blob_accessors/ffx_denoiser_shaderblobs.cpp"
+    "${vkpt_FFX_DENOISER_DIR}/src/components/denoiser/ffx_denoiser.cpp"
+    "${vkpt_FFX_DENOISER_DIR}/src/shared/ffx_assert.cpp"
+    "${vkpt_FFX_DENOISER_DIR}/src/shared/ffx_breadcrumbs_list.cpp"
+    "${vkpt_FFX_DENOISER_DIR}/src/shared/ffx_message.cpp"
+    "${vkpt_FFX_DENOISER_DIR}/src/shared/ffx_object_management.cpp"
+    # Defines ffxSetFrameGenerationConfigToSwapchainVK, which ffx_vk.cpp references
+    # unconditionally. The real implementation drags in FSR3/DX12 code we do not vendor.
+    "Source/FfxDenoiser/ffx_vk_swapchain_stub.cpp"
+)
+
+add_library(ffx_denoiser STATIC ${ffx_denoiser_SOURCES})
+
+target_compile_features(ffx_denoiser PRIVATE cxx_std_17)
+
+# FFX_DENOISER gates the effect's shader blobs in ffx_shader_blobs.cpp.
+target_compile_definitions(ffx_denoiser PRIVATE FFX_DENOISER)
+
+target_include_directories(ffx_denoiser PRIVATE
+    "${vkpt_FFX_DENOISER_DIR}/include"
+    "${vkpt_FFX_DENOISER_DIR}/src/shared"
+    "${vkpt_FFX_DENOISER_DIR}/src/backends/shared"
+    "${vkpt_FFX_DENOISER_DIR}/src/components"
+    "${vkpt_FFX_DENOISER_DIR}/generated/denoiser"
+)
+
+if(MSVC)
+    target_compile_options(ffx_denoiser PRIVATE /W3 /EHsc /WX- /MP)
+    target_compile_options(ffx_denoiser PRIVATE
+        /wd4244 /wd4267 /wd4018 /wd4305 /wd4996 /wd4100 /wd4505 /wd5287 /wd4005)
+else()
+    target_compile_options(ffx_denoiser PRIVATE -w)
+endif()
+
+target_link_libraries(ffx_denoiser PUBLIC Vulkan::Vulkan)
+
+# The glue layer (Source/FfxDenoiser/*.cpp added to vkpt) calls into this library.
+target_link_libraries(vkpt PRIVATE ffx_denoiser)
