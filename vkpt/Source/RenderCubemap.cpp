@@ -1811,14 +1811,19 @@ void vkpt::RenderCubemap::DrawProcedural(VkCommandBuffer cmd, const ProceduralSk
         // Which quarter of the layer's map this frame marches, CLOUD_UPDATE_FRAMES
         // meaning the map is new and has to be filled whole (DispatchClouds); the
         // eye's own height in the world stays where the host put it, in
-        // cloudAnchor.z, because the map of the layer's shadow is read with it. What
-        // that map stands on rides in the two fields the sky itself does not read:
-        // skyColor.w is 1 while there is a map to read, sunDiscColor.w its extent in
-        // metres. All of them are part of the params the cache below compares, so the
-        // layer is never remembered away while it is being drawn.
+        // cloudAnchor.z, because the volume of the layer's shadow is read with it.
+        // The volume's own place and extent travel along too, exactly as the world's
+        // shading reads them (GetCloudShadowPlacement), so that the light of a cloud
+        // and the shadow of it are the same shadow of the same cloud. All of them are
+        // part of the params the cache below compares, so the layer is never
+        // remembered away while it is being drawn.
         params.cloudAnchor[3] = cloudsFullUpdate ? float(CLOUD_UPDATE_FRAMES) : float(cloudsCycle);
-        params.skyColor[3] = cloudShadowValid ? 1.0f : 0.0f;
-        params.sunDiscColor[3] = CLOUD_SHADOW_EXTENT;
+        for (int i = 0; i < 4; i++)
+        {
+            // Nothing of the volume may be read while it is not standing: the getter
+            // speaks for it, zeros and all (GetCloudShadowPlacement).
+            params.cloudShadowPlacement[i] = cloudShadowValid ? cloudShadowPlacement[i] : 0.0f;
+        }
     }
 
     if (mappedProcSkyParams)

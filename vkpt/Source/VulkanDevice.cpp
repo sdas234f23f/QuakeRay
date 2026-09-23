@@ -909,12 +909,11 @@ void VulkanDevice::Render(VkCommandBuffer cmd, const RgDrawFrameInfo &drawInfo)
             rasterizer->GetRenderCubemap()->SetQuality(cmd, (drawInfo.pSkyParams == nullptr)
                 ? RenderCubemap::QUALITY_HIGH : drawInfo.pSkyParams->skyCloudsQuality);
 
-            rasterizer->GetRenderCubemap()->DrawProcedural(cmd, p);
-
             // The clouds hang between the sun and the world, so the shadow they
             // throw on it is laid down here, for every pass that lights with the
             // sun (the sun itself, the sky, and the shafts -- CloudShadowMap.h)
             rasterizer->GetRenderCubemap()->UpdateCloudShadow(cmd, p, uniform->GetData()->cameraPosition);
+            rasterizer->GetRenderCubemap()->DrawProcedural(cmd, p);
         }
         else
         {

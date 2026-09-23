@@ -68,7 +68,8 @@ layout(std140, set = 0, binding = 1) uniform Params
     vec4 sunDiscColor;  // xyz = colour of the sun (rt_sky_sun_color), w unused
     vec4 cloudLayer;    // x = altitude of the layer's bottom over the eye, y = thickness, z = sunlight strength, w = sky light strength
     vec4 cloudMarch;    // x = view march steps, y = sun march steps, z = detail erosion strength, w = forward scattering (Henyey-Greenstein g)
-    vec4 cloudAnchor;   // xy = the eye's place in the world's horizontal plane, zw unused
+    vec4 cloudAnchor;   // xy = the eye's place in the world's horizontal plane, z = its height in the world (the volume of the layer's shadow is read with it), w = which quarter of the map this frame marches (CLOUD_UPDATE_FRAMES meaning the map is new)
+    vec4 cloudShadowPlacement; // x = 1 while the layer's shadow volume stands, yz = its snapped world origin, w = its extent in metres (RenderCubemap::GetCloudShadowPlacement)
 } params;
 
 #include "CloudLayer.h"
@@ -146,15 +147,13 @@ float cloudMultiScatter(float mu, float sunDepth, float g)
 // edge of the volume is a gradient and not a line.
 float cloudSunTauFromMap(CloudLayer layer, vec3 p, vec3 sunDir, out float blend)
 {
-    // Where the volume stands: on, the world-space corner of it and its extent. The
-    // corner is the eye's place in the world's horizontal plane, the volume being
-    // laid out around it (RenderCubemap::UpdateCloudShadow); its own origin is
-    // snapped to a texel of its own, so this is that corner to within one texel --
-    // a metre or two of ground, which no cloud's shadow can show. The eye's height
-    // in the world is cloudAnchor.z, as the point p is measured from the eye in z.
-    const vec4 placement = vec4(params.skyColor.w,
-                                params.cloudAnchor.xy - params.sunDiscColor.w * 0.5,
-                                params.sunDiscColor.w);
+    // Where the volume stands: on, its world-space corner and its extent, carried in
+    // the parameters exactly as the world's shading reads them
+    // (RenderCubemap::GetCloudShadowPlacement), so that a cloud's light and its
+    // shadow are read off the very same texels of the very same volume. The eye's
+    // height in the world is cloudAnchor.z, as the point p is measured from the eye
+    // in z.
+    const vec4 placement = params.cloudShadowPlacement;
     const vec3 worldPos = vec3(p.xy, params.cloudAnchor.z + p.z);
 
     // How high in the layer the point stands: 0 at the base of it, 1 at the top.

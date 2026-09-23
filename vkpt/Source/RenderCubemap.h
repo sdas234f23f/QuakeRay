@@ -39,17 +39,18 @@ public:
     {
         float faceBasis[18][4]; // 6 faces * (right, up, forward)
         float sunDirection[4];  // xyz = direction toward the sun, w = how much sun the sky shows (0 = no sun)
-        float skyColor[4];      // xyz = the colour of the sky itself (rt_sky_color); w = 1 while the layer's shadow map is there to be read (see DrawProcedural), the sky itself not using it
+        float skyColor[4];      // xyz = the colour of the sky itself (rt_sky_color), w unused
         float skyParams[4];     // x = multiplier, y = cloud opacity (rt_sky_clouds_alpha), z = sun disc intensity, w = sun disc radius
         float cloudColor[4];    // xyz = cloud color, w = cloud time (s)
         float cloudParams[4];   // x = coverage, y = density (rt_sky_clouds_density), z = drift speed, w = enabled
         // Appended after everything else so that a stale compiled shader (which
         // does not know the field) still reads every field it does know at the
         // same offset.
-        float sunDiscColor[4];  // xyz = colour of the sun disc (rt_sky_sun_color); w = the extent of the layer's shadow map in metres, the disc not using it
+        float sunDiscColor[4];  // xyz = colour of the sun disc (rt_sky_sun_color), w unused
         float cloudLayer[4];    // x = altitude of the layer's bottom over the eye, y = thickness, z = sunlight strength, w = sky light strength
         float cloudMarch[4];    // x = view march steps, y = sun march steps, z = detail erosion strength, w = forward scattering
         float cloudAnchor[4];   // xy = the eye's place in the world's horizontal plane, z = its height in the world, w = which quarter of the layer's map this frame marches (CLOUD_UPDATE_FRAMES meaning all of it)
+        float cloudShadowPlacement[4]; // x = 1 while the layer's shadow volume stands (see GetCloudShadowPlacement), yz = its snapped world origin, w = its extent in metres
     };
 
 public:

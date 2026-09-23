@@ -55,13 +55,9 @@ layout(std140, set = 0, binding = 1) uniform Params
 
 #include "CloudLayer.h"
 
-// The slices of the volume, over the height of the layer: the base slice is the
-// whole column and the top one is the sky above it, and everything between is read
-// by interpolation (CloudShadowMap.h). The C++ side (RenderCubemap.cpp) sizes the
-// volume with the same number, and the steps the column is marched in come from
-// the parameters, one entry per quality level; the march of a step is held for
-// every slice, so the count of steps is bounded here.
-const int CLOUD_SHADOW_SLICES = 4;
+// The steps the column is marched in come from the parameters, one entry per
+// quality level; the march of a step is held for every slice of the volume
+// (imageSize below), so the count of steps is bounded here.
 const int CLOUD_SHADOW_STEPS_MAX = 64;
 
 void main()
@@ -83,7 +79,7 @@ void main()
     layer.time      = params.cloudMarch.x;
     layer.speed     = params.cloudMarch.y;
 
-    int steps = clamp(int(params.cloudMarch.z + 0.5), 1, 64);
+    int steps = clamp(int(params.cloudMarch.z + 0.5), 1, CLOUD_SHADOW_STEPS_MAX);
 
     // Where the base of the layer stands over the spot this texel is for: the map
     // is the plane the layer was projected onto along the sun, and the sun is the
@@ -123,18 +119,20 @@ void main()
     // What a slice holds is the tau of the column above the height it stands for:
     // the base of the layer is the whole column -- what the shading of the world
     // reads -- and the top of it is empty sky, which is what the top of a cloud is
-    // lit by. A step of the march belongs to every slice standing below it.
-    for (int k = 0; k < CLOUD_SHADOW_SLICES; k++)
+    // lit by. A step of the march stands for the stretch of the column it was walked
+    // over, and a slice takes the part of that stretch that stands above its height,
+    // so the column between two slices is a straight line rather than a staircase of
+    // whole steps.
+    int slices = imageSize(cloudShadowOut).z;
+    for (int k = 0; k < slices; k++)
     {
-        float height = float(k) / float(CLOUD_SHADOW_SLICES - 1);
+        float height = float(k) / float(max(slices - 1, 1));
         float above = 0.0;
 
         for (int i = 0; i < steps; i++)
         {
-            if ((float(i) + 0.5) / float(steps) > height)
-            {
-                above += stepColumn[i];
-            }
+            float fraction = clamp(float(i + 1) - height * float(steps), 0.0, 1.0);
+            above += stepColumn[i] * fraction;
         }
 
         imageStore(cloudShadowOut, ivec3(ipos, k), vec4(cloudOpticalDepth(layer, above), 0.0, 0.0, 1.0));
