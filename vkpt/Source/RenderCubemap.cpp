@@ -227,17 +227,20 @@ vkpt::RenderCubemap::RenderCubemap(
 
 vkpt::RenderCubemap::~RenderCubemap()
 {
-    if (mappedProcSkyParams)
+    for (uint32_t frame = 0; frame < MAX_FRAMES_IN_FLIGHT; frame++)
     {
-        procSkyParamsBuffer.TryUnmap();
-    }
-    procSkyParamsBuffer.Destroy();
+        if (mappedProcSkyParams[frame])
+        {
+            procSkyParamsBuffer[frame].TryUnmap();
+        }
+        procSkyParamsBuffer[frame].Destroy();
 
-    if (mappedCloudShadowParams)
-    {
-        cloudShadowParamsBuffer.TryUnmap();
+        if (mappedCloudShadowParams[frame])
+        {
+            cloudShadowParamsBuffer[frame].TryUnmap();
+        }
+        cloudShadowParamsBuffer[frame].Destroy();
     }
-    cloudShadowParamsBuffer.Destroy();
 
     vkDestroyDescriptorPool(device, cloudShadowDescPool, nullptr);
     vkDestroyDescriptorSetLayout(device, cloudShadowDescSetLayout, nullptr);
@@ -914,17 +917,22 @@ void vkpt::RenderCubemap::CreateDescriptors(const std::shared_ptr<SamplerManager
 
 void vkpt::RenderCubemap::CreateProceduralSkyParamsBuffer()
 {
-    procSkyParamsBuffer.Init(
-        allocator,
-        sizeof(ProceduralSkyParams),
-        VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-        "Procedural sky params buffer");
-
-    mappedProcSkyParams = procSkyParamsBuffer.Map();
-    if (mappedProcSkyParams)
+    // One buffer per frame in flight, so that the frame being recorded writes its
+    // own copy while the frames behind it read theirs (see the header).
+    for (uint32_t frame = 0; frame < MAX_FRAMES_IN_FLIGHT; frame++)
     {
-        memset(mappedProcSkyParams, 0, sizeof(ProceduralSkyParams));
+        procSkyParamsBuffer[frame].Init(
+            allocator,
+            sizeof(ProceduralSkyParams),
+            VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+            "Procedural sky params buffer");
+
+        mappedProcSkyParams[frame] = procSkyParamsBuffer[frame].Map();
+        if (mappedProcSkyParams[frame])
+        {
+            memset(mappedProcSkyParams[frame], 0, sizeof(ProceduralSkyParams));
+        }
     }
 }
 
@@ -982,15 +990,15 @@ void vkpt::RenderCubemap::CreateProceduralSkyDescriptors(const std::shared_ptr<S
 
     VkDescriptorPoolSize poolSizes[3] = {};
     poolSizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    poolSizes[0].descriptorCount = 3;
+    poolSizes[0].descriptorCount = 3 * MAX_FRAMES_IN_FLIGHT;
     poolSizes[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    poolSizes[1].descriptorCount = 1;
+    poolSizes[1].descriptorCount = 1 * MAX_FRAMES_IN_FLIGHT;
     poolSizes[2].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSizes[2].descriptorCount = 2;
+    poolSizes[2].descriptorCount = 2 * MAX_FRAMES_IN_FLIGHT;
 
     VkDescriptorPoolCreateInfo poolInfo = {};
     poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    poolInfo.maxSets = 1;
+    poolInfo.maxSets = MAX_FRAMES_IN_FLIGHT;
     poolInfo.poolSizeCount = 3;
     poolInfo.pPoolSizes = poolSizes;
 
@@ -1002,13 +1010,19 @@ void vkpt::RenderCubemap::CreateProceduralSkyDescriptors(const std::shared_ptr<S
     VkDescriptorSetAllocateInfo allocInfo = {};
     allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
     allocInfo.descriptorPool = procSkyDescPool;
-    allocInfo.descriptorSetCount = 1;
-    allocInfo.pSetLayouts = &procSkyDescSetLayout;
+    allocInfo.descriptorSetCount = MAX_FRAMES_IN_FLIGHT;
+    VkDescriptorSetLayout setLayouts[MAX_FRAMES_IN_FLIGHT] = {};
+    for (uint32_t frame = 0; frame < MAX_FRAMES_IN_FLIGHT; frame++)
+    {
+        setLayouts[frame] = procSkyDescSetLayout;
+    }
+    allocInfo.pSetLayouts = setLayouts;
 
-    r = vkAllocateDescriptorSets(device, &allocInfo, &procSkyDescSet);
+    r = vkAllocateDescriptorSets(device, &allocInfo, procSkyDescSet);
     VK_CHECKERROR(r);
 
-    SET_DEBUG_NAME(device, procSkyDescSet, VK_OBJECT_TYPE_DESCRIPTOR_SET, "Procedural sky desc set");
+    SET_DEBUG_NAME(device, procSkyDescSet[0], VK_OBJECT_TYPE_DESCRIPTOR_SET, "Procedural sky desc set 0");
+    SET_DEBUG_NAME(device, procSkyDescSet[1], VK_OBJECT_TYPE_DESCRIPTOR_SET, "Procedural sky desc set 1");
 
     VkDescriptorImageInfo imgInfo = {};
     imgInfo.imageView = cubemap.view;
@@ -1035,55 +1049,43 @@ void vkpt::RenderCubemap::CreateProceduralSkyDescriptors(const std::shared_ptr<S
     cloudShadowImgInfo.imageView = cloudShadow.view;
     cloudShadowImgInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-    VkDescriptorBufferInfo bufInfo = {};
-    bufInfo.buffer = procSkyParamsBuffer.GetBuffer();
-    bufInfo.offset = 0;
-    bufInfo.range = VK_WHOLE_SIZE;
+    VkDescriptorBufferInfo bufInfo[MAX_FRAMES_IN_FLIGHT] = {};
+    for (uint32_t frame = 0; frame < MAX_FRAMES_IN_FLIGHT; frame++)
+    {
+        bufInfo[frame].buffer = procSkyParamsBuffer[frame].GetBuffer();
+        bufInfo[frame].offset = 0;
+        bufInfo[frame].range = VK_WHOLE_SIZE;
+    }
 
-    VkWriteDescriptorSet writes[6] = {};
-    writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[0].dstSet = procSkyDescSet;
-    writes[0].dstBinding = 0;
-    writes[0].descriptorCount = 1;
-    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    writes[0].pImageInfo = &imgInfo;
+    // The same bindings for every frame in flight, each set naming its own copy of
+    // the parameters (binding 1) and the same images.
+    VkWriteDescriptorSet writes[MAX_FRAMES_IN_FLIGHT * 6] = {};
+    uint32_t at = 0;
 
-    writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[1].dstSet = procSkyDescSet;
-    writes[1].dstBinding = 1;
-    writes[1].descriptorCount = 1;
-    writes[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    writes[1].pBufferInfo = &bufInfo;
+    for (uint32_t frame = 0; frame < MAX_FRAMES_IN_FLIGHT; frame++)
+    {
+        const auto add = [&](uint32_t binding, VkDescriptorType type,
+                             const VkDescriptorImageInfo *image, const VkDescriptorBufferInfo *buffer)
+        {
+            VkWriteDescriptorSet &w = writes[at++];
+            w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            w.dstSet = procSkyDescSet[frame];
+            w.dstBinding = binding;
+            w.descriptorCount = 1;
+            w.descriptorType = type;
+            w.pImageInfo = image;
+            w.pBufferInfo = buffer;
+        };
 
-    writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[2].dstSet = procSkyDescSet;
-    writes[2].dstBinding = 2;
-    writes[2].descriptorCount = 1;
-    writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    writes[2].pImageInfo = &envImgInfo;
+        add(0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &imgInfo, nullptr);
+        add(1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, nullptr, &bufInfo[frame]);
+        add(2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &envImgInfo, nullptr);
+        add(3, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &cloudsImgInfo, nullptr);
+        add(4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &cloudsSampledInfo, nullptr);
+        add(5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &cloudShadowImgInfo, nullptr);
+    }
 
-    writes[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[3].dstSet = procSkyDescSet;
-    writes[3].dstBinding = 3;
-    writes[3].descriptorCount = 1;
-    writes[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    writes[3].pImageInfo = &cloudsImgInfo;
-
-    writes[4].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[4].dstSet = procSkyDescSet;
-    writes[4].dstBinding = 4;
-    writes[4].descriptorCount = 1;
-    writes[4].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    writes[4].pImageInfo = &cloudsSampledInfo;
-
-    writes[5].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[5].dstSet = procSkyDescSet;
-    writes[5].dstBinding = 5;
-    writes[5].descriptorCount = 1;
-    writes[5].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    writes[5].pImageInfo = &cloudShadowImgInfo;
-
-    vkUpdateDescriptorSets(device, 6, writes, 0, nullptr);
+    vkUpdateDescriptorSets(device, at, writes, 0, nullptr);
 }
 
 void vkpt::RenderCubemap::CreateProceduralSkyPipelineLayout()
@@ -1149,7 +1151,7 @@ void vkpt::RenderCubemap::DestroyCloudsPipeline()
     }
 }
 
-void vkpt::RenderCubemap::DispatchClouds(VkCommandBuffer cmd, const ProceduralSkyParams &params)
+void vkpt::RenderCubemap::DispatchClouds(VkCommandBuffer cmd, const ProceduralSkyParams &params, uint32_t frameIndex)
 {
     // Nothing to march when the host turned the clouds off or made them fully
     // transparent. The cubemap keeps whatever it holds: no shader reads it then --
@@ -1189,7 +1191,7 @@ void vkpt::RenderCubemap::DispatchClouds(VkCommandBuffer cmd, const ProceduralSk
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cloudsPipeline);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, procSkyPipelineLayout,
-                            0, 1, &procSkyDescSet, 0, nullptr);
+                            0, 1, &procSkyDescSet[frameIndex], 0, nullptr);
 
     // A quarter of the map this frame, the next quarter the next: four frames fill
     // it, and the frame a map was made in fills it whole, so a new map never shows
@@ -1343,17 +1345,21 @@ void vkpt::RenderCubemap::CreateCloudShadowImage(const std::shared_ptr<MemoryAll
 
 void vkpt::RenderCubemap::CreateCloudShadowParamsBuffer()
 {
-    cloudShadowParamsBuffer.Init(
-        allocator,
-        sizeof(CloudShadowParams),
-        VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-        "Cloud shadow params buffer");
-
-    mappedCloudShadowParams = cloudShadowParamsBuffer.Map();
-    if (mappedCloudShadowParams)
+    // One buffer per frame in flight, as with the sky's parameters (see the header).
+    for (uint32_t frame = 0; frame < MAX_FRAMES_IN_FLIGHT; frame++)
     {
-        memset(mappedCloudShadowParams, 0, sizeof(CloudShadowParams));
+        cloudShadowParamsBuffer[frame].Init(
+            allocator,
+            sizeof(CloudShadowParams),
+            VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+            "Cloud shadow params buffer");
+
+        mappedCloudShadowParams[frame] = cloudShadowParamsBuffer[frame].Map();
+        if (mappedCloudShadowParams[frame])
+        {
+            memset(mappedCloudShadowParams[frame], 0, sizeof(CloudShadowParams));
+        }
     }
 }
 
@@ -1385,13 +1391,13 @@ void vkpt::RenderCubemap::CreateCloudShadowDescriptors()
 
     VkDescriptorPoolSize poolSizes[2] = {};
     poolSizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    poolSizes[0].descriptorCount = 1;
+    poolSizes[0].descriptorCount = 1 * MAX_FRAMES_IN_FLIGHT;
     poolSizes[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    poolSizes[1].descriptorCount = 1;
+    poolSizes[1].descriptorCount = 1 * MAX_FRAMES_IN_FLIGHT;
 
     VkDescriptorPoolCreateInfo poolInfo = {};
     poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    poolInfo.maxSets = 1;
+    poolInfo.maxSets = MAX_FRAMES_IN_FLIGHT;
     poolInfo.poolSizeCount = 2;
     poolInfo.pPoolSizes = poolSizes;
 
@@ -1403,39 +1409,57 @@ void vkpt::RenderCubemap::CreateCloudShadowDescriptors()
     VkDescriptorSetAllocateInfo allocInfo = {};
     allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
     allocInfo.descriptorPool = cloudShadowDescPool;
-    allocInfo.descriptorSetCount = 1;
-    allocInfo.pSetLayouts = &cloudShadowDescSetLayout;
+    allocInfo.descriptorSetCount = MAX_FRAMES_IN_FLIGHT;
+    VkDescriptorSetLayout setLayouts[MAX_FRAMES_IN_FLIGHT] = {};
+    for (uint32_t frame = 0; frame < MAX_FRAMES_IN_FLIGHT; frame++)
+    {
+        setLayouts[frame] = cloudShadowDescSetLayout;
+    }
+    allocInfo.pSetLayouts = setLayouts;
 
-    r = vkAllocateDescriptorSets(device, &allocInfo, &cloudShadowDescSet);
+    r = vkAllocateDescriptorSets(device, &allocInfo, cloudShadowDescSet);
     VK_CHECKERROR(r);
 
-    SET_DEBUG_NAME(device, cloudShadowDescSet, VK_OBJECT_TYPE_DESCRIPTOR_SET, "Cloud shadow desc set");
+    SET_DEBUG_NAME(device, cloudShadowDescSet[0], VK_OBJECT_TYPE_DESCRIPTOR_SET, "Cloud shadow desc set 0");
+    SET_DEBUG_NAME(device, cloudShadowDescSet[1], VK_OBJECT_TYPE_DESCRIPTOR_SET, "Cloud shadow desc set 1");
 
     VkDescriptorImageInfo imgInfo = {};
     imgInfo.imageView = cloudShadow.view;
     imgInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 
-    VkDescriptorBufferInfo bufInfo = {};
-    bufInfo.buffer = cloudShadowParamsBuffer.GetBuffer();
-    bufInfo.offset = 0;
-    bufInfo.range = VK_WHOLE_SIZE;
+    VkDescriptorBufferInfo bufInfo[MAX_FRAMES_IN_FLIGHT] = {};
+    for (uint32_t frame = 0; frame < MAX_FRAMES_IN_FLIGHT; frame++)
+    {
+        bufInfo[frame].buffer = cloudShadowParamsBuffer[frame].GetBuffer();
+        bufInfo[frame].offset = 0;
+        bufInfo[frame].range = VK_WHOLE_SIZE;
+    }
 
-    VkWriteDescriptorSet writes[2] = {};
-    writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[0].dstSet = cloudShadowDescSet;
-    writes[0].dstBinding = 0;
-    writes[0].descriptorCount = 1;
-    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    writes[0].pImageInfo = &imgInfo;
+    // The same volume and the same bindings for every frame in flight, each set
+    // naming its own copy of the parameters.
+    VkWriteDescriptorSet writes[MAX_FRAMES_IN_FLIGHT * 2] = {};
+    uint32_t at = 0;
 
-    writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[1].dstSet = cloudShadowDescSet;
-    writes[1].dstBinding = 1;
-    writes[1].descriptorCount = 1;
-    writes[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    writes[1].pBufferInfo = &bufInfo;
+    for (uint32_t frame = 0; frame < MAX_FRAMES_IN_FLIGHT; frame++)
+    {
+        const auto add = [&](uint32_t binding, VkDescriptorType type,
+                             const VkDescriptorImageInfo *image, const VkDescriptorBufferInfo *buffer)
+        {
+            VkWriteDescriptorSet &w = writes[at++];
+            w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            w.dstSet = cloudShadowDescSet[frame];
+            w.dstBinding = binding;
+            w.descriptorCount = 1;
+            w.descriptorType = type;
+            w.pImageInfo = image;
+            w.pBufferInfo = buffer;
+        };
 
-    vkUpdateDescriptorSets(device, 2, writes, 0, nullptr);
+        add(0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &imgInfo, nullptr);
+        add(1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, nullptr, &bufInfo[frame]);
+    }
+
+    vkUpdateDescriptorSets(device, at, writes, 0, nullptr);
 }
 
 void vkpt::RenderCubemap::CreateCloudShadowPipelineLayout()
@@ -1477,7 +1501,7 @@ void vkpt::RenderCubemap::DestroyCloudShadowPipeline()
     }
 }
 
-void vkpt::RenderCubemap::DispatchCloudShadow(VkCommandBuffer cmd)
+void vkpt::RenderCubemap::DispatchCloudShadow(VkCommandBuffer cmd, uint32_t frameIndex)
 {
     CmdLabel label(cmd, "Cloud shadow");
 
@@ -1505,7 +1529,7 @@ void vkpt::RenderCubemap::DispatchCloudShadow(VkCommandBuffer cmd)
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cloudShadowPipeline);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cloudShadowPipelineLayout,
-                            0, 1, &cloudShadowDescSet, 0, nullptr);
+                            0, 1, &cloudShadowDescSet[frameIndex], 0, nullptr);
 
     const uint32_t wg = Utils::GetWorkGroupCount(cloudShadowSize, 16);
     vkCmdDispatch(cmd, wg, wg, 1);
@@ -1538,7 +1562,7 @@ void vkpt::RenderCubemap::InvalidateCloudShadow()
 }
 
 void vkpt::RenderCubemap::UpdateCloudShadow(VkCommandBuffer cmd, const ProceduralSkyParams &params,
-                                            const float cameraPos[3])
+                                            const float cameraPos[3], uint32_t frameIndex)
 {
     // The layer casts nothing when the clouds are off, when the sky does not draw
     // them, when the host keeps no sun for them to hide, or when the sun is so low
@@ -1546,7 +1570,7 @@ void vkpt::RenderCubemap::UpdateCloudShadow(VkCommandBuffer cmd, const Procedura
     if (params.cloudParams[3] <= 0.5f || params.skyParams[1] <= 0.0f ||
         params.sunDirection[3] <= 0.5f ||
         params.sunDirection[2] <= CLOUD_SHADOW_MIN_SUN_HEIGHT ||
-        !mappedCloudShadowParams || cloudShadow.view == VK_NULL_HANDLE ||
+        !mappedCloudShadowParams[frameIndex] || cloudShadow.view == VK_NULL_HANDLE ||
         cloudShadowSize == 0 || cloudShadowPipeline == VK_NULL_HANDLE)
     {
         InvalidateCloudShadow();
@@ -1620,9 +1644,9 @@ void vkpt::RenderCubemap::UpdateCloudShadow(VkCommandBuffer cmd, const Procedura
     cloudShadowParams.mapProjection[2] = extent;
     cloudShadowParams.mapProjection[3] = float(cloudShadowSize);
 
-    memcpy(mappedCloudShadowParams, &cloudShadowParams, sizeof(CloudShadowParams));
+    memcpy(mappedCloudShadowParams[frameIndex], &cloudShadowParams, sizeof(CloudShadowParams));
 
-    DispatchCloudShadow(cmd);
+    DispatchCloudShadow(cmd, frameIndex);
 
     cloudShadowValid = true;
     cloudShadowAge = 0;
@@ -1709,10 +1733,14 @@ void vkpt::RenderCubemap::SetQuality(VkCommandBuffer cmd, uint32_t newQuality)
 
         // The layer that was drawn into the old map went with it, so the sky pass
         // draws it into the new one this frame, whatever the host has asked of it
-        // since -- even nothing at all.
-        if (mappedProcSkyParams)
+        // since -- even nothing at all. Every frame in flight forgets its own copy
+        // of the parameters with it.
+        for (uint32_t frame = 0; frame < MAX_FRAMES_IN_FLIGHT; frame++)
         {
-            memset(mappedProcSkyParams, 0, sizeof(ProceduralSkyParams));
+            if (mappedProcSkyParams[frame])
+            {
+                memset(mappedProcSkyParams[frame], 0, sizeof(ProceduralSkyParams));
+            }
         }
     }
 
@@ -1776,45 +1804,41 @@ void vkpt::RenderCubemap::UpdateQualityDescriptors()
     shadowWritten.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
     shadowWritten.imageView = cloudShadow.view;
 
-    // The two bindings of the sky pass that name the layer (the one it is drawn
-    // into and the one it is sampled through), the binding of the cubemap set that
-    // names the map of its shadow, the storage image of the pass that fills it, and
-    // the binding the cloud pass itself reads the map through.
-    VkWriteDescriptorSet writes[5] = {};
+    // The binding of the cubemap set that names the volume of the layer's shadow,
+    // and, for every frame in flight, the two bindings of the sky pass that name the
+    // layer (the one it is drawn into and the one it is sampled through) and the two
+    // that name the volume (the storage image of the pass that fills it and the one
+    // the cloud pass reads it through). Which parameters buffer a set names does not
+    // change with a level.
+    VkWriteDescriptorSet writes[1 + MAX_FRAMES_IN_FLIGHT * 4] = {};
+    uint32_t at = 0;
 
-    for (VkWriteDescriptorSet &write : writes)
+    const auto add = [&](VkDescriptorSet set, uint32_t binding, VkDescriptorType type,
+                         const VkDescriptorImageInfo *image)
     {
-        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        write.descriptorCount = 1;
-        write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        VkWriteDescriptorSet &w = writes[at++];
+        w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        w.dstSet = set;
+        w.dstBinding = binding;
+        w.descriptorCount = 1;
+        w.descriptorType = type;
+        w.pImageInfo = image;
+    };
+
+    add(descSet, BINDING_RENDER_CUBEMAP_CLOUD_SHADOW, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &shadowSampled);
+
+    for (uint32_t frame = 0; frame < MAX_FRAMES_IN_FLIGHT; frame++)
+    {
+        add(procSkyDescSet[frame], 3, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &cloudsWritten);
+        add(procSkyDescSet[frame], 4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &cloudsSampled);
+        add(procSkyDescSet[frame], 5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &shadowSampled);
+        add(cloudShadowDescSet[frame], 0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &shadowWritten);
     }
 
-    writes[0].dstSet = procSkyDescSet;
-    writes[0].dstBinding = 3;
-    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    writes[0].pImageInfo = &cloudsWritten;
-
-    writes[1].dstSet = procSkyDescSet;
-    writes[1].dstBinding = 4;
-    writes[1].pImageInfo = &cloudsSampled;
-
-    writes[2].dstSet = descSet;
-    writes[2].dstBinding = BINDING_RENDER_CUBEMAP_CLOUD_SHADOW;
-    writes[2].pImageInfo = &shadowSampled;
-
-    writes[3].dstSet = cloudShadowDescSet;
-    writes[3].dstBinding = 0;
-    writes[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    writes[3].pImageInfo = &shadowWritten;
-
-    writes[4].dstSet = procSkyDescSet;
-    writes[4].dstBinding = 5;
-    writes[4].pImageInfo = &shadowSampled;
-
-    vkUpdateDescriptorSets(device, 5, writes, 0, nullptr);
+    vkUpdateDescriptorSets(device, at, writes, 0, nullptr);
 }
 
-void vkpt::RenderCubemap::DrawProcedural(VkCommandBuffer cmd, const ProceduralSkyParams &inParams)
+void vkpt::RenderCubemap::DrawProcedural(VkCommandBuffer cmd, const ProceduralSkyParams &inParams, uint32_t frameIndex)
 {
     CmdLabel label(cmd, "Procedural sky");
 
@@ -1833,8 +1857,8 @@ void vkpt::RenderCubemap::DrawProcedural(VkCommandBuffer cmd, const ProceduralSk
     // than come in four parts over four frames -- the sun editor would otherwise
     // light the ground one way and the clouds another for three frames of every
     // four. Such a frame fills the whole map at once (CLOUD_UPDATE_FRAMES below).
-    if (mappedProcSkyParams &&
-        !SameCloudLook(*static_cast<const ProceduralSkyParams *>(mappedProcSkyParams), params))
+    if (mappedProcSkyParams[frameIndex] &&
+        !SameCloudLook(*static_cast<const ProceduralSkyParams *>(mappedProcSkyParams[frameIndex]), params))
     {
         cloudsFullUpdate = true;
     }
@@ -1872,18 +1896,18 @@ void vkpt::RenderCubemap::DrawProcedural(VkCommandBuffer cmd, const ProceduralSk
         }
     }
 
-    if (mappedProcSkyParams)
+    if (mappedProcSkyParams[frameIndex])
     {
         // no changes since the last render - keep the cached cubemap
-        if (memcmp(mappedProcSkyParams, &params, sizeof(ProceduralSkyParams)) == 0)
+        if (memcmp(mappedProcSkyParams[frameIndex], &params, sizeof(ProceduralSkyParams)) == 0)
         {
             return;
         }
 
-        memcpy(mappedProcSkyParams, &params, sizeof(ProceduralSkyParams));
+        memcpy(mappedProcSkyParams[frameIndex], &params, sizeof(ProceduralSkyParams));
     }
 
-    DispatchClouds(cmd, params);
+    DispatchClouds(cmd, params, frameIndex);
 
     for (VkImage image : { cubemap.image, envCubemap.image })
     {
@@ -1912,7 +1936,7 @@ void vkpt::RenderCubemap::DrawProcedural(VkCommandBuffer cmd, const ProceduralSk
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, procSkyPipeline);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, procSkyPipelineLayout,
-                            0, 1, &procSkyDescSet, 0, nullptr);
+                            0, 1, &procSkyDescSet[frameIndex], 0, nullptr);
 
     const uint32_t wgX = Utils::GetWorkGroupCount(cubemapSize, 16);
     const uint32_t wgY = Utils::GetWorkGroupCount(cubemapSize, 16);

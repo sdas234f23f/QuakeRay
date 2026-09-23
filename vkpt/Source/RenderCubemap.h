@@ -75,8 +75,10 @@ public:
               const std::shared_ptr<TextureManager> &textureManager,
               const std::shared_ptr<GlobalUniform> &uniform);
 
-    // Fill the cubemap with a procedural atmospheric sky (compute)
-    void DrawProcedural(VkCommandBuffer cmd, const ProceduralSkyParams &params);
+    // Fill the cubemap with a procedural atmospheric sky (compute). `frameIndex`
+    // picks the copy of the parameters that belongs to the frame being recorded:
+    // the frames in flight may still be reading theirs while this one is written.
+    void DrawProcedural(VkCommandBuffer cmd, const ProceduralSkyParams &params, uint32_t frameIndex);
 
     VkDescriptorSetLayout GetDescSetLayout() const;
     VkDescriptorSet GetDescSet() const;
@@ -85,8 +87,9 @@ public:
     // laid out around `cameraPos` and it is redrawn only when the clouds, the sun
     // or that placement have moved enough to matter, so the volume the lighting
     // passes read always matches what GetCloudShadowPlacement() reports.
+    // `frameIndex` picks this frame's copy of the parameters, as in DrawProcedural.
     void UpdateCloudShadow(VkCommandBuffer cmd, const ProceduralSkyParams &params,
-                           const float cameraPos[3]);
+                           const float cameraPos[3], uint32_t frameIndex);
 
     // Where the standing volume lies in the world: [0] is 1 while it holds
     // anything, [1..2] its world-space origin, [3] its extent in metres. The host
@@ -153,7 +156,7 @@ private:
     // cloud layer (compute, writes into the cubemap the sky composites)
     void CreateCloudsPipeline(const ShaderManager *shaderManager);
     void DestroyCloudsPipeline();
-    void DispatchClouds(VkCommandBuffer cmd, const ProceduralSkyParams &params);
+    void DispatchClouds(VkCommandBuffer cmd, const ProceduralSkyParams &params, uint32_t frameIndex);
 
     // cloud shadow volume (compute, read back by every pass that lights the world)
     void CreateCloudShadowImage(const std::shared_ptr<MemoryAllocator> &allocator, VkCommandBuffer cmd,
@@ -163,7 +166,7 @@ private:
     void CreateCloudShadowPipelineLayout();
     void CreateCloudShadowPipeline(const ShaderManager *shaderManager);
     void DestroyCloudShadowPipeline();
-    void DispatchCloudShadow(VkCommandBuffer cmd);
+    void DispatchCloudShadow(VkCommandBuffer cmd, uint32_t frameIndex);
 
     // Both are recreated by SetQuality, so the descriptor sets that name them are
     // written again: nothing else about them changes, so no set, pool or layout is
@@ -212,13 +215,17 @@ private:
     VkDescriptorPool descPool;
     VkDescriptorSet descSet;
 
-    // procedural sky (compute)
-    Buffer procSkyParamsBuffer;
-    void *mappedProcSkyParams = nullptr;
+    // procedural sky (compute). One buffer, one mapped pointer and one descriptor
+    // set per frame in flight: the frames behind this one may still be reading
+    // theirs while this one is written, and what lives in them (the sun, the time
+    // the layer drifts by, the quarter of its map this frame marches) may not be
+    // read half rewritten.
+    Buffer procSkyParamsBuffer[MAX_FRAMES_IN_FLIGHT];
+    void *mappedProcSkyParams[MAX_FRAMES_IN_FLIGHT] = {};
 
     VkDescriptorSetLayout procSkyDescSetLayout = VK_NULL_HANDLE;
     VkDescriptorPool      procSkyDescPool      = VK_NULL_HANDLE;
-    VkDescriptorSet       procSkyDescSet       = VK_NULL_HANDLE;
+    VkDescriptorSet       procSkyDescSet[MAX_FRAMES_IN_FLIGHT] = {};
 
     VkPipelineLayout procSkyPipelineLayout = VK_NULL_HANDLE;
     VkPipeline       procSkyPipeline       = VK_NULL_HANDLE;
@@ -260,14 +267,17 @@ private:
 
     VkDescriptorSetLayout cloudShadowDescSetLayout = VK_NULL_HANDLE;
     VkDescriptorPool      cloudShadowDescPool      = VK_NULL_HANDLE;
-    VkDescriptorSet       cloudShadowDescSet       = VK_NULL_HANDLE;
+    VkDescriptorSet       cloudShadowDescSet[MAX_FRAMES_IN_FLIGHT] = {};
 
     VkPipelineLayout cloudShadowPipelineLayout = VK_NULL_HANDLE;
     VkPipeline       cloudShadowPipeline       = VK_NULL_HANDLE;
     VkSampler        cloudShadowSampler        = VK_NULL_HANDLE; // names the volume in the cubemap descriptor set
 
-    Buffer cloudShadowParamsBuffer;
-    void *mappedCloudShadowParams = nullptr;
+    // As with the procedural sky's parameters: one buffer and one mapped pointer per
+    // frame in flight, because the frame behind this one may still be filling the
+    // volume from its own copy (the sun, the projection and the layer's settings).
+    Buffer cloudShadowParamsBuffer[MAX_FRAMES_IN_FLIGHT];
+    void *mappedCloudShadowParams[MAX_FRAMES_IN_FLIGHT] = {};
 };
 
 }
