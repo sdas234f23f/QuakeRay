@@ -56,13 +56,16 @@ private:
     VkDevice device;
 
     std::shared_ptr<ShGlobalUniform> uniformData;
-    std::shared_ptr<AutoBuffer> uniformBuffer;
+
+    // One buffer and one descriptor set per frame in flight: the frames behind this
+    // one may still be reading the camera, the sun and the place the cloud layer's
+    // shadow volume stands in theirs while this one is written, and a single copy
+    // showed as a frame drawn with another frame's values.
+    std::shared_ptr<AutoBuffer> uniformBuffer[MAX_FRAMES_IN_FLIGHT];
 
     VkDescriptorPool        descPool;
     VkDescriptorSetLayout   descSetLayout;
-    // uniform device local buffer won't be changing (only its contents),
-    // so desc set need to be updated once, so there can be only one desc set
-    VkDescriptorSet         descSet;
+    VkDescriptorSet         descSet[MAX_FRAMES_IN_FLIGHT];
 };
 
 }

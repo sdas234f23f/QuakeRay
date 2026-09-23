@@ -917,15 +917,16 @@ void VulkanDevice::Render(VkCommandBuffer cmd, const RgDrawFrameInfo &drawInfo)
 
             // The world's shading reads the volume's placement from the tail of the
             // global uniform, which was filled before this frame's own refill of the
-            // volume could re-anchor it: refresh it now, so that the passes that light
-            // the world read the volume by the very place it was filled at, as the sky
-            // pass already does through its own parameters. The copy the uniform was
-            // uploaded with reads the staging when it runs, so writing the tail here
-            // is enough -- no second upload is needed.
+            // volume could re-anchor it: refresh the tail and upload the uniform
+            // again, so that the passes that light the world read the volume by the
+            // very place it was filled at, as the sky pass already does through its
+            // own parameters. The upload is what carries the tail: it copies the CPU
+            // struct into this frame's staging, which the recorded copy reads later.
             {
                 float cloudShadowPlacement[4] = {};
                 rasterizer->GetRenderCubemap()->GetCloudShadowPlacement(cloudShadowPlacement);
                 memcpy(uniform->GetData()->skyCubemapRotationTransform + 12, cloudShadowPlacement, sizeof(cloudShadowPlacement));
+                uniform->Upload(cmd, frameIndex);
             }
         }
         else

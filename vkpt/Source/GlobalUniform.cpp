@@ -30,13 +30,15 @@ GlobalUniform::GlobalUniform(VkDevice _device, std::shared_ptr<MemoryAllocator> 
 :
     device(_device),
     descPool(VK_NULL_HANDLE),
-    descSetLayout(VK_NULL_HANDLE),
-    descSet(VK_NULL_HANDLE)
+    descSetLayout(VK_NULL_HANDLE)
 {
     uniformData = std::make_shared<ShGlobalUniform>();
 
-    uniformBuffer = std::make_shared<AutoBuffer>(_device, _allocator);
-    uniformBuffer->Create(sizeof(ShGlobalUniform), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, "Uniform buffer");
+    for (uint32_t frame = 0; frame < MAX_FRAMES_IN_FLIGHT; frame++)
+    {
+        uniformBuffer[frame] = std::make_shared<AutoBuffer>(_device, _allocator);
+        uniformBuffer[frame]->Create(sizeof(ShGlobalUniform), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, "Uniform buffer");
+    }
 
     CreateDescriptors();
 }
@@ -79,30 +81,44 @@ void GlobalUniform::CreateDescriptors()
     VkDescriptorSetAllocateInfo allocInfo = {};
     allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
     allocInfo.descriptorPool = descPool;
-    allocInfo.descriptorSetCount = 1;
-    allocInfo.pSetLayouts = &descSetLayout;
+    allocInfo.descriptorSetCount = MAX_FRAMES_IN_FLIGHT;
+    VkDescriptorSetLayout setLayouts[MAX_FRAMES_IN_FLIGHT] = {};
+    for (uint32_t frame = 0; frame < MAX_FRAMES_IN_FLIGHT; frame++)
+    {
+        setLayouts[frame] = descSetLayout;
+    }
+    allocInfo.pSetLayouts = setLayouts;
 
-    r = vkAllocateDescriptorSets(device, &allocInfo, &descSet);
+    r = vkAllocateDescriptorSets(device, &allocInfo, descSet);
     VK_CHECKERROR(r);
 
-    SET_DEBUG_NAME(device, descSet, VK_OBJECT_TYPE_DESCRIPTOR_SET, "Uniform Desc set");
+    for (uint32_t frame = 0; frame < MAX_FRAMES_IN_FLIGHT; frame++)
+    {
+        char name[64];
+        snprintf(name, sizeof(name), "Uniform Desc set %u", frame);
+        SET_DEBUG_NAME(device, descSet[frame], VK_OBJECT_TYPE_DESCRIPTOR_SET, name);
+    }
 
-    // bind buffers to sets once
-    VkDescriptorBufferInfo bufInfo = {};
-    bufInfo.buffer = uniformBuffer->GetDeviceLocal();
-    bufInfo.offset = 0;
-    bufInfo.range = VK_WHOLE_SIZE;
+    // bind buffers to sets once, each frame's set naming its own buffer
+    VkDescriptorBufferInfo bufInfo[MAX_FRAMES_IN_FLIGHT] = {};
+    VkWriteDescriptorSet wrt[MAX_FRAMES_IN_FLIGHT] = {};
 
-    VkWriteDescriptorSet wrt = {};
-    wrt.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    wrt.dstSet = descSet;
-    wrt.dstBinding = BINDING_GLOBAL_UNIFORM;
-    wrt.dstArrayElement = 0;
-    wrt.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    wrt.descriptorCount = 1;
-    wrt.pBufferInfo = &bufInfo;
+    for (uint32_t frame = 0; frame < MAX_FRAMES_IN_FLIGHT; frame++)
+    {
+        bufInfo[frame].buffer = uniformBuffer[frame]->GetDeviceLocal();
+        bufInfo[frame].offset = 0;
+        bufInfo[frame].range = VK_WHOLE_SIZE;
 
-    vkUpdateDescriptorSets(device, 1, &wrt, 0, nullptr);
+        wrt[frame].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        wrt[frame].dstSet = descSet[frame];
+        wrt[frame].dstBinding = BINDING_GLOBAL_UNIFORM;
+        wrt[frame].dstArrayElement = 0;
+        wrt[frame].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        wrt[frame].descriptorCount = 1;
+        wrt[frame].pBufferInfo = &bufInfo[frame];
+    }
+
+    vkUpdateDescriptorSets(device, MAX_FRAMES_IN_FLIGHT, wrt, 0, nullptr);
 }
 
 GlobalUniform::~GlobalUniform()
@@ -116,7 +132,7 @@ void GlobalUniform::Upload(VkCommandBuffer cmd, uint32_t frameIndex)
     CmdLabel label(cmd, "Copying uniform");
 
     SetData(frameIndex, uniformData.get(), sizeof(ShGlobalUniform));
-    uniformBuffer->CopyFromStaging(cmd, frameIndex, sizeof(ShGlobalUniform));
+    uniformBuffer[frameIndex]->CopyFromStaging(cmd, frameIndex, sizeof(ShGlobalUniform));
 }
 
 ShGlobalUniform *GlobalUniform::GetData()
@@ -131,7 +147,7 @@ const ShGlobalUniform *GlobalUniform::GetData() const
 
 VkDescriptorSet GlobalUniform::GetDescSet(uint32_t frameIndex) const
 {
-    return descSet;
+    return descSet[frameIndex];
 }
 
 VkDescriptorSetLayout GlobalUniform::GetDescSetLayout() const
@@ -142,9 +158,9 @@ VkDescriptorSetLayout GlobalUniform::GetDescSetLayout() const
 void GlobalUniform::SetData(uint32_t frameIndex, const void *data, VkDeviceSize dataSize)
 {
     assert(frameIndex >= 0 && frameIndex < MAX_FRAMES_IN_FLIGHT);
-    assert(uniformBuffer->GetSize() <= dataSize);
+    assert(uniformBuffer[frameIndex]->GetSize() <= dataSize);
 
-    void *mapped = uniformBuffer->GetMapped(frameIndex);
+    void *mapped = uniformBuffer[frameIndex]->GetMapped(frameIndex);
     memcpy(mapped, data, dataSize);
 }
 
