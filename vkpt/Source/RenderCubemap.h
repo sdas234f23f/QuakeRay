@@ -51,6 +51,10 @@ public:
         float cloudMarch[4];    // x = view march steps, y = sun march steps, z = detail erosion strength, w = forward scattering
         float cloudAnchor[4];   // xy = the eye's place in the world's horizontal plane, z = its height in the world, w = which quarter of the layer's map this frame marches (CLOUD_UPDATE_FRAMES meaning all of it)
         float cloudShadowPlacement[4]; // x = 1 while the layer's shadow volume stands (see GetCloudShadowPlacement), yz = its snapped world origin, w = its extent in metres
+        // How far the column of cloud a texel stands over has moved over the world
+        // since the frame before: the eye's own movement plus the wind's. The pass
+        // reads its history through it (CmSkyClouds.comp).
+        float cloudAnchorDelta[4]; // xy = that movement; zw unused
     };
 
 public:
@@ -231,18 +235,32 @@ private:
     VkPipeline       procSkyPipeline       = VK_NULL_HANDLE;
 
     // The cloud layer that the procedural sky composites in front of everything it
-    // draws: a small cubemap (rgb = light scattered in the cloud, a = how much of
-    // the sky behind it gets through) sampled by direction.
-    Attachment clouds;
+    // draws: a cubemap (rgb = light scattered in the cloud, a = how much of the sky
+    // behind it gets through) sampled by direction. Two of them: a frame marches a
+    // quarter of the one it writes and reads the other as the history for the three
+    // quarters it leaves alone, so that no texel of the layer is older than the frame
+    // before. Which one is which follows the frame index, so the descriptor sets that
+    // name them never change (WriteProceduralSkyDescriptors).
+    Attachment clouds[2];
     uint32_t   cloudsSize = 0;
     VkPipeline cloudsPipeline = VK_NULL_HANDLE;
     VkSampler  cloudsSampler  = VK_NULL_HANDLE; // names the layer in the sky's descriptor set
 
     // The layer is marched in a quarter of its map a frame (see DispatchClouds):
-    // which quarter this frame is for, and whether the map is new and all of it has
-    // to be filled at once rather than a quarter of it.
+    // which quarter this frame marches, and how many of the frames still to come
+    // march the whole map rather than a quarter of it -- this one included. A map
+    // that is new, or a frame the look of the layer changed in, needs two of them:
+    // the cubemap the second frame would read as its history is the one no frame has
+    // written yet.
     uint32_t cloudsCycle = 0;
-    bool     cloudsFullUpdate = true;
+    uint32_t cloudsWhole = 2;
+
+    // The eye's place in the world's horizontal plane the frame before, and the time
+    // the layer drifted by then: what the shift between the two frames is made of (the
+    // eye's movement plus the wind's), which is what the history of the layer is read
+    // through (CmSkyClouds.comp).
+    float cloudAnchorPrev[2] = {};
+    float cloudTimePrev = 0.0f;
 
     // The quality level both the cloud cubemap and the volume of its shadow are
     // sized and refreshed at (see SetQuality).
