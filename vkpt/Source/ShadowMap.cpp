@@ -142,9 +142,105 @@ void ComputeViewProjection(const float sunDirection[3],
 namespace vkpt
 {
 
+// The resolution the map is drawn at, one entry per quality level
+// (ShadowMap::QUALITY_LOW to ShadowMap::QUALITY_EXTREME): the shafts traced
+// through it read it as a whole, and a texel of it is what their edges land on.
+// Doubling it doubles how many texels the edge of a shaft falls between, and it
+// quadruples the geometry the map has to be filled with.
+constexpr uint32_t SHADOW_MAP_SIZES[vkpt::ShadowMap::QUALITY_LEVELS] = { 1024, 2048, 4096, 8192, 16384 };
+
+uint32_t ShadowMap::ClampQuality(uint32_t quality)
+{
+    return quality > QUALITY_EXTREME ? QUALITY_EXTREME : quality;
+}
+
+uint32_t ShadowMap::SizeForQuality(uint32_t quality)
+{
+    return SHADOW_MAP_SIZES[ClampQuality(quality)];
+}
+
+void ShadowMap::SetQuality(uint32_t quality)
+{
+    quality = ClampQuality(quality);
+
+    const uint32_t size = SizeForQuality(quality);
+
+    if (size == shadowMapSize)
+    {
+        // The level in use is the level asked for, so nothing is waiting to be
+        // taken.
+        failedQuality = QUALITY_LEVELS;
+        qualityRetryAge = 0;
+
+        return;
+    }
+
+    // A level whose map could not be made is not asked for again on every frame
+    // (see failedQuality): once in a while is enough for memory freed elsewhere to
+    // bring it up, and until then the attempt would only cost.
+    if (quality == failedQuality)
+    {
+        qualityRetryAge++;
+
+        if (qualityRetryAge < QUALITY_RETRY_FRAMES)
+        {
+            return;
+        }
+    }
+    else
+    {
+        qualityRetryAge = 0;
+    }
+
+    // The map is named by the descriptor set the shaft pass binds, and the frames
+    // still in flight behind the one being recorded may be reading it, so the old
+    // one may only go once the queue has run dry. The shafts trace through it on
+    // the graphics queue, which is the one the frame is recorded on.
+    cmdManager->WaitGraphicsIdle();
+
+    VkImage newImage = VK_NULL_HANDLE;
+    VkDeviceMemory newMemory = VK_NULL_HANDLE;
+    VkImageView newView = VK_NULL_HANDLE;
+    VkSampler newSampler = VK_NULL_HANDLE;
+
+    // The map in hand is kept until the new one is there, so a level that cannot
+    // be afforded is asked for again later (see failedQuality).
+    if (!CreateImageObjects(size, newImage, newMemory, newView, newSampler, true))
+    {
+        failedQuality = quality;
+        qualityRetryAge = 0;
+
+        return;
+    }
+
+    vkDestroyFramebuffer(device, framebuffer, nullptr);
+    vkDestroySampler(device, shadowSampler, nullptr);
+    vkDestroyImageView(device, depthImageView, nullptr);
+    vkDestroyImage(device, depthImage, nullptr);
+    if (depthMemory)
+    {
+        MemoryAllocator::FreeDedicated(device, depthMemory);
+    }
+
+    framebuffer    = VK_NULL_HANDLE;
+    shadowSampler  = newSampler;
+    depthImageView = newView;
+    depthImage     = newImage;
+    depthMemory    = newMemory;
+
+    shadowMapSize = size;
+    failedQuality = QUALITY_LEVELS;
+    qualityRetryAge = 0;
+
+    CreateFramebuffer();
+    WriteDescriptors();
+}
+
 ShadowMap::ShadowMap(VkDevice _device, std::shared_ptr<MemoryAllocator> &_allocator,
-                     const std::shared_ptr<const ShaderManager> &shaderManager)
-: device(_device), allocator(_allocator)
+                     const std::shared_ptr<const ShaderManager> &shaderManager,
+                     const std::shared_ptr<CommandBufferManager> &_cmdManager,
+                     uint32_t quality)
+: device(_device), allocator(_allocator), cmdManager(_cmdManager), shadowMapSize(SizeForQuality(quality))
 {
     CreateImage();
     CreateRenderPass();
@@ -160,12 +256,45 @@ ShadowMap::~ShadowMap()
 
 void ShadowMap::CreateImage()
 {
+    CreateImageObjects(shadowMapSize, depthImage, depthMemory, depthImageView, shadowSampler);
+}
+
+bool ShadowMap::CreateImageObjects(uint32_t size, VkImage &image, VkDeviceMemory &memory,
+                                   VkImageView &view, VkSampler &sampler, bool allowFailure)
+{
+    // A map that could not be made leaves nothing behind, so the caller that may go
+    // on without it (a quality level that was asked for) keeps the map it had.
+    const auto giveUp = [this, &image, &memory, &view, &sampler]()
+    {
+        if (view != VK_NULL_HANDLE)
+        {
+            vkDestroyImageView(device, view, nullptr);
+        }
+        if (image != VK_NULL_HANDLE)
+        {
+            vkDestroyImage(device, image, nullptr);
+        }
+        if (memory != VK_NULL_HANDLE)
+        {
+            MemoryAllocator::FreeDedicated(device, memory);
+        }
+        if (sampler != VK_NULL_HANDLE)
+        {
+            vkDestroySampler(device, sampler, nullptr);
+        }
+
+        image = VK_NULL_HANDLE;
+        memory = VK_NULL_HANDLE;
+        view = VK_NULL_HANDLE;
+        sampler = VK_NULL_HANDLE;
+    };
+
     VkResult r;
 
     VkImageCreateInfo imageInfo = {};
     imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     imageInfo.imageType = VK_IMAGE_TYPE_2D;
-    imageInfo.extent = {SHADOW_MAP_SIZE, SHADOW_MAP_SIZE, 1};
+    imageInfo.extent = {size, size, 1};
     imageInfo.mipLevels = 1;
     imageInfo.arrayLayers = 1;
     imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
@@ -175,23 +304,53 @@ void ShadowMap::CreateImage()
     imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
-    r = vkCreateImage(device, &imageInfo, nullptr, &depthImage);
-    VK_CHECKERROR(r);
+    r = vkCreateImage(device, &imageInfo, nullptr, &image);
+    if (r != VK_SUCCESS)
+    {
+        // Whether the map may be given up on is the caller's to say.
+        if (!allowFailure)
+        {
+            VK_CHECKERROR(r);
+        }
 
-    SET_DEBUG_NAME(device, depthImage, VK_OBJECT_TYPE_IMAGE, "Shadow map image");
+        giveUp();
+
+        return false;
+    }
+
+    SET_DEBUG_NAME(device, image, VK_OBJECT_TYPE_IMAGE, "Shadow map image");
 
     VkMemoryRequirements memReq;
-    vkGetImageMemoryRequirements(device, depthImage, &memReq);
+    vkGetImageMemoryRequirements(device, image, &memReq);
 
-    depthMemory = allocator->AllocDedicated(memReq, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                                            MemoryAllocator::AllocType::DEFAULT, "Shadow map memory");
+    memory = allowFailure ?
+        allocator->TryAllocDedicated(memReq, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                                     MemoryAllocator::AllocType::DEFAULT, "Shadow map memory") :
+        allocator->AllocDedicated(memReq, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                                  MemoryAllocator::AllocType::DEFAULT, "Shadow map memory");
+    if (memory == VK_NULL_HANDLE)
+    {
+        giveUp();
 
-    r = vkBindImageMemory(device, depthImage, depthMemory, 0);
-    VK_CHECKERROR(r);
+        return false;
+    }
+
+    r = vkBindImageMemory(device, image, memory, 0);
+    if (r != VK_SUCCESS)
+    {
+        if (!allowFailure)
+        {
+            VK_CHECKERROR(r);
+        }
+
+        giveUp();
+
+        return false;
+    }
 
     VkImageViewCreateInfo viewInfo = {};
     viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-    viewInfo.image = depthImage;
+    viewInfo.image = image;
     viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
     viewInfo.format = VK_FORMAT_D32_SFLOAT;
     viewInfo.subresourceRange = {
@@ -202,10 +361,20 @@ void ShadowMap::CreateImage()
         .layerCount = 1,
     };
 
-    r = vkCreateImageView(device, &viewInfo, nullptr, &depthImageView);
-    VK_CHECKERROR(r);
+    r = vkCreateImageView(device, &viewInfo, nullptr, &view);
+    if (r != VK_SUCCESS)
+    {
+        if (!allowFailure)
+        {
+            VK_CHECKERROR(r);
+        }
 
-    SET_DEBUG_NAME(device, depthImageView, VK_OBJECT_TYPE_IMAGE_VIEW, "Shadow map image view");
+        giveUp();
+
+        return false;
+    }
+
+    SET_DEBUG_NAME(device, view, VK_OBJECT_TYPE_IMAGE_VIEW, "Shadow map image view");
 
     VkSamplerReductionModeCreateInfo reductionInfo = {};
     reductionInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_REDUCTION_MODE_CREATE_INFO;
@@ -222,10 +391,22 @@ void ShadowMap::CreateImage()
     samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
     samplerInfo.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE;
 
-    r = vkCreateSampler(device, &samplerInfo, nullptr, &shadowSampler);
-    VK_CHECKERROR(r);
+    r = vkCreateSampler(device, &samplerInfo, nullptr, &sampler);
+    if (r != VK_SUCCESS)
+    {
+        if (!allowFailure)
+        {
+            VK_CHECKERROR(r);
+        }
 
-    SET_DEBUG_NAME(device, shadowSampler, VK_OBJECT_TYPE_SAMPLER, "Shadow map sampler");
+        giveUp();
+
+        return false;
+    }
+
+    SET_DEBUG_NAME(device, sampler, VK_OBJECT_TYPE_SAMPLER, "Shadow map sampler");
+
+    return true;
 }
 
 void ShadowMap::CreateRenderPass()
@@ -274,16 +455,21 @@ void ShadowMap::CreateRenderPass()
 
     SET_DEBUG_NAME(device, renderPass, VK_OBJECT_TYPE_RENDER_PASS, "Shadow map render pass");
 
+    CreateFramebuffer();
+}
+
+void ShadowMap::CreateFramebuffer()
+{
     VkFramebufferCreateInfo fbInfo = {};
     fbInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
     fbInfo.renderPass = renderPass;
     fbInfo.attachmentCount = 1;
     fbInfo.pAttachments = &depthImageView;
-    fbInfo.width = SHADOW_MAP_SIZE;
-    fbInfo.height = SHADOW_MAP_SIZE;
+    fbInfo.width = shadowMapSize;
+    fbInfo.height = shadowMapSize;
     fbInfo.layers = 1;
 
-    r = vkCreateFramebuffer(device, &fbInfo, nullptr, &framebuffer);
+    VkResult r = vkCreateFramebuffer(device, &fbInfo, nullptr, &framebuffer);
     VK_CHECKERROR(r);
 
     SET_DEBUG_NAME(device, framebuffer, VK_OBJECT_TYPE_FRAMEBUFFER, "Shadow map framebuffer");
@@ -345,15 +531,15 @@ void ShadowMap::CreatePipelines(const ShaderManager *shaderManager)
     VkViewport viewport = {
         .x = 0.0f,
         .y = 0.0f,
-        .width = (float)SHADOW_MAP_SIZE,
-        .height = (float)SHADOW_MAP_SIZE,
+        .width = (float)shadowMapSize,
+        .height = (float)shadowMapSize,
         .minDepth = 0.0f,
         .maxDepth = 1.0f,
     };
 
     VkRect2D scissor = {
         .offset = {0, 0},
-        .extent = {SHADOW_MAP_SIZE, SHADOW_MAP_SIZE},
+        .extent = {shadowMapSize, shadowMapSize},
     };
 
     VkPipelineViewportStateCreateInfo viewportState = {};
@@ -362,6 +548,20 @@ void ShadowMap::CreatePipelines(const ShaderManager *shaderManager)
     viewportState.pViewports = &viewport;
     viewportState.scissorCount = 1;
     viewportState.pScissors = &scissor;
+
+    // Both follow the resolution of the map, which the quality level picks, and
+    // Render sets them: the values above are only what the pipeline is built
+    // with, and the map may be redrawn at another size without rebuilding it.
+    const VkDynamicState dynamicStates[] =
+    {
+        VK_DYNAMIC_STATE_VIEWPORT,
+        VK_DYNAMIC_STATE_SCISSOR,
+    };
+
+    VkPipelineDynamicStateCreateInfo dynamicState = {};
+    dynamicState.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+    dynamicState.dynamicStateCount = sizeof(dynamicStates) / sizeof(dynamicStates[0]);
+    dynamicState.pDynamicStates = dynamicStates;
 
     VkPipelineRasterizationStateCreateInfo rasterizer = {};
     rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
@@ -398,6 +598,7 @@ void ShadowMap::CreatePipelines(const ShaderManager *shaderManager)
     pipelineInfo.pRasterizationState = &rasterizer;
     pipelineInfo.pMultisampleState = &multisample;
     pipelineInfo.pDepthStencilState = &depthStencil;
+    pipelineInfo.pDynamicState = &dynamicState;
     pipelineInfo.layout = pipelineLayout;
     pipelineInfo.renderPass = renderPass;
     pipelineInfo.subpass = 0;
@@ -454,6 +655,11 @@ void ShadowMap::CreateDescriptors()
 
     SET_DEBUG_NAME(device, descSet, VK_OBJECT_TYPE_DESCRIPTOR_SET, "Shadow map desc set");
 
+    WriteDescriptors();
+}
+
+void ShadowMap::WriteDescriptors()
+{
     VkDescriptorImageInfo imageInfo = {};
     imageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     imageInfo.imageView = depthImageView;
@@ -575,7 +781,7 @@ bool ShadowMap::Render(VkCommandBuffer cmd,
     passInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
     passInfo.renderPass = renderPass;
     passInfo.framebuffer = framebuffer;
-    passInfo.renderArea = {.offset = {0, 0}, .extent = {SHADOW_MAP_SIZE, SHADOW_MAP_SIZE}};
+    passInfo.renderArea = {.offset = {0, 0}, .extent = {shadowMapSize, shadowMapSize}};
     passInfo.clearValueCount = 1;
     passInfo.pClearValues = &clearDepth;
 
@@ -585,8 +791,8 @@ bool ShadowMap::Render(VkCommandBuffer cmd,
     VkViewport viewport = {
         .x = 0.0f,
         .y = 0.0f,
-        .width = (float)SHADOW_MAP_SIZE,
-        .height = (float)SHADOW_MAP_SIZE,
+        .width = (float)shadowMapSize,
+        .height = (float)shadowMapSize,
         .minDepth = 0.0f,
         .maxDepth = 1.0f,
     };
@@ -594,7 +800,7 @@ bool ShadowMap::Render(VkCommandBuffer cmd,
 
     VkRect2D scissor = {
         .offset = {0, 0},
-        .extent = {SHADOW_MAP_SIZE, SHADOW_MAP_SIZE},
+        .extent = {shadowMapSize, shadowMapSize},
     };
     vkCmdSetScissor(cmd, 0, 1, &scissor);
 

@@ -179,7 +179,9 @@ VulkanDevice::VulkanDevice( const RgInstanceCreateInfo* info )
     shadowMap           = std::make_shared<ShadowMap>(
         device,
         memAllocator,
-        shaderManager);
+        shaderManager,
+        cmdManager,
+        info->godRaysQuality);
 
     godRays             = std::make_shared<GodRays>(
         device,
@@ -188,7 +190,8 @@ VulkanDevice::VulkanDevice( const RgInstanceCreateInfo* info )
         shaderManager,
         uniform,
         blueNoise,
-        shadowMap);
+        shadowMap,
+        rasterizer->GetRenderCubemap());
 
     rayStats            = std::make_shared<RayStats>(device, memAllocator);
     passTimings         = std::make_shared<PassTimings>(device, physDevice->Get(), queues->GetIndexGraphics());

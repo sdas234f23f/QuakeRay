@@ -111,9 +111,10 @@ cvar_t r_tasks = {"r_tasks", "0", CVAR_NONE};
 extern cvar_t rt_dlight_intensity;
 extern cvar_t rt_dlight_radius;
 extern cvar_t rt_flashlight;
-extern cvar_t rt_sun;
-extern cvar_t rt_sun_pitch;
-extern cvar_t rt_sun_yaw;
+extern cvar_t rt_sky_sun;
+extern cvar_t rt_sky_sun_pitch;
+extern cvar_t rt_sky_sun_yaw;
+extern cvar_t rt_physical_sky;
 extern cvar_t rt_materials_only;
 extern cvar_t rt_cluster_dlights;
 extern cvar_t rt_viewm_scale;
@@ -435,24 +436,27 @@ static void RT_UploadAllDlights ()
 		RG_CHECK (r);
 	}
 
-	if (CVAR_TO_FLOAT (rt_sun) > 0.001f)
+	// The sun is the light of the procedural sky, and with the classic sky
+	// (rt_physical_sky 0) there is no sun at all: no directional light, and with it
+	// no indirect sun, no god rays and no sunlit fog.
+	if (CVAR_TO_BOOL (rt_physical_sky) && CVAR_TO_FLOAT (rt_sky_sun) > 0.001f)
 	{
-		vec3_t angles = {CVAR_TO_FLOAT (rt_sun_pitch), CVAR_TO_FLOAT (rt_sun_yaw), 0};
+		vec3_t angles = {CVAR_TO_FLOAT (rt_sky_sun_pitch), CVAR_TO_FLOAT (rt_sky_sun_yaw), 0};
 
 		vec3_t forward, right, up;
 		AngleVectors (angles, forward, right, up);
 
 		vec3_t color;
 		RT_GetSunColor (color);
-		VectorScale (color, CVAR_TO_FLOAT (rt_sun), color);
+		VectorScale (color, CVAR_TO_FLOAT (rt_sky_sun), color);
 		// The sun is a light source like every other one, so it needs the same
 		// radiometric fixup the world and dlight sources get. Without it its 0..1
 		// colour reached the shading orders of magnitude below them, which is
-		// why rt_sun only did anything from ~10^4 up.
+		// why rt_sky_sun only did anything from ~10^4 up.
 		RT_FIXUP_LIGHT_INTENSITY (color, true);
 		// A sun emits from no area and covers the whole sky, so it takes that
 		// fixup at a fraction of its strength (RT_SUN_LIGHT_INTENSITY_SCALE) --
-		// otherwise rt_sun 1 overdrives the scene. The god rays read this colour,
+		// otherwise rt_sky_sun 1 overdrives the scene. The god rays read this colour,
 		// so they follow the sun too, including the fraction.
 		VectorScale (color, RT_SUN_LIGHT_INTENSITY_SCALE, color);
 

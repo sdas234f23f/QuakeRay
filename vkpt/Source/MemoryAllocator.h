@@ -56,6 +56,11 @@ public:
     // If addressQuery=true device address can be queried
     VkDeviceMemory AllocDedicated(const VkMemoryRequirements &memReqs, VkMemoryPropertyFlags properties, AllocType allocType, const char *pDebugName = nullptr) const;
     VkDeviceMemory AllocDedicated(const VkMemoryRequirements2 &memReqs2, VkMemoryPropertyFlags properties, AllocType allocType, const char *pDebugName = nullptr) const;
+    // Same as AllocDedicated, but a request the device cannot afford returns
+    // VK_NULL_HANDLE rather than tripping the check inside it: it is for the maps a
+    // quality level may ask for, where running out of memory is an answer -- the
+    // level is not taken -- and not a bug.
+    VkDeviceMemory TryAllocDedicated(const VkMemoryRequirements &memReqs, VkMemoryPropertyFlags properties, AllocType allocType, const char *pDebugName = nullptr) const;
     static void FreeDedicated(VkDevice device, VkDeviceMemory memory);
 
     
@@ -70,6 +75,9 @@ public:
     void DestroyTextureImage(VkImage image);
 
 private:
+    VkResult AllocateDedicated(const VkMemoryRequirements &memReqs, VkMemoryPropertyFlags properties,
+                               AllocType allocType, VkDeviceMemory *pMemory) const;
+
     void CreateTexturesStagingPool();
     void CreateTexturesFinalPool();
 

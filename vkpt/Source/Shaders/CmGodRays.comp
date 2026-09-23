@@ -33,7 +33,11 @@
 #define DESC_SET_FRAMEBUFFERS 2
 #define DESC_SET_GLOBAL_UNIFORM 3
 #define DESC_SET_RANDOM 4
+// The shared cubemap set, re-bound after this pass's own five: it carries the
+// cloud layer's shadow (CloudShadowMap.h), which must cover the sun here too.
+#define DESC_SET_CLOUD_SHADOW 5
 #include "ShaderCommonGLSLFunc.h"
+#include "CloudShadowMap.h"
 #include "Random.h"
 
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
@@ -45,6 +49,7 @@ layout(push_constant, std140) uniform PushConstants
 } push;
 
 layout(set = DESC_SET_GOD_RAYS_SHADOW, binding = 0) uniform sampler2D texShadowMap;
+layout(set = DESC_SET_CLOUD_SHADOW, binding = BINDING_RENDER_CUBEMAP_CLOUD_SHADOW) uniform sampler2D cloudShadowMap;
 
 layout(set = DESC_SET_GOD_RAYS_PARAMS, binding = 0) readonly buffer GodRaysParams_BT
 {
@@ -298,7 +303,10 @@ void main()
         // before the surface is not sampled (Q2RTX breaks here), which keeps
         // the surface-facing samples from being pushed behind the geometry.
         const vec3 shadowBias = -godRaysParams.sunDirection.xyz * 20.0;
-        const float shadow = GetShadow(currentPos + shadowBias);
+        float shadow = GetShadow(currentPos + shadowBias);
+
+        // The same clouds also hide the sun from the shafts themselves
+        shadow *= cloudShadowAt(cloudShadowMap, currentPos, godRaysParams.sunDirection.xyz);
 
         const vec3 differentialInscatter = (shadow * phase * stepLength * density) * through;
         inscatter += differentialInscatter;

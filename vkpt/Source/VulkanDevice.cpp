@@ -260,6 +260,18 @@ void VulkanDevice::FillUniform(ShGlobalUniform *gu, const RgDrawFrameInfo &drawI
 
             Matrix::GetCubemapViewProjMat( viewProjDst, i, skyViewerPosition.data, drawInfo.cameraNear, drawInfo.cameraFar );
         }
+
+        // Where the cloud shadow map stands, sent in the last column of the cubemap
+        // transform: the sky's cloud settings already ride in its 3x3, and every
+        // pass that lights with the sun reads this back (CloudShadowMap.h). Left at
+        // zero whenever the sky does not draw the clouds, which is what tells the
+        // shaders there is no map to read.
+        float cloudShadowPlacement[ 4 ] = { 0.0f, 0.0f, 0.0f, 0.0f };
+        if( gu->skyType == SKY_TYPE_PROCEDURAL )
+        {
+            rasterizer->GetRenderCubemap()->GetCloudShadowPlacement( cloudShadowPlacement );
+        }
+        memcpy( gu->skyCubemapRotationTransform + 12, cloudShadowPlacement, sizeof( cloudShadowPlacement ) );
     }
 
     gu->debugShowFlags = 0;
@@ -758,13 +770,13 @@ void VulkanDevice::Render(VkCommandBuffer cmd, const RgDrawFrameInfo &drawInfo)
 
             // the sky is exactly the colour it is set to (rt_sky_color), sent by
             // the host via skyColorDefault; this keeps the colour independent from
-            // whether the sun light is enabled (rt_sun) and from the sun's own colour
+            // whether the sun light is enabled (rt_sky_sun) and from the sun's own colour
             p.skyColor[0] = uniform->GetData()->skyColorDefault[0];
             p.skyColor[1] = uniform->GetData()->skyColorDefault[1];
             p.skyColor[2] = uniform->GetData()->skyColorDefault[2];
 
             // the disc is the sun itself, so it is drawn with the sun's own colour
-            // (rt_sun_color, white when the host does not send one) rather than with
+            // (rt_sky_sun_color, white when the host does not send one) rather than with
             // the sky colour above: the sun keeps its colour while the sky around it
             // is set freely. It only reaches the visible cubemap, never the
             // envCubemap the indirect sky samples.
@@ -780,8 +792,8 @@ void VulkanDevice::Render(VkCommandBuffer cmd, const RgDrawFrameInfo &drawInfo)
             // used: the disc the sky draws is sized by the display radius in skyParams[3].
             float sunColor[3], sunDir[3], sunAngularRadius = 0.0047f;
             // A directional light is uploaded only while the host has the sun
-            // light enabled (rt_sun > 0), so "no directional light" is what
-            // rt_sun 0 looks like from here. The sky then has no sun either:
+            // light enabled (rt_sky_sun > 0), so "no directional light" is what
+            // rt_sky_sun 0 looks like from here. The sky then has no sun either:
             // sunDirection.w is the amount of sun the sky shows, and at 0 the
             // disc is dropped while the sky itself keeps the colour from
             // skyColorDefault above.
@@ -807,7 +819,7 @@ void VulkanDevice::Render(VkCommandBuffer cmd, const RgDrawFrameInfo &drawInfo)
             }
             p.skyParams[0] = uniform->GetData()->skyColorMultiplier;
             // The sky has no tint strength left to carry, so the host sends the
-            // opacity of its clouds (rt_sky_cloud_alpha) in that slot instead.
+            // opacity of its clouds (rt_sky_clouds_alpha) in that slot instead.
             p.skyParams[1] = uniform->GetData()->skyColorSaturation;
             // Sun disc intensity: the disc carries the sun's own colour and is
             // what makes it brighter than the sky it hangs in. It only reaches
@@ -818,7 +830,8 @@ void VulkanDevice::Render(VkCommandBuffer cmd, const RgDrawFrameInfo &drawInfo)
 
             // cloud params are packed into the otherwise-unused skyCubemapRotationTransform field
             // (keeps the public RG_* API unchanged):
-            //   [0..2] cloud color rgb, [3] coverage, [4] contour sharpness, [5] drift speed, [6] enabled
+            //   [0..2] cloud color rgb, [3] coverage, [4] density, [5] drift speed, [6] enabled,
+            //   [7] altitude of the cloud layer, [8] thickness of the cloud layer
             p.cloudColor[3] = uniform->GetData()->time; // cloud animation time
             if (drawInfo.pSkyParams)
             {
@@ -830,7 +843,45 @@ void VulkanDevice::Render(VkCommandBuffer cmd, const RgDrawFrameInfo &drawInfo)
                 p.cloudParams[1] = c[4];
                 p.cloudParams[2] = c[5];
                 p.cloudParams[3] = c[6];
+                p.cloudLayer[0] = c[7];
+                p.cloudLayer[1] = c[8];
             }
+
+            // The cloud layer is a slab in world units: where its bottom sits over
+            // the eye, and how deep it is. The noise is scaled by the thickness,
+            // so the clouds keep their look in a layer of any depth; what changes
+            // is how far the light has to travel through them, and so how much of
+            // the sky they hide.
+            if (p.cloudLayer[0] <= 0.0f)
+            {
+                p.cloudLayer[0] = 1400.0f;
+            }
+            if (p.cloudLayer[1] <= 0.0f)
+            {
+                p.cloudLayer[1] = 900.0f;
+            }
+            // Sunlight and skylight that reach the clouds. The sun lights them with
+            // its own colour (rt_sky_sun_color) and is what makes their edges glow
+            // towards it; the sky lights them from above, with the sky's colour.
+            p.cloudLayer[2] = 1.0f;
+            p.cloudLayer[3] = 1.0f;
+            // How finely the clouds are marched, how much the fine noise is allowed
+            // to eat into them, and how strongly they scatter the sunlight forward
+            // (Henyey-Greenstein g) -- which is what draws the bright rim.
+            p.cloudMarch[0] = 48.0f;
+            p.cloudMarch[1] = 6.0f;
+            p.cloudMarch[2] = 0.35f;
+            p.cloudMarch[3] = 0.75f;
+
+            // The layer belongs to the world rather than to the eye: the clouds are
+            // anchored in the world's horizontal plane and hang at a fixed height
+            // over it, which is what the pass that puts their shadow on the world
+            // has to agree with. Where the eye stands in that world is therefore
+            // part of what the sky is drawn from.
+            p.cloudAnchor[0] = uniform->GetData()->cameraPosition[0];
+            p.cloudAnchor[1] = uniform->GetData()->cameraPosition[1];
+            p.cloudAnchor[2] = uniform->GetData()->cameraPosition[2];
+            p.cloudAnchor[3] = 0.0f;
 
             // per-face camera bases, matching Matrix::GetCubemapViewProjMat
             constexpr float PI = 3.14159265358979323846f;
@@ -855,8 +906,28 @@ void VulkanDevice::Render(VkCommandBuffer cmd, const RgDrawFrameInfo &drawInfo)
                 p.faceBasis[face * 3 + 2][0] = view[2];  p.faceBasis[face * 3 + 2][1] = view[6];  p.faceBasis[face * 3 + 2][2] = view[10];
             }
 
+            rasterizer->GetRenderCubemap()->SetQuality(cmd, (drawInfo.pSkyParams == nullptr)
+                ? RenderCubemap::QUALITY_HIGH : drawInfo.pSkyParams->skyCloudsQuality);
+
             rasterizer->GetRenderCubemap()->DrawProcedural(cmd, p);
+
+            // The clouds hang between the sun and the world, so the shadow they
+            // throw on it is laid down here, for every pass that lights with the
+            // sun (the sun itself, the sky, and the shafts -- CloudShadowMap.h)
+            rasterizer->GetRenderCubemap()->UpdateCloudShadow(cmd, p, uniform->GetData()->cameraPosition);
         }
+        else
+        {
+            // No procedural sky: the clouds it draws are gone with it, and the
+            // standing shadow map may not keep darkening the sun behind its back
+            rasterizer->GetRenderCubemap()->InvalidateCloudShadow();
+        }
+    }
+    else
+    {
+        // The sky is not drawn at all here, so neither are the clouds that would
+        // stand between the sun and the world
+        rasterizer->GetRenderCubemap()->InvalidateCloudShadow();
     }
 
 
@@ -905,11 +976,11 @@ void VulkanDevice::Render(VkCommandBuffer cmd, const RgDrawFrameInfo &drawInfo)
         bool godRaysActive = false;
         GodRays::Params gr = {};
         {
-            // Host cvars rt_godrays and rt_godrays_intensity. When disabled the
+            // Host cvars rt_sky_godrays and rt_sky_godrays_intensity. When disabled the
             // shadow map is not rendered and the god rays buffers are cleared by
             // the shader itself (CmGodRays returns early for godRaysEnabled == 0).
             // Like Q2RTX (god_rays.c: enabled && intensity > 0),
-            // rt_godrays_intensity 0 counts as disabled as well, so the shadow map
+            // rt_sky_godrays_intensity 0 counts as disabled as well, so the shadow map
             // that feeds the shafts is skipped rather than marched and thrown away.
             const float godRaysIntensity = (drawInfo.pSkyParams == nullptr)
                 ? 1.0f : std::max(drawInfo.pSkyParams->godRaysIntensity, 0.0f);
@@ -917,12 +988,17 @@ void VulkanDevice::Render(VkCommandBuffer cmd, const RgDrawFrameInfo &drawInfo)
                 ((drawInfo.pSkyParams == nullptr) || (drawInfo.pSkyParams->godRaysEnabled != 0)) &&
                 (godRaysIntensity > 0.0f);
 
+            // rt_sky_godrays_quality: the level the map the shafts are traced through is
+            // drawn at, asked for every frame and rebuilt only when it changes.
+            shadowMap->SetQuality((drawInfo.pSkyParams == nullptr)
+                ? ShadowMap::QUALITY_HIGH : drawInfo.pSkyParams->godRaysQuality);
+
             // The shafts are inscattered sunlight, so they are proportional to the
             // sun light colour exactly as in Q2RTX (inscatter * sun_color *
             // intensity * 1e-4, CmGodRays.comp). That colour carries the light
             // fixup, so 8.0 here is the ratio the shafts were originally
-            // calibrated against; rt_sun, rt_brightness and the light tint now all
-            // reach them through it, and rt_godrays_intensity scales them on top.
+            // calibrated against; rt_sky_sun, rt_brightness and the light tint now all
+            // reach them through it, and rt_sky_godrays_intensity scales them on top.
             constexpr float godRaysIntensityBase = 8.0f;
             gr.godRaysIntensity = godRaysIntensityBase * godRaysIntensity;
             gr.godRaysEccentricity = 0.75f;

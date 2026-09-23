@@ -157,7 +157,7 @@ filter_image(
 //   3. the fetches below are bounded to this pixel's checkerboard field and the mean is
 //      taken over the neighbours that passed validation, so there is no division by zero.
 // The fireflies this pass was re-enabled for turned out to come from the sun's contribution
-// to an indirect bounce (rt_sun_bounce_scale / rt_sun_bounce_range), not from the LF channel.
+// to an indirect bounce (rt_sky_sun_bounce_scale / rt_sky_sun_bounce_range), not from the LF channel.
 void deflicker_image(
     sampler2D img_lf_shY,
     sampler2D img_lf_CoCg,

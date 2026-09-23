@@ -1,0 +1,281 @@
+// Copyright (c) 2026 QuakeRay contributors
+//
+// This program is free software; you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation; either version 2 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License along
+// with this program; if not, write to the Free Software Foundation, Inc.,
+// 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+//
+// Volumetric clouds (rt_sky_clouds): the cloud layer of the sky, marched as a
+// volume instead of being drawn as a flat mask over it. The layer is a slab that
+// starts at a fixed height above the eye; a ray is walked through it and the
+// light that scatters along the ray is written out, together with how much of
+// what is behind the layer survives it. CmProceduralSky.comp puts the result over
+// the sky, which is what puts the clouds in front of the sun and lets them hide
+// its disc.
+//
+// The world is the Quake one -- up is z and the horizontal plane is x and y -- and
+// the layer, held over the eye as it is, keeps its clouds anchored in that
+// horizontal plane: a cloud hangs over a fixed spot of the world however the eye
+// moves, which is what the pass that puts their shadow on the world agrees with
+// (CloudLayer.h has the frame the two march it in).
+//
+// The shape of the cloud comes from an fBm of value noise -- the same noise that
+// the flat mask this replaces was built from -- whose distribution is flattened
+// out, so that a coverage of N leaves N of the sky clear. Each step is lit by a
+// short march towards the sun, with a two-lobe phase function, Beer's law, the
+// powder term and an approximation of multiple scattering (Schneider, "Real-time
+// Volumetric Cloudscapes", SIGGRAPH 2015; Hillaire, "Physically Based Sky,
+// Atmosphere and Cloud Rendering", 2016).
+//
+// The layer itself -- its shape, and how much light reaches a point in it -- is
+// CloudLayer.h, as the pass that puts the layer's shadow on the world
+// (CmCloudShadow.comp) marches the very same cloud.
+//
+// The cubemap it writes (rgb = scattered light, a = transmittance) is filled with
+// the same per-face basis convention as the sky cubemap next to it, so that both
+// can be sampled by direction.
+//
+
+#version 460
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+// The cloud cubemap this pass fills (binding 3 of the procedural sky set).
+layout(rgba16f, set = 0, binding = 3) uniform imageCube cloudCubemapOut;
+
+layout(std140, set = 0, binding = 1) uniform Params
+{
+    vec4 faceBasis[18]; // 6 faces * (right, up, forward)
+    vec4 sunDirection;  // xyz = normalized direction TOWARD the sun, w = how much sun the sky shows (0 = no sun at all)
+    vec4 skyColor;      // xyz = the colour of the sky itself (rt_sky_color), w unused
+    vec4 skyParams;     // x = multiplier over the whole sky, y = cloud opacity (rt_sky_clouds_alpha), z = sun disc intensity, w = sun disc radius
+    vec4 cloudColor;    // xyz = cloud colour (rt_sky_clouds_color), w = cloud time (seconds)
+    vec4 cloudParams;   // x = coverage, y = density (rt_sky_clouds_density), z = drift speed, w = clouds enabled
+    vec4 sunDiscColor;  // xyz = colour of the sun (rt_sky_sun_color), w unused
+    vec4 cloudLayer;    // x = altitude of the layer's bottom over the eye, y = thickness, z = sunlight strength, w = sky light strength
+    vec4 cloudMarch;    // x = view march steps, y = sun march steps, z = detail erosion strength, w = forward scattering (Henyey-Greenstein g)
+    vec4 cloudAnchor;   // xy = the eye's place in the world's horizontal plane, zw unused
+} params;
+
+#include "CloudLayer.h"
+
+// The powder term uses the same scale as the extinction, as it is the same sample
+// of the same cloud being darkened. Light that enters a cloud at a grazing angle
+// is the light that scatters first: what it does is darken the thick parts of the
+// cloud and leave its rim glowing.
+const float CLOUD_POWDER = 8.0;
+
+// The view steps grow along the ray at this rate: the clouds overhead are the
+// ones the eye resolves, while towards the horizon the layer is a flat deck that
+// must not cost the same as the clouds directly above.
+const float CLOUD_STEP_GROWTH = 1.045;
+// Where the march gives up on the layer, in layer thicknesses of distance: at a
+// grazing angle the crossing of the layer is very long, and everything past this
+// is one flat colour anyway.
+const float CLOUD_MAX_MARCH_SPAN = 12.0;
+
+// How many quarters of its map the layer is marched in, a side: the dispatch of a
+// frame writes one quarter of it (RenderCubemap::DispatchClouds, which keeps the
+// same number), and four frames fill the map. See how main() shifts the texel.
+const int CLOUD_UPDATE_QUARTERS = 2;
+
+// Henyey-Greenstein, normalized so that isotropic scattering gives 1.
+float henyeyGreenstein(float mu, float g)
+{
+    float g2 = g * g;
+    float d = max(1.0 + g2 - 2.0 * g * mu, 1.0e-4);
+    return (1.0 - g2) / (d * sqrt(d));
+}
+
+// Two lobes: the forward one is what makes a cloud glow when it is seen against
+// the sun, the weak backward one keeps the rest of it from going flat.
+float cloudPhase(float mu, float g)
+{
+    return mix(henyeyGreenstein(mu, g), henyeyGreenstein(mu, -g * 0.35), 0.5);
+}
+
+// Multiple scattering, approximated with a few progressively flatter and weaker
+// lobes of the same phase function, each shielded by only a part of the sun's
+// optical depth. Light that has bounced around inside the cloud is what keeps the
+// shaded side of a thick one from going black.
+float cloudMultiScatter(float mu, float sunDepth, float g)
+{
+    float sum = 0.0;
+    float energy = 0.5;
+
+    for (int order = 1; order <= 3; order++)
+    {
+        float o = float(order);
+        float gOrder = g * (1.0 - 0.3 * o);
+        float phase = mix(henyeyGreenstein(mu, gOrder), henyeyGreenstein(mu, -gOrder), 0.5);
+        sum += energy * phase * exp(-sunDepth / (1.0 + o));
+        energy *= 0.5;
+    }
+
+    return sum;
+}
+
+void main()
+{
+    ivec3 ipos = ivec3(gl_GlobalInvocationID);
+    ivec2 size = imageSize(cloudCubemapOut).xy;
+
+    // The layer is marched in a quarter a frame: the dispatch of a frame covers a
+    // quarter of the map, shifted to the quarter that frame is for, and the other
+    // three stand as the frames before left them. The drift is slow enough that a
+    // texel three frames old reads as the same cloud, and a march of a quarter is a
+    // quarter of the cost (DispatchClouds). cloudAnchor.z is the quarter, and
+    // cloudAnchor.w says the map is new and all of it is filled at once.
+    const bool wholeMap = params.cloudAnchor.w > 0.5;
+    const int  quarter = int(params.cloudAnchor.z + 0.5);
+    const ivec2 grid = wholeMap ? size : size / CLOUD_UPDATE_QUARTERS;
+
+    if (ipos.x >= grid.x || ipos.y >= grid.y || ipos.z >= 6)
+    {
+        return;
+    }
+
+    if (!wholeMap)
+    {
+        ipos.x = ipos.x * CLOUD_UPDATE_QUARTERS + (quarter % CLOUD_UPDATE_QUARTERS);
+        ipos.y = ipos.y * CLOUD_UPDATE_QUARTERS + (quarter / CLOUD_UPDATE_QUARTERS);
+    }
+
+    int face = ipos.z;
+    vec3 right   = params.faceBasis[face * 3 + 0].xyz;
+    vec3 up      = params.faceBasis[face * 3 + 1].xyz;
+    vec3 forward = params.faceBasis[face * 3 + 2].xyz;
+
+    vec2 ndc = (vec2(ipos.xy) + 0.5) / vec2(size) * 2.0 - 1.0;
+    vec3 dir = normalize(ndc.x * right + (-ndc.y) * up + forward);
+
+    float opacity  = clamp(params.skyParams.y, 0.0, 1.0);
+    float sunLight = params.sunDirection.w; // 0 when the host keeps no sun (rt_sky_sun 0)
+
+    CloudLayer layer;
+    layer.altitude  = max(params.cloudLayer.x, 1.0);
+    layer.thickness = max(params.cloudLayer.y, 1.0);
+    layer.coverage  = clamp(params.cloudParams.x, 0.0, 1.0);
+    layer.density   = max(params.cloudParams.y, 0.0);
+    layer.detail    = clamp(params.cloudMarch.z, 0.0, 0.9);
+    layer.speed     = params.cloudParams.z;
+    layer.time      = params.cloudColor.w;
+
+    int viewSteps = clamp(int(params.cloudMarch.x + 0.5), 8, 256);
+    int sunSteps  = clamp(int(params.cloudMarch.y + 0.5), 1, 32);
+    float phaseG  = clamp(params.cloudMarch.w, 0.0, 0.95);
+
+    // What the cloud's own colour is worth: it is the light that scatters in it,
+    // so a black cloud scatters none of it and only casts its shadow on the sky.
+    vec3 albedo = max(params.cloudColor.xyz, vec3(0.0));
+
+    // The sun is a directional light: what reaches the layer is its own colour
+    // and the strength the host gives it. The sky lights the cloud from every
+    // other direction with the colour the sky itself is set to.
+    vec3 sunColor = params.sunDiscColor.xyz * max(params.cloudLayer.z, 0.0) * sunLight;
+    vec3 skyLight = max(params.skyColor.xyz, vec3(0.0)) * max(params.cloudLayer.w, 0.0);
+
+    vec3 inscatter = vec3(0.0);
+    float transmittance = 1.0;
+
+    bool lit = sunColor.r + sunColor.g + sunColor.b > 0.0 || skyLight.r + skyLight.g + skyLight.b > 0.0;
+
+    if (dir.z > 0.0 && lit && opacity > 0.0 && params.cloudParams.w > 0.5 &&
+        layer.coverage < 1.0 && layer.density > 0.0)
+    {
+        // The ray enters the layer at its base and leaves it at its top, both
+        // measured from the eye, which is where the layer is held. Towards the
+        // horizon that crossing is the layer seen edge on, and the march has to
+        // stop somewhere: CLOUD_MAX_MARCH_SPAN is where.
+        float tIn = layer.altitude / dir.z;
+        float tOut = min((layer.altitude + layer.thickness) / dir.z,
+                         tIn + layer.thickness * CLOUD_MAX_MARCH_SPAN);
+
+        float span = (pow(CLOUD_STEP_GROWTH, float(viewSteps)) - 1.0) / (CLOUD_STEP_GROWTH - 1.0);
+        float dt = (tOut - tIn) / span;
+
+        // The seed of the sun marches, and what the cones they widen into are drawn
+        // with: two rays then ask the sun about different parts of the sky around it.
+        float jitter = hash13(vec3(ipos) * 0.371);
+        float t = tIn;
+        float step = dt;
+
+        vec3 sunDir = normalize(params.sunDirection.xyz);
+        float mu = dot(dir, sunDir);
+
+        for (int i = 0; i < viewSteps; i++)
+        {
+            // The place of the sample inside its step comes from a low-discrepancy
+            // sequence turned by the ray's own seed: the samples of the march are
+            // then spread evenly inside their stretches rather than let to land
+            // anywhere, and the error that is left is smaller and finer.
+            float offset = fract(jitter + float(i) * CLOUD_SEQUENCE_STEP);
+            float ts = t + step * offset;
+
+            // The march walks the world's horizontal plane, not the eye: the clouds
+            // are anchored in it (x and y), so this is the very column of cloud the
+            // pass that puts their shadow on the world (CmCloudShadow.comp) marches
+            // towards the sun. Only the height (z) stays the eye's, as the layer is
+            // held over the eye.
+            vec3 p = vec3(dir.x * ts + params.cloudAnchor.x,
+                          dir.y * ts + params.cloudAnchor.y,
+                          dir.z * ts);
+            float density = cloudDensity(layer, p, true);
+
+            if (density > 1.0e-3)
+            {
+                // extinction per unit of distance, measured in layer thicknesses
+                // so that a deeper layer is a hazier one
+                float sigma = cloudOpticalDepth(layer, density);
+
+                float sunDepth = cloudSunDepth(layer, p, sunDir, jitter + float(i), sunSteps);
+                float sunTau = cloudOpticalDepth(layer, sunDepth);
+                float sunVisibility = exp(-sunTau);
+
+                // Light that enters a cloud at a grazing angle is the light that
+                // scatters first: with the sun behind the cloud, this darkens its
+                // thick parts and leaves the rim glowing.
+                float powder = 1.0 - exp(-density * CLOUD_POWDER);
+                float rim = mix(1.0, powder, clamp(-mu, 0.0, 1.0));
+
+                // The sky lights the cloud from above, so it is shielded by
+                // however much cloud sits on top of the sample -- which is what
+                // gives the base of a thick cloud its shadow.
+                float h = (p.z - layer.altitude) / layer.thickness;
+                float skyShield = exp(-density * layer.density * CLOUD_EXTINCTION * (1.0 - h));
+
+                vec3 light = sunColor * (sunVisibility * cloudPhase(mu, phaseG) * rim +
+                                         cloudMultiScatter(mu, sunTau, phaseG)) +
+                             skyLight * skyShield;
+
+                // Integrating the step in one go rather than taking its length
+                // times the density keeps a thin cloud thin: what it adds and what
+                // it takes away are then the same amount of light.
+                float stepTransmittance = exp(-sigma * step);
+                inscatter += transmittance * light * (1.0 - stepTransmittance);
+                transmittance *= stepTransmittance;
+
+                if (transmittance < 0.01)
+                {
+                    break;
+                }
+            }
+
+            t += step;
+            step *= CLOUD_STEP_GROWTH;
+        }
+    }
+
+    // rgb = the light scattered towards the eye, a = how much of the sky behind
+    // the layer gets through it
+    imageStore(cloudCubemapOut, ipos, vec4(inscatter * albedo * opacity, mix(1.0, transmittance, opacity)));
+}

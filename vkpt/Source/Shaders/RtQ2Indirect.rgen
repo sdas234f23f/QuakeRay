@@ -59,7 +59,7 @@ layout (constant_id = 0) const uint maxAlbedoLayerCount = 0;
 // Q2RTX pt_sun_bounce_range / sun_bounce: the sun contribution of a bounce fades out with
 // the distance the bounce ray travelled, and what is left is scaled by a straight
 // multiplier. Both come from the host through ShGlobalUniform.sunBounce (cvars
-// rt_sun_bounce_range, 2000 in game units, and rt_sun_bounce_scale, 1.0). Without the range
+// rt_sky_sun_bounce_range, 2000 in game units, and rt_sky_sun_bounce_scale, 1.0). Without the range
 // every bounce hit anywhere in the map adds full sun energy and pays for its own sun shadow
 // ray, which is where the salt-like noise in dark areas came from.
 

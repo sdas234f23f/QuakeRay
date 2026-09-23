@@ -265,6 +265,14 @@ typedef struct RgInstanceCreateInfo
     RgTextureSwizzling          pbrTextureSwizzling;
 
     RgBool32                    effectWipeIsUsed;
+
+    // Quality of the volumetric sun shafts at instance creation, the host's
+    // rt_sky_godrays_quality: 0 low, 1 medium, 2 high, 3 ultra, 4 extreme. The shafts
+    // are traced through a shadow map of the world, and that map is sized for the
+    // level here; it is the only thing the level decides, and it may be changed
+    // afterwards through RgDrawFrameSkyParams.
+    // Default: 2
+    uint32_t                    godRaysQuality;
 } RgInstanceCreateInfo;
 
 RGAPI RgResult RGCONV rgCreateInstance(
@@ -1112,13 +1120,13 @@ typedef struct RgDrawFrameSkyParams
     RgFloat3D   skyColorDefault;
     // The colour of the sun's disc in the procedural sky: the sun itself, as
     // opposed to skyColorDefault above, which is the colour of the sky it hangs
-    // in, so a dark sky can hold a bright sun. The host sends rt_sun_color here.
+    // in, so a dark sky can hold a bright sun. The host sends rt_sky_sun_color here.
     // Default: (1, 1, 1)
     RgFloat3D   sunDiscColor;
     // The result sky color is multiplied by this value.
     float       skyColorMultiplier;
     // Opacity the procedural clouds are composited over the sky with
-    // (rt_sky_cloud_alpha, 0 = no clouds, 1 = opaque). The name is kept for
+    // (rt_sky_clouds_alpha, 0 = no clouds, 1 = opaque). The name is kept for
     // compatibility with the tint strength the procedural sky used to have.
     float       skyColorSaturation;    float       skyAmbientLod;
     RgBool32    skyNee;
@@ -1136,7 +1144,7 @@ typedef struct RgDrawFrameSkyParams
     RgBool32    godRaysEnabled;
     // Strength of the volumetric sun shafts: 1 is the look they were calibrated
     // with, 2 is twice as bright, 0 disables them (and then the shadow map that
-    // feeds them is not rendered either). The host cvar is rt_godrays_intensity,
+    // feeds them is not rendered either). The host cvar is rt_sky_godrays_intensity,
     // this engine's naming of Q2RTX's own gr_intensity knob, but the two values
     // cannot be compared: upstream multiplies the accumulated sun disc radiance
     // by it, this one multiplies the directional light colour.
@@ -1152,6 +1160,21 @@ typedef struct RgDrawFrameSkyParams
     RgBool32    godRaysFromSkyTexture;
     RgFloat3D   godRaysSkyDirection;
     RgFloat3D   godRaysSkyColor;
+    // Quality of the volumetric clouds, the host's rt_sky_clouds_quality:
+    // 0 low, 1 medium, 2 high, 3 ultra, 4 extreme (anything above is read as
+    // extreme). The level is the resolution the layer is drawn at, the
+    // resolution of the map of its shadow and how often that map is filled
+    // again; each level doubles the resolutions, so a level is what decides how
+    // fine the clouds are and what they cost. Nothing about the look of the
+    // clouds themselves is scaled by it, only how finely they are resolved.
+    // Default: 2
+    uint32_t    skyCloudsQuality;
+    // Quality of the volumetric sun shafts, the host's rt_sky_godrays_quality, on
+    // the same levels as skyCloudsQuality. The shafts are traced through the
+    // shadow map of the scene, so the level is the resolution of that map: it is
+    // what decides how crisp the edges of the shafts are.
+    // Default: 2
+    uint32_t    godRaysQuality;
 } RgDrawFrameSkyParams;
 
 #define RG_LIGHT_STYLE_COUNT 64

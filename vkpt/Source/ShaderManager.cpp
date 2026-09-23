@@ -54,6 +54,8 @@ static ShaderModuleDefinition G_SHADERS[] =
     {"CGodRays",                "CmGodRays.comp.spv"                   },
     {"CGodRaysFilter",          "CmGodRaysFilter.comp.spv"             },
     {"CProceduralSky",          "CmProceduralSky.comp.spv"             },
+    {"CSkyClouds",              "CmSkyClouds.comp.spv"                 },
+    {"CCloudShadow",            "CmCloudShadow.comp.spv"               },
     {"ShadowMap",               "ShadowMap.vert.spv"                   },
     {"CVolumetricProcess",      "CmVolumetricProcess.comp.spv"         },
     {"FragWorld",               "RsWorld.frag.spv"                     },

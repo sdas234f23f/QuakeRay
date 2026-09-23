@@ -105,10 +105,15 @@ task_handle_t prev_end_rendering_task = INVALID_TASK_HANDLE;
 	CVAR_DEF_T (rt_shadowrays, "2") \
 	CVAR_DEF_T (rt_indir2bounces, "0") \
 	CVAR_DEF_T (rt_gi_level, "1") \
-	CVAR_DEF_T (rt_sun_bounce_range, "2000") \
-	CVAR_DEF_T (rt_sun_bounce_scale, "1.0") \
-	CVAR_DEF_T (rt_godrays, "1") \
-	CVAR_DEF_T (rt_godrays_intensity, "1") /* Q2RTX's gr_intensity: strength of the sun shafts */ \
+	CVAR_DEF_T (rt_sky_sun_bounce_range, "2000") \
+	CVAR_DEF_T (rt_sky_sun_bounce_scale, "1.0") \
+	CVAR_DEF_T (rt_sky_godrays, "1") \
+	CVAR_DEF_T (rt_sky_godrays_intensity, "1") /* Q2RTX's gr_intensity: strength of the sun shafts */ \
+	/* Quality of the volumetric sun shafts: 0 low, 1 medium, 2 high, 3 ultra, 4 extreme (anything \
+	   above is read as extreme). The shafts are traced through a shadow map of the world, and the \
+	   level is the resolution that map is drawn at: it is what decides how crisp the edges of the \
+	   shafts are, and what they cost. */ \
+	CVAR_DEF_T (rt_sky_godrays_quality, "2") \
 	CVAR_DEF_T (rt_denoiser, "1") \
 	CVAR_DEF_T (rt_no_textures, "0") \
 	CVAR_DEF_T (rt_antifirefly, "1") \
@@ -169,11 +174,11 @@ task_handle_t prev_end_rendering_task = INVALID_TASK_HANDLE;
 	CVAR_DEF_T (rt_poi_armor, "1") \
 	CVAR_DEF_T (rt_poi_key, "1") \
 	\
-	CVAR_DEF_T (rt_sun, "1") \
-	CVAR_DEF_T (rt_sun_color, "255 255 255") \
-	CVAR_DEF_T (rt_sun_pitch, "140") \
-	CVAR_DEF_T (rt_sun_yaw, "120") \
-	CVAR_DEF_T (rt_sun_preset, "0") \
+	CVAR_DEF_T (rt_sky_sun, "1") \
+	CVAR_DEF_T (rt_sky_sun_color, "255 255 255") \
+	CVAR_DEF_T (rt_sky_sun_pitch, "140") \
+	CVAR_DEF_T (rt_sky_sun_yaw, "120") \
+	CVAR_DEF_T (rt_sky_sun_preset, "0") \
 	CVAR_DEF_T (rt_flashlight, "0") \
 	\
 	CVAR_DEF_T (rt_muzzleoffs_x, "0") \
@@ -189,11 +194,19 @@ task_handle_t prev_end_rendering_task = INVALID_TASK_HANDLE;
 	CVAR_DEF_T (rt_brightness, "1.0") \
 	CVAR_DEF_T (rt_light_color, "255 255 255") \
 	CVAR_DEF_T (rt_sky_clouds, "1") \
+	/* Quality of the volumetric clouds: 0 low, 1 medium, 2 high, 3 ultra, 4 extreme (anything \
+	   above is read as extreme). The level is the resolution the layer is drawn at, the resolution \
+	   of the map of its shadow and how often that map is filled again, each level doubling the \
+	   resolutions -- what decides how fine the clouds are, and what they cost. Nothing about the \
+	   look of the clouds themselves is scaled by it, only how finely they are resolved. */ \
+	CVAR_DEF_T (rt_sky_clouds_quality, "2") \
 	CVAR_DEF_T (rt_sky_clouds_color, "0 0 0") \
-	CVAR_DEF_T (rt_sky_cloud_alpha, "1.0") \
-	CVAR_DEF_T (rt_sky_cloud_coverage, "0.2") \
-	CVAR_DEF_T (rt_sky_cloud_density, "0.8") \
-	CVAR_DEF_T (rt_sky_cloud_speed, "0.3") \
+	CVAR_DEF_T (rt_sky_clouds_alpha, "1.0") \
+	CVAR_DEF_T (rt_sky_clouds_coverage, "0.2") \
+	CVAR_DEF_T (rt_sky_clouds_density, "0.8") \
+	CVAR_DEF_T (rt_sky_clouds_speed, "0.3") \
+	CVAR_DEF_T (rt_sky_clouds_height, "1400") \
+	CVAR_DEF_T (rt_sky_clouds_thickness, "900") \
 	\
 	CVAR_DEF_T (rt_brush_metal, "0.0") \
 	CVAR_DEF_T (rt_brush_rough, "1.0") \
@@ -285,7 +298,7 @@ cvar_t rt_light_report_filter = {"rt_light_report_filter", "", 0};
 
 // The sun editor is a mode, not a setting: it must not come back on after a
 // restart, which would grab the sun without anybody asking for it.
-cvar_t rt_sun_edit = {"rt_sun_edit", "0", 0};
+cvar_t rt_sky_sun_edit = {"rt_sky_sun_edit", "0", 0};
 
 
 /*
@@ -1219,7 +1232,7 @@ typedef enum
 
 static rt_color_t rt_colors[RT_COLOR_COUNT] = {
 	[RT_COLOR_SKY]         = {.cvar = &rt_sky_color,        .fallback = {32 / 255.0f, 0.0f, 64 / 255.0f}, .dirty = true},
-	[RT_COLOR_SUN]         = {.cvar = &rt_sun_color,        .fallback = {1.0f, 1.0f, 1.0f},                .dirty = true},
+	[RT_COLOR_SUN]         = {.cvar = &rt_sky_sun_color,        .fallback = {1.0f, 1.0f, 1.0f},                .dirty = true},
 	[RT_COLOR_CLOUDS]      = {.cvar = &rt_sky_clouds_color, .fallback = {0.0f, 0.0f, 0.0f},                .dirty = true},
 	[RT_COLOR_LIGHT]       = {.cvar = &rt_light_color,      .fallback = {1.0f, 1.0f, 1.0f},                .dirty = true},
 	[RT_COLOR_GLOBALLIGHT] = {.cvar = &rt_globallight,      .fallback = {1.0f, 1.0f, 1.0f},                .dirty = true},
@@ -1313,7 +1326,7 @@ void RT_GetSunColor (float color[3])
 
 // The crosshair is the view vector of the frame, bob and weapon kick included,
 // and the sun goes exactly where it points. The light, the god rays and the sky
-// read rt_sun_pitch/rt_sun_yaw through AngleVectors and take -forward as the
+// read rt_sky_sun_pitch/rt_sky_sun_yaw through AngleVectors and take -forward as the
 // direction toward the sun, so the sun's sine of pitch is the view vector's own
 // z -- which is already -sin of the view pitch -- and its yaw is the view yaw
 // turned around.
@@ -1321,7 +1334,10 @@ void RT_UpdateSunEditor (void)
 {
 	float pitch, yaw;
 
-	if (!CVAR_TO_BOOL (rt_sun_edit))
+	// The editor writes the angles every part of the sun reads, and there is no sun
+	// to read them under a classic sky: with rt_physical_sky 0 the mode has nothing
+	// to place, so it places nothing.
+	if (!CVAR_TO_BOOL (rt_sky_sun_edit) || !CVAR_TO_BOOL (rt_physical_sky))
 	{
 		return;
 	}
@@ -1329,8 +1345,8 @@ void RT_UpdateSunEditor (void)
 	pitch = RAD2DEG (asin (CLAMP (-1.0f, vpn[2], 1.0f)));
 	yaw = anglemod (RAD2DEG (atan2 (vpn[1], vpn[0])) + 180.0f);
 
-	Cvar_SetValueQuick (&rt_sun_pitch, pitch);
-	Cvar_SetValueQuick (&rt_sun_yaw, yaw);
+	Cvar_SetValueQuick (&rt_sky_sun_pitch, pitch);
+	Cvar_SetValueQuick (&rt_sky_sun_yaw, yaw);
 }
 
 void RT_GetSkyCloudsColor (float color[3])
@@ -1483,6 +1499,11 @@ static void GL_InitInstance (void)
 		.overridenNormalTextureIsSRGB = false,
 
 		.pWaterNormalTexturePath = pWaterTexturePath,
+
+		// The shadow map the sun shafts are traced through is sized for this level
+		// (ShadowMap::SetQuality); every frame carries the level again, so the cvar
+		// may be changed at any time.
+		.godRaysQuality = CVAR_TO_UINT32 (rt_sky_godrays_quality),
 	};
 
 	RgResult r = rgCreateInstance (&info, &vulkan_globals.instance);
@@ -1825,8 +1846,8 @@ static void GL_EndRenderingTask (end_rendering_parms_t *parms)
 		// multiplier on what it delivers there. Both only affect the indirect
 		// pass, and the shadow ray a bounce casts for the sun is skipped once the
 		// distance falloff is zero.
-		.sunBounceRange = CVAR_TO_FLOAT (rt_sun_bounce_range),
-		.sunBounceScale = CVAR_TO_FLOAT (rt_sun_bounce_scale),
+		.sunBounceRange = CVAR_TO_FLOAT (rt_sky_sun_bounce_range),
+		.sunBounceScale = CVAR_TO_FLOAT (rt_sky_sun_bounce_scale),
 		.denoiserEnabled = CVAR_TO_BOOL (rt_denoiser),
 		// Q2RTX writes 2 through its "textures" toggle (flt_fixed_albedo ~1),
 		// so the unchecked state uses the same flat albedo value.
@@ -1894,11 +1915,14 @@ static void GL_EndRenderingTask (end_rendering_parms_t *parms)
 	}
 	else
 	{
-		// The classic sky is a texture, so rt_sky_color is the tint over it;
-		// the procedural sky above is painted in that colour instead.
+		// The classic sky is a picture the engine does not draw, and rt_physical_sky 0
+		// returns to it whole: rt_sky_color is the colour of the procedural sky and
+		// has no business tinting a texture that carries a colour of its own. What is
+		// passed is the flat colour the engine falls back to where it has no sky
+		// texture to draw (r_fastsky, and a map without sky surfaces), scaled by the
+		// sky brightness.
 		VectorCopy (skyflatcolor, sky_base_color);
 		VectorScale (sky_base_color, skyBrightness, sky_base_color);
-		RT_APPLY_SKY_COLOR (sky_base_color);
 	}
 
 	if (materials_only)
@@ -1918,13 +1942,17 @@ static void GL_EndRenderingTask (end_rendering_parms_t *parms)
 		.skyColorMultiplier = materials_only ? 0.0f : (usePhysicalSky ? skyBrightness : skyMult * skyBrightness),
 		// The procedural sky has no tint strength any more -- its colour is its
 		// own -- so the slot carries the opacity the clouds are composited with
-		// instead (rt_sky_cloud_alpha); see RgDrawFrameSkyParams.
-		.skyColorSaturation = CVAR_TO_FLOAT (rt_sky_cloud_alpha),
+		// instead (rt_sky_clouds_alpha); see RgDrawFrameSkyParams.
+		.skyColorSaturation = CVAR_TO_FLOAT (rt_sky_clouds_alpha),
 		.skyAmbientLod = CVAR_TO_FLOAT (rt_sky_ambient_lod),
 		.skyNee = CVAR_TO_FLOAT (rt_sky_nee) > 0.0f,
 		.skyViewerPosition = RT_VEC3 (r_origin),
-		.godRaysEnabled = CVAR_TO_BOOL (rt_godrays),
-		.godRaysIntensity = CVAR_TO_FLOAT (rt_godrays_intensity),
+		// The shafts are the light of the procedural sky scattered through the air:
+		// with the classic sky (rt_physical_sky 0) there is no sun to scatter and
+		// no shafts, whatever rt_sky_godrays says.
+		.godRaysEnabled = usePhysicalSky && CVAR_TO_BOOL (rt_sky_godrays),
+		.godRaysIntensity = CVAR_TO_FLOAT (rt_sky_godrays_intensity),
+		.godRaysQuality = CVAR_TO_UINT32 (rt_sky_godrays_quality),
 		.godRaysFromSkyTexture = 0,
 		.godRaysSkyDirection = {{0.0f, 0.0f, 0.0f}},
 		.godRaysSkyColor = {{0.0f, 0.0f, 0.0f}},
@@ -1932,20 +1960,29 @@ static void GL_EndRenderingTask (end_rendering_parms_t *parms)
 
 	if (usePhysicalSky)
 	{
+		sky_params.skyCloudsQuality = CVAR_TO_UINT32 (rt_sky_clouds_quality);
+
 		float *c = &sky_params.skyCubemapRotationTransform.matrix[0][0];
 		// the cloud settings ride in the otherwise unused rotation matrix of this
 		// sky type (keeps the public RgDrawFrameSkyParams layout unchanged)
 		RT_GetSkyCloudsColor (c);
-		c[3] = CVAR_TO_FLOAT (rt_sky_cloud_coverage);
-		c[4] = CVAR_TO_FLOAT (rt_sky_cloud_density);
-		c[5] = CVAR_TO_FLOAT (rt_sky_cloud_speed);
+		c[3] = CVAR_TO_FLOAT (rt_sky_clouds_coverage);
+		c[4] = CVAR_TO_FLOAT (rt_sky_clouds_density);
+		c[5] = CVAR_TO_FLOAT (rt_sky_clouds_speed);
 		c[6] = CVAR_TO_BOOL (rt_sky_clouds) ? 1.0f : 0.0f;
-		c[7] = c[8] = 0.0f;
+		c[7] = CVAR_TO_FLOAT (rt_sky_clouds_height);
+		c[8] = CVAR_TO_FLOAT (rt_sky_clouds_thickness);
 	}
 	else if (!CVAR_TO_BOOL (r_fastsky))
 	{
 		vec3_t brightest_dir, brightest_color;
 
+		// The shafts of a classic sky are not drawn any more: rt_sky_godrays is read
+		// only for the procedural sky, and with rt_physical_sky 0 nothing on this
+		// path reaches the frame. What is sent here is the aim a shaft *would* have
+		// over a sky that is a picture -- the brightest point of the texture,
+		// dressed as the sun -- kept for the record and for the day the shafts are
+		// wanted over one again; the lookup behind it is done at load time.
 		if (Sky_GetBrightestPoint (cl.time, brightest_dir, brightest_color))
 		{
 			// The brightest point of a rasterized sky stands in for the sun, so
@@ -1964,9 +2001,9 @@ static void GL_EndRenderingTask (end_rendering_parms_t *parms)
 	vec3_t volume_light_angles;
 	vec3_t volume_light_color;
 
-	RT_VEC3_SET (volume_light_angles, CVAR_TO_FLOAT (rt_sun_pitch), CVAR_TO_FLOAT (rt_sun_yaw), 0);
+	RT_VEC3_SET (volume_light_angles, CVAR_TO_FLOAT (rt_sky_sun_pitch), CVAR_TO_FLOAT (rt_sky_sun_yaw), 0);
 
-	if (CVAR_TO_BOOL (rt_sun))
+	if (CVAR_TO_BOOL (rt_sky_sun) && usePhysicalSky)
 		RT_GetSunColor (volume_light_color);
 	else
 		volume_light_color[0] = volume_light_color[1] = volume_light_color[2] = 0.0f;
@@ -2333,24 +2370,28 @@ static void RT_SunEditChanged_f (cvar_t *var)
 {
 	(void)var;
 
-	if (CVAR_TO_BOOL (rt_sun_edit))
+	if (CVAR_TO_BOOL (rt_sky_sun_edit))
 	{
 		Con_Printf ("Sun editor: the sun follows the crosshair, press fire to leave it there.\n");
 
-		if (CVAR_TO_FLOAT (rt_sun) <= 0.0f)
+		if (!CVAR_TO_BOOL (rt_physical_sky))
 		{
-			Con_Printf ("Sun editor: rt_sun is 0, so there is no sun to see -- set rt_sun 1 first.\n");
+			Con_Printf ("Sun editor: rt_physical_sky is 0, and the classic sky has no sun to place -- set rt_physical_sky 1 first.\n");
+		}
+		else if (CVAR_TO_FLOAT (rt_sky_sun) <= 0.0f)
+		{
+			Con_Printf ("Sun editor: rt_sky_sun is 0, so there is no sun to see -- set rt_sky_sun 1 first.\n");
 		}
 	}
 	else
 	{
-		Con_Printf ("Sun placed: rt_sun_pitch %s, rt_sun_yaw %s\n", rt_sun_pitch.string, rt_sun_yaw.string);
+		Con_Printf ("Sun placed: rt_sky_sun_pitch %s, rt_sky_sun_yaw %s\n", rt_sky_sun_pitch.string, rt_sky_sun_yaw.string);
 	}
 }
 
 static void RT_SunPreset_f (cvar_t *var)
 {
-	const int preset = CLAMP (0, CVAR_TO_INT32 (rt_sun_preset), 7);
+	const int preset = CLAMP (0, CVAR_TO_INT32 (rt_sky_sun_preset), 7);
 
 	if (preset == 0)
 	{
@@ -2368,7 +2409,7 @@ static void RT_SunPreset_f (cvar_t *var)
 		{140, 180, 255},
 	};
 
-	Cvar_Set ("rt_sun_color", va ("%d %d %d", presets[preset][0], presets[preset][1], presets[preset][2]));
+	Cvar_Set ("rt_sky_sun_color", va ("%d %d %d", presets[preset][0], presets[preset][1], presets[preset][2]));
 }
 
 extern atomic_uint32_t rt_require_static_submit;
@@ -2576,7 +2617,7 @@ void VID_Init (void)
 #undef CVAR_DEF_T
 
 		Cvar_RegisterVariable (&rt_light_report_filter);
-		Cvar_RegisterVariable (&rt_sun_edit);
+		Cvar_RegisterVariable (&rt_sky_sun_edit);
 
 		// The colour settings are read per light, so they watch their cvar instead of
 		// comparing its string on every read. Registered after the cvars, which is
@@ -2587,8 +2628,8 @@ void VID_Init (void)
 		}
 	}
 
-	Cvar_SetCallback (&rt_sun_preset, RT_SunPreset_f);
-	Cvar_SetCallback (&rt_sun_edit, RT_SunEditChanged_f);
+	Cvar_SetCallback (&rt_sky_sun_preset, RT_SunPreset_f);
+	Cvar_SetCallback (&rt_sky_sun_edit, RT_SunEditChanged_f);
 	Cvar_SetCallback (&rt_light_styles, RT_LightStylesChanged_f);
 	Cvar_SetCallback (&rt_light_styles_reach, RT_LightStylesChanged_f);
 	Cvar_SetCallback (&rt_worldcensus, RT_WorldCensusChanged_f);
@@ -2942,6 +2983,9 @@ enum
 
 	VID_OPT_GI_LEVEL,
 	VID_OPT_GODRAYS,
+	VID_OPT_GODRAYS_QUALITY,
+	VID_OPT_CLOUDS,
+	VID_OPT_CLOUDS_QUALITY,
 	VID_OPT_REFLECT,
 	VID_OPT_DENOISER,
 	VID_OPT_TEXTURES,
@@ -3272,6 +3316,34 @@ static void VID_Menu_StepGiLevel (float dir)
 
 /*
 ================
+VID_Menu_GetQualityName -- the levels rt_sky_godrays_quality and
+rt_sky_clouds_quality are on, as a word
+================
+*/
+static const char *VID_Menu_GetQualityName (const cvar_t *var)
+{
+	switch (CLAMP (0, (int)var->value, 4))
+	{
+	case 0:  return "low";
+	case 1:  return "medium";
+	case 3:  return "ultra";
+	case 4:  return "extreme";
+	default: return "high";
+	}
+}
+
+/*
+================
+VID_Menu_StepQuality -- cycle one of the quality ladder cvars
+================
+*/
+static void VID_Menu_StepQuality (cvar_t *var, int dir)
+{
+	Cvar_SetValueQuick (var, (float)CLAMP (0, (int)var->value + dir, 4));
+}
+
+/*
+================
 VID_Menu_StepReflDepth -- cycle through the Q2RTX reflection depths
 ================
 */
@@ -3446,7 +3518,16 @@ static void VID_MenuKey (int key)
 			VID_Menu_StepGiLevel (-1.0f);
 			break;
 		case VID_OPT_GODRAYS:
-			Cvar_SetValueQuick (&rt_godrays, !CVAR_TO_BOOL (rt_godrays));
+			Cvar_SetValueQuick (&rt_sky_godrays, !CVAR_TO_BOOL (rt_sky_godrays));
+			break;
+		case VID_OPT_GODRAYS_QUALITY:
+			VID_Menu_StepQuality (&rt_sky_godrays_quality, -1);
+			break;
+		case VID_OPT_CLOUDS:
+			Cvar_SetValueQuick (&rt_sky_clouds, !CVAR_TO_BOOL (rt_sky_clouds));
+			break;
+		case VID_OPT_CLOUDS_QUALITY:
+			VID_Menu_StepQuality (&rt_sky_clouds_quality, -1);
 			break;
 		case VID_OPT_REFLECT:
 			VID_Menu_StepReflDepth (-1.0f);
@@ -3531,7 +3612,16 @@ static void VID_MenuKey (int key)
 			VID_Menu_StepGiLevel (1.0f);
 			break;
 		case VID_OPT_GODRAYS:
-			Cvar_SetValueQuick (&rt_godrays, !CVAR_TO_BOOL (rt_godrays));
+			Cvar_SetValueQuick (&rt_sky_godrays, !CVAR_TO_BOOL (rt_sky_godrays));
+			break;
+		case VID_OPT_GODRAYS_QUALITY:
+			VID_Menu_StepQuality (&rt_sky_godrays_quality, 1);
+			break;
+		case VID_OPT_CLOUDS:
+			Cvar_SetValueQuick (&rt_sky_clouds, !CVAR_TO_BOOL (rt_sky_clouds));
+			break;
+		case VID_OPT_CLOUDS_QUALITY:
+			VID_Menu_StepQuality (&rt_sky_clouds_quality, 1);
 			break;
 		case VID_OPT_REFLECT:
 			VID_Menu_StepReflDepth (1.0f);
@@ -3581,7 +3671,10 @@ static void VID_MenuKey (int key)
 			Cvar_SetValueQuick (&scr_showfps, !CVAR_TO_BOOL (scr_showfps));
 			break;
 		case VID_OPT_GODRAYS:
-			Cvar_SetValueQuick (&rt_godrays, !CVAR_TO_BOOL (rt_godrays));
+			Cvar_SetValueQuick (&rt_sky_godrays, !CVAR_TO_BOOL (rt_sky_godrays));
+			break;
+		case VID_OPT_CLOUDS:
+			Cvar_SetValueQuick (&rt_sky_clouds, !CVAR_TO_BOOL (rt_sky_clouds));
 			break;
 		case VID_OPT_DENOISER:
 			Cvar_SetValueQuick (&rt_denoiser, !CVAR_TO_BOOL (rt_denoiser));
@@ -3747,7 +3840,19 @@ static void VID_MenuDraw (cb_context_t *cbx)
 			break;
 		case VID_OPT_GODRAYS:
 			M_Print (cbx, 16, y, "          God rays");
-			M_DrawCheckbox (cbx, 184, y, CVAR_TO_BOOL (rt_godrays));
+			M_DrawCheckbox (cbx, 184, y, CVAR_TO_BOOL (rt_sky_godrays));
+			break;
+		case VID_OPT_GODRAYS_QUALITY:
+			M_Print (cbx, 16, y, "  God rays quality");
+			M_Print (cbx, 184, y, VID_Menu_GetQualityName (&rt_sky_godrays_quality));
+			break;
+		case VID_OPT_CLOUDS:
+			M_Print (cbx, 16, y, " Volumetric clouds");
+			M_DrawCheckbox (cbx, 184, y, CVAR_TO_BOOL (rt_sky_clouds));
+			break;
+		case VID_OPT_CLOUDS_QUALITY:
+			M_Print (cbx, 16, y, "  Clouds quality");
+			M_Print (cbx, 184, y, VID_Menu_GetQualityName (&rt_sky_clouds_quality));
 			break;
 		case VID_OPT_REFLECT:
 			{

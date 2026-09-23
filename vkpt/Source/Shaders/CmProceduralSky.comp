@@ -19,14 +19,29 @@
 // with this program; if not, write to the Free Software Foundation, Inc.,
 // 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 //
-// Procedural sky: a flat sky colour (rt_sky_color) with procedural clouds over
-// it (rt_sky_clouds_color). The single-scattering atmosphere this file was
-// ported with is gone -- it is what kept the sky's own colour out of the sky,
-// because what it painted was the physical blue mixed with that colour -- so
-// the sky is now exactly the colour it is set to, and the sun disc is added on
-// top of it, independent of both.
+// Procedural sky: a flat sky colour (rt_sky_color) with the sun's disc over it
+// and the volumetric cloud layer (rt_sky_clouds, CmSkyClouds.comp) in front of
+// both. The single-scattering atmosphere this file was ported with is gone -- it
+// is what kept the sky's own colour out of the sky, because what it painted was
+// the physical blue mixed with that colour -- so the sky is now exactly the
+// colour it is set to, and the sun disc is added on top of it, independent of
+// both.
+//
+// The clouds are composited here instead of being painted into the sky, because
+// they are a volume between the eye and everything the sky draws: the sun goes in
+// first and is then attenuated by what the cloud cubemap says stands in front of
+// it, so the clouds occlude the sun AND the sky behind them, and the light that
+// scattered in them is added where they are seen against it. The sun's disc is
+// occluded harder than the sky behind it is: it is a source so bright that a few
+// percent of it still reads as a disc, while the same few percent of the sky is
+// what a cloud looks like from below -- so what the disc is multiplied by is the
+// layer's transmittance raised to a power (SUN_DISC_CLOUD_HIDE), and even a thin
+// cloud closes the sun without the cloud itself going dark.
+//
 // The per-face camera bases are passed from the CPU side and match the convention
-// of the rasterized sky cubemap path (Matrix::GetCubemapViewProjMat).
+// of the rasterized sky cubemap path (Matrix::GetCubemapViewProjMat); the cloud
+// cubemap is filled with the same convention, so that both are sampled by
+// direction.
 //
 
 #version 460
@@ -34,93 +49,31 @@
 
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
+// How much more strongly the disc is hidden than the sky behind it is: the layer's
+// transmittance raised to this power is what the disc is multiplied by. At 4 a
+// cloud that still lets half of the sky through leaves the disc at a sixteenth of
+// its light -- a glow where the sun is, rather than a disc the eye can make out.
+const float SUN_DISC_CLOUD_HIDE = 4.0;
+
 layout(rgba16f, set = 0, binding = 0) uniform imageCube cubemapOut;
 layout(rgba16f, set = 0, binding = 2) uniform imageCube envCubemapOut;
+
+// rgb = the light scattered in the cloud layer along this direction, a = how much
+// of what is behind the layer gets through it. Filled by CmSkyClouds.comp.
+layout(set = 0, binding = 4) uniform samplerCube cloudCubemap;
 
 layout(std140, set = 0, binding = 1) uniform Params
 {
     vec4 faceBasis[18]; // 6 faces * (right, up, forward)
     vec4 sunDirection;  // xyz = normalized direction TOWARD the sun, w = how much sun the sky shows (0 = no sun, so no disc either)
     vec4 skyColor;      // xyz = the colour of the sky itself (rt_sky_color), w unused
-    vec4 skyParams;     // x = multiplier over the whole sky (rt_sky, rt_sky_brightness, rt_brightness), y = cloud opacity (rt_sky_cloud_alpha), z = sun disc intensity, w = sun disc display radius (radians)
+    vec4 skyParams;     // x = multiplier over the whole sky (rt_sky, rt_sky_brightness, rt_brightness), y = cloud opacity (rt_sky_clouds_alpha), z = sun disc intensity, w = sun disc display radius (radians)
     vec4 cloudColor;    // xyz = cloud colour (rt_sky_clouds_color), w = cloud time (seconds)
-    vec4 cloudParams;   // x = cloud coverage, y = cloud contour sharpness (rt_sky_cloud_density), z = drift speed, w = clouds enabled
-    vec4 sunDiscColor;  // xyz = color of the sun disc (rt_sun_color), w unused
+    vec4 cloudParams;   // x = cloud coverage, y = cloud density (rt_sky_clouds_density), z = drift speed, w = clouds enabled
+    vec4 sunDiscColor;  // xyz = color of the sun disc (rt_sky_sun_color), w unused
+    vec4 cloudLayer;    // x = altitude of the cloud layer, y = thickness, z = sunlight strength, w = sky light strength
+    vec4 cloudMarch;    // x = view march steps, y = sun march steps, z = detail erosion strength, w = forward scattering
 } params;
-
-// --- procedural clouds (textureless value noise fBm) ---
-float hash13(vec3 p)
-{
-    p = fract(p * 0.1031);
-    p += dot(p, p.zyx + 31.32);
-    return fract((p.x + p.y) * p.z);
-}
-
-float valueNoise3(vec3 p)
-{
-    vec3 i = floor(p);
-    vec3 f = fract(p);
-    f = f * f * (3.0 - 2.0 * f);
-
-    float n000 = hash13(i);
-    float n100 = hash13(i + vec3(1, 0, 0));
-    float n010 = hash13(i + vec3(0, 1, 0));
-    float n110 = hash13(i + vec3(1, 1, 0));
-    float n001 = hash13(i + vec3(0, 0, 1));
-    float n101 = hash13(i + vec3(1, 0, 1));
-    float n011 = hash13(i + vec3(0, 1, 1));
-    float n111 = hash13(i + vec3(1, 1, 1));
-
-    return mix(
-        mix(mix(n000, n100, f.x), mix(n010, n110, f.x), f.y),
-        mix(mix(n001, n101, f.x), mix(n011, n111, f.x), f.y),
-        f.z);
-}
-
-float fbm3(vec3 p)
-{
-    float v = 0.0;
-    float amp = 0.5;
-    for (int i = 0; i < 4; i++)
-    {
-        v += amp * valueNoise3(p);
-        p = p * 2.03;
-        amp *= 0.5;
-    }
-    return v;
-}
-
-float cloudMask(vec3 dir, float time, float speed)
-{
-    // sample the noise on the sky dome; drift slowly with time
-    vec3 p = dir * 3.0 + vec3(time * speed, time * speed * 0.4, 0.0);
-    float n = fbm3(p);
-    return n;
-}
-
-vec3 evaluateSky(vec3 rd, vec3 skyColor, float cloudOpacity)
-{
-    // The sky is exactly the colour it is given, with nothing mixed into it:
-    // every path that reads this cubemap -- the frame itself, the ambient light
-    // and the reflections -- carries the colour the sky is set to, and the
-    // clouds over it cannot be tinted by it either.
-    vec3 col = skyColor;
-
-    // procedural clouds (color is set separately from the sky, e.g. black clouds on a colored sky)
-    if (params.cloudParams.w > 0.5)
-    {
-        float n = cloudMask(rd, params.cloudColor.w, params.cloudParams.z);
-        // rt_sky_cloud_density sharpens the contour instead of thinning the
-        // cloud: a cloud of full opacity keeps the colour it is set to, and only
-        // the band its noise crosses in changes -- a hard edge at 1, a soft one
-        // at 0.
-        float edge = mix(0.7, 0.05, clamp(params.cloudParams.y, 0.0, 1.0));
-        float mask = smoothstep(params.cloudParams.x, params.cloudParams.x + edge, n);
-        col = mix(col, params.cloudColor.xyz, clamp(mask * cloudOpacity, 0.0, 1.0));
-    }
-
-    return col;
-}
 
 void main()
 {
@@ -140,20 +93,44 @@ void main()
 
     vec3  sunDir       = normalize(params.sunDirection.xyz);
     vec3  skyColor     = max(params.skyColor.xyz, vec3(0.0));
-    float sunAmount    = params.sunDirection.w;      // 0 when the host has no sun (rt_sun 0)
+    float sunAmount    = params.sunDirection.w;      // 0 when the host has no sun (rt_sky_sun 0)
     float sunAngRad    = max(params.skyParams.w, 0.0); // display sun disc radius
     float multiplier   = params.skyParams.x;
     float cloudOpacity = clamp(params.skyParams.y, 0.0, 1.0);
     float sunIntensity = params.skyParams.z;
 
-    vec3  base         = evaluateSky(dir, skyColor, cloudOpacity);
-
-    imageStore(envCubemapOut, ipos, vec4(base * multiplier, 1.0));
+    // Transmittance of the clouds (a) and the light that scattered in them (rgb).
+    // The cloud cubemap is only written while the clouds are on, and both the used
+    // cloud colour and the host's opacity are applied inside the cloud pass.
+    vec4 cloud = vec4(0.0, 0.0, 0.0, 1.0);
+    if (params.cloudParams.w > 0.5 && cloudOpacity > 0.0)
+    {
+        cloud = texture(cloudCubemap, dir);
+    }
 
     float cosAng = cos(sunAngRad);
     // smoothstep() is evaluated for the whole cubemap before the amount scales it
     float disc = smoothstep(cosAng, 1.0, dot(dir, sunDir)) * sunAmount;
-    vec3 col = (base + params.sunDiscColor.xyz * sunIntensity * disc) * multiplier;
 
-    imageStore(cubemapOut, ipos, vec4(col, 1.0));
+    // The transmittance of the layer itself, taken back out of the mix the cloud
+    // pass left in cloud.a (the layer's transmittance mixed with the host's
+    // opacity), so that the disc can be given it raised to a power.
+    float layerTransmittance = cloudOpacity > 0.0
+        ? clamp(1.0 - (1.0 - cloud.a) / cloudOpacity, 0.0, 1.0)
+        : 1.0;
+    float discTransmittance = mix(1.0, pow(layerTransmittance, SUN_DISC_CLOUD_HIDE), cloudOpacity);
+
+    // Every path that reads this cubemap -- the frame itself, the ambient light
+    // and the reflections -- carries the colour the sky is set to, with the sun's
+    // disc and the clouds of the layer in front of it. The disc is occluded harder
+    // than the sky is; the clouds themselves are not touched by that.
+    vec3 sky = skyColor;
+    vec3 visible = sky * cloud.a + params.sunDiscColor.xyz * sunIntensity * disc * discTransmittance + cloud.rgb;
+    imageStore(cubemapOut, ipos, vec4(visible * multiplier, 1.0));
+
+    // The envCubemap is the sky as an ambient probe, so it holds no sun disc (a
+    // light of its own, not a piece of the sky) but does hold the clouds, which
+    // are what the sky is made of.
+    vec3 env = sky * cloud.a + cloud.rgb;
+    imageStore(envCubemapOut, ipos, vec4(env * multiplier, 1.0));
 }

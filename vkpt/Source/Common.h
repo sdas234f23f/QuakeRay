@@ -21,6 +21,7 @@
 #pragma once
 
 #include <cassert>
+#include <cstdio>
 #include <memory>
 #include <cstring>
 #include <vulkan/vulkan.h>
@@ -68,10 +69,20 @@ void InitDeviceExtensionFunctions_DebugUtils(VkDevice device);
 #pragma endregion
 
 
-inline void VK_CHECKERROR(const VkResult r)
-{
-    assert(r == VK_SUCCESS);
-}
+// A Vulkan call whose result cannot be ignored runs through this: a failure names
+// the call site and the result in the log, and then the check itself trips -- a
+// call that fails is a bug in the renderer, and which call it was is what the
+// assert alone cannot say.
+#define VK_CHECKERROR(r) \
+    do \
+    { \
+        const VkResult vkCheckErrorResult = (r); \
+        if (vkCheckErrorResult != VK_SUCCESS) \
+        { \
+            fprintf(stderr, "vkpt: Vulkan call at %s:%d failed: %d\n", __FILE__, __LINE__, (int)vkCheckErrorResult); \
+        } \
+        assert(vkCheckErrorResult == VK_SUCCESS); \
+    } while (0)
 
 
 #define SET_DEBUG_NAME(device, obj, type, pName) AddDebugName((device), reinterpret_cast<uint64_t>(obj), (type), (pName))

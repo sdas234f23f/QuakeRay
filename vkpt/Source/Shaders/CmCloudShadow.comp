@@ -1,0 +1,109 @@
+// Copyright (c) 2026 QuakeRay contributors
+//
+// This program is free software; you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation; either version 2 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License along
+// with this program; if not, write to the Free Software Foundation, Inc.,
+// 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+//
+// The shadow the cloud layer puts on the world (rt_sky_clouds): a top-down map of
+// how much of the sun survives the clouds on the way down to each spot of it.
+//
+// Where a sun ray crosses the base of the layer is what decides how much cloud it
+// has to go through, whatever height it is asked about -- a ray is a straight
+// line, and the same column of cloud is what every point on it sees. The map is
+// therefore the world's horizontal plane (z = 0, the world being the Quake one:
+// up is z), the layer projected onto it along the sun, one texel to a spot on it,
+// and asking about a point of the world is a lookup in it rather than a march
+// (CloudShadowMap.h reads it back).
+//
+// The column of cloud over a spot is marched once, towards the sun, for the depth
+// of the layer: past its top there is nothing but sky, and what scatters sunlight
+// into the column from the side is the sky pass's business rather than the
+// shadow's. What is written out is how much of the sun gets past it.
+//
+// Only direct sunlight is accounted for: the light the clouds scatter down on
+// their own is what CmSkyClouds.comp puts into the sky, so this must not take it
+// away again.
+//
+
+#version 460
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+// The map this pass fills: red = how much of the sun gets past the clouds, 1
+// where there is no cloud at all.
+layout(r16f, set = 0, binding = 0) uniform image2D cloudShadowOut;
+
+layout(std140, set = 0, binding = 1) uniform Params
+{
+    vec4 sunDirection;  // xyz = normalized direction TOWARD the sun, w = height of the layer's bottom over the eye
+    vec4 cloudLayer;    // x = thickness, y = coverage, z = density, w = detail erosion strength
+    vec4 cloudMarch;    // x = cloud time (seconds), y = drift speed, z = steps of the sun march, w = height of the layer's bottom over the plane the map is keyed on
+    vec4 mapProjection; // xy = world-space origin of the map, z = extent in metres, w = extent in texels
+} params;
+
+#include "CloudLayer.h"
+
+void main()
+{
+    ivec2 ipos = ivec2(gl_GlobalInvocationID.xy);
+    int size = int(params.mapProjection.w + 0.5);
+
+    if (ipos.x >= size || ipos.y >= size)
+    {
+        return;
+    }
+
+    CloudLayer layer;
+    layer.altitude  = params.sunDirection.w;
+    layer.thickness = max(params.cloudLayer.x, 1.0);
+    layer.coverage  = clamp(params.cloudLayer.y, 0.0, 1.0);
+    layer.density   = max(params.cloudLayer.z, 0.0);
+    layer.detail    = clamp(params.cloudLayer.w, 0.0, 0.9);
+    layer.time      = params.cloudMarch.x;
+    layer.speed     = params.cloudMarch.y;
+
+    int steps = clamp(int(params.cloudMarch.z + 0.5), 1, 64);
+
+    // Where the base of the layer stands over the spot this texel is for: the map
+    // is the plane the layer was projected onto along the sun, and the sun is the
+    // only thing between the two, so the spot has to be moved back along it until
+    // it stands at the height the base of the layer stands at over that plane --
+    // which is the height the sky holds it over the eye, brought into the world
+    // (CloudShadowMap.h makes the same trip the other way, from a point of the
+    // world into the map, and the world is the Quake one: up is z).
+    //
+    // The z the march starts at is the eye's own frame rather than the world's,
+    // because that is the one the noise is indexed in (CloudLayer.h): only the
+    // world height of the base of the layer is needed to find the spot, and it is
+    // what the sun is followed along.
+    float extent = max(params.mapProjection.z, 1.0);
+    vec2 flatPos = params.mapProjection.xy + (vec2(ipos) + 0.5) / float(size) * extent;
+
+    vec3 sunDir = normalize(params.sunDirection.xyz);
+    vec3 origin = vec3(flatPos.x, flatPos.y, layer.altitude);
+    origin.xy += sunDir.xy * (params.cloudMarch.w / max(sunDir.z, 1.0e-3));
+
+    // The steps are centred in the stretches they stand for, so that a thin cloud
+    // is not lost to the base of the layer falling between two of them.
+    float dt = layer.thickness / float(steps);
+    float t = 0.5 * dt;
+    float column = 0.0;
+
+    for (int i = 0; i < steps; i++)
+    {
+        column += cloudDensity(layer, origin + sunDir * t, false) * dt;
+        t += dt;
+    }
+
+    imageStore(cloudShadowOut, ipos, vec4(exp(-cloudOpticalDepth(layer, column)), 0.0, 0.0, 1.0));
+}

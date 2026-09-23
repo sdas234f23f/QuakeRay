@@ -20,6 +20,8 @@
 
 #include "MemoryAllocator.h"
 
+#include <cstdio>
+
 #include "Const.h"
 
 using namespace vkpt;
@@ -259,8 +261,40 @@ VkDevice MemoryAllocator::GetDevice()
 VkDeviceMemory MemoryAllocator::AllocDedicated(const VkMemoryRequirements &memReqs, VkMemoryPropertyFlags properties,
                                                AllocType allocType, const char *pDebugName) const
 {
-    VkDeviceMemory memory;
+    VkDeviceMemory memory = VK_NULL_HANDLE;
 
+    VkResult r = AllocateDedicated(memReqs, properties, allocType, &memory);
+    VK_CHECKERROR(r);
+
+    SET_DEBUG_NAME(device, memory, VK_OBJECT_TYPE_DEVICE_MEMORY, pDebugName);
+
+    return memory;
+}
+
+VkDeviceMemory MemoryAllocator::TryAllocDedicated(const VkMemoryRequirements &memReqs, VkMemoryPropertyFlags properties,
+                                                  AllocType allocType, const char *pDebugName) const
+{
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+
+    VkResult r = AllocateDedicated(memReqs, properties, allocType, &memory);
+    if (r != VK_SUCCESS)
+    {
+        // The map a quality level asks for may be more than the device has room for
+        // at the moment; the level then keeps the map it already has.
+        fprintf(stderr, "vkpt: %s (%llu bytes) was not allocated: vkAllocateMemory returned %d\n",
+                pDebugName != nullptr ? pDebugName : "memory", (unsigned long long)memReqs.size, (int)r);
+
+        return VK_NULL_HANDLE;
+    }
+
+    SET_DEBUG_NAME(device, memory, VK_OBJECT_TYPE_DEVICE_MEMORY, pDebugName);
+
+    return memory;
+}
+
+VkResult MemoryAllocator::AllocateDedicated(const VkMemoryRequirements &memReqs, VkMemoryPropertyFlags properties,
+                                            AllocType allocType, VkDeviceMemory *pMemory) const
+{
     VkMemoryAllocateInfo memAllocInfo = {};
     memAllocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     memAllocInfo.allocationSize = memReqs.size;
@@ -276,12 +310,7 @@ VkDeviceMemory MemoryAllocator::AllocDedicated(const VkMemoryRequirements &memRe
         memAllocInfo.pNext = &allocFlagInfo;
     }
 
-    VkResult r = vkAllocateMemory(device, &memAllocInfo, nullptr, &memory);
-    VK_CHECKERROR(r);
-
-    SET_DEBUG_NAME(device, memory, VK_OBJECT_TYPE_DEVICE_MEMORY, pDebugName);
-
-    return memory;
+    return vkAllocateMemory(device, &memAllocInfo, nullptr, pMemory);
 }
 
 VkDeviceMemory MemoryAllocator::AllocDedicated(const VkMemoryRequirements2 &memReqs2, VkMemoryPropertyFlags properties,

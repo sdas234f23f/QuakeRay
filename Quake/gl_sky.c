@@ -808,10 +808,23 @@ static void RT_GetSkyTintColor (float color[3])
 {
 	extern cvar_t rt_sky_brightness, rt_brightness;
 	extern cvar_t rt_materials_only;
+	extern cvar_t rt_physical_sky;
 
 	if (CVAR_TO_BOOL (rt_materials_only))
 	{
 		color[0] = color[1] = color[2] = 0.0f;
+		return;
+	}
+
+	// The classic sky (rt_physical_sky 0) is a picture the engine draws, and
+	// rt_sky_color is the colour of the procedural sky: tinting the picture with it
+	// takes the picture out -- a sky set to rt_sky_color 0 0 0 drew the classic sky
+	// black. What the classic sky is scaled by is the sky brightness, and the host
+	// already sends that as the multiplier of this sky type, so the tint here is
+	// white and only the procedural sky is coloured.
+	if (!CVAR_TO_BOOL (rt_physical_sky))
+	{
+		color[0] = color[1] = color[2] = 1.0f;
 		return;
 	}
 

@@ -26,6 +26,7 @@
 
 
 #include "ShaderCommonGLSLFunc.h"
+#include "CloudShadowMap.h"
 
 
 
@@ -79,6 +80,9 @@ layout(set = DESC_SET_CUBEMAPS, binding = BINDING_CUBEMAPS) uniform samplerCube 
 #ifdef DESC_SET_RENDER_CUBEMAP
 layout(set = DESC_SET_RENDER_CUBEMAP, binding = BINDING_RENDER_CUBEMAP) uniform samplerCube renderCubemap;
 layout(set = DESC_SET_RENDER_CUBEMAP, binding = BINDING_RENDER_CUBEMAP_ENV) uniform samplerCube renderCubemapEnv;
+// The shadow the cloud layer puts on the world, which fades the sun where the
+// clouds are over it (see traceSunVisibility below)
+layout(set = DESC_SET_RENDER_CUBEMAP, binding = BINDING_RENDER_CUBEMAP_CLOUD_SHADOW) uniform sampler2D cloudShadowMap;
 #endif
 
 #ifdef DESC_SET_PORTALS
@@ -428,7 +432,15 @@ float traceSunVisibility(const Surface surf, const LightSample sunLight, out boo
         return 0.0;
     }
 
-    return traceVisibility(surf, sunLight.position, LIGHT_ARRAY_DIRECTIONAL_LIGHT_OFFSET);
+    float visibility = traceVisibility(surf, sunLight.position, LIGHT_ARRAY_DIRECTIONAL_LIGHT_OFFSET);
+
+#ifdef DESC_SET_RENDER_CUBEMAP
+    // The clouds stand between the sun and the world, so they take their part of
+    // it away before any of it reaches the surface
+    visibility *= cloudShadowAt(cloudShadowMap, surf.position, l);
+#endif
+
+    return visibility;
 }
 
 float traceSkyVisibility(const Surface surf, const vec3 skyDirection)

@@ -255,6 +255,10 @@ CONST = {
     "BINDING_CUBEMAPS"                          : 0,
     "BINDING_RENDER_CUBEMAP"                    : 0,
     "BINDING_RENDER_CUBEMAP_ENV"                : 1,
+    # The cloud layer's shadow on the world: a 2D map of how much of the sun gets
+    # past the clouds over each spot of it, filled by CmCloudShadow.comp and read
+    # by the passes that light the world (CloudShadowMap.h).
+    "BINDING_RENDER_CUBEMAP_CLOUD_SHADOW"       : 2,
     "BINDING_BLUE_NOISE"                        : 0,
     "BINDING_LUM_HISTOGRAM"                     : 0,
     "BINDING_LIGHT_SOURCES"                     : 0,
@@ -720,8 +724,8 @@ GLOBAL_UNIFORM_STRUCT = [
     # on the std140 16-byte boundary.
     (TYPE_FLOAT32,      4,      "fixedAlbedo",              1),
 
-    # Q2RTX pt_sun_bounce_range / sun_bounce (host cvars rt_sun_bounce_range
-    # and rt_sun_bounce_scale): how far the sun reaches into an indirect bounce,
+    # Q2RTX pt_sun_bounce_range / sun_bounce (host cvars rt_sky_sun_bounce_range
+    # and rt_sky_sun_bounce_scale): how far the sun reaches into an indirect bounce,
     # in game units, and a straight multiplier on what it delivers there.
     # .x = range (0 disables indirect sunlight), .y = scale. Only the pair is
     # packed into one vec4 so the dense C mirror stays on the std140 16-byte
