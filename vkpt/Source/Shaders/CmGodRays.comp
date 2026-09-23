@@ -305,11 +305,13 @@ void main()
         const vec3 shadowBias = -godRaysParams.sunDirection.xyz * 20.0;
         float shadow = GetShadow(currentPos + shadowBias);
 
-        // The same clouds also hide the sun from the shafts themselves. The sample
-        // is a point of the air rather than one of the ground, but what the shafts
-        // are gated by is the shadow the layer puts on the world under it, so it is
-        // the base of the layer that answers for it (CloudShadowMap.h).
-        shadow *= cloudShadowTransmittance(cloudShadowMap, currentPos, godRaysParams.sunDirection.xyz, globalUniform.skyCubemapRotationTransform[3], 0.0);
+        // The same clouds also hide the sun from the shafts themselves. What a sample
+        // of the air asks about is the part of the cloud column that stands ABOVE it:
+        // its height in the layer, 0 at its bottom (the world height of it rides in
+        // sunColor.w) and 1 at its top (the layer's depth in sunDirection.w) -- a
+        // sample above the cloud deck is no longer shaded by it.
+        float cloudHeight = clamp((currentPos.z - godRaysParams.sunColor.w) / max(godRaysParams.sunDirection.w, 1.0), 0.0, 1.0);
+        shadow *= cloudShadowTransmittance(cloudShadowMap, currentPos, godRaysParams.sunDirection.xyz, globalUniform.skyCubemapRotationTransform[3], cloudHeight);
 
         const vec3 differentialInscatter = (shadow * phase * stepLength * density) * through;
         inscatter += differentialInscatter;

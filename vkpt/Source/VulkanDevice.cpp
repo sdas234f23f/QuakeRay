@@ -914,6 +914,19 @@ void VulkanDevice::Render(VkCommandBuffer cmd, const RgDrawFrameInfo &drawInfo)
             // sun (the sun itself, the sky, and the shafts -- CloudShadowMap.h)
             rasterizer->GetRenderCubemap()->UpdateCloudShadow(cmd, p, uniform->GetData()->cameraPosition);
             rasterizer->GetRenderCubemap()->DrawProcedural(cmd, p);
+
+            // The world's shading reads the volume's placement from the tail of the
+            // global uniform, which was filled before this frame's own refill of the
+            // volume could re-anchor it: refresh it now, so that the passes that light
+            // the world read the volume by the very place it was filled at, as the sky
+            // pass already does through its own parameters (one texel of the map is all
+            // the lag was, and it showed as the ground shadow popping while walking).
+            {
+                float cloudShadowPlacement[4] = {};
+                rasterizer->GetRenderCubemap()->GetCloudShadowPlacement(cloudShadowPlacement);
+                memcpy(uniform->GetData()->skyCubemapRotationTransform + 12, cloudShadowPlacement, sizeof(cloudShadowPlacement));
+                uniform->Upload(cmd, frameIndex);
+            }
         }
         else
         {
@@ -1060,6 +1073,29 @@ void VulkanDevice::Render(VkCommandBuffer cmd, const RgDrawFrameInfo &drawInfo)
                         gr.sunColor[1] = sunColor[1];
                         gr.sunColor[2] = sunColor[2];
                     }
+
+                    // The layer the volume of the layer's shadow was filled from: the
+                    // world height of its bottom (the eye's own height plus the layer's
+                    // bottom over it) and its depth, in the spare lanes of the sun's own
+                    // parameters -- the shafts read the volume with them, so that a
+                    // sample of the air asks about the part of the column above it
+                    // rather than the whole of it (CmGodRays.comp). The same fallbacks
+                    // the sky applies to them.
+                    float cloudHeight = 1400.0f, cloudThickness = 900.0f;
+                    if (drawInfo.pSkyParams != nullptr)
+                    {
+                        const float *cloudSettings = &drawInfo.pSkyParams->skyCubemapRotationTransform.matrix[0][0];
+                        if (cloudSettings[7] > 0.0f)
+                        {
+                            cloudHeight = cloudSettings[7];
+                        }
+                        if (cloudSettings[8] > 0.0f)
+                        {
+                            cloudThickness = cloudSettings[8];
+                        }
+                    }
+                    gr.sunColor[3] = uniform->GetData()->cameraPosition[2] + cloudHeight;
+                    gr.sunDirection[3] = cloudThickness;
 
                     for (int k = 0; k < 3; k++)
                     {

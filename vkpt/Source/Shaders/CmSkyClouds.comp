@@ -206,7 +206,7 @@ void main()
     CloudLayer layer;
     layer.altitude  = max(params.cloudLayer.x, 1.0);
     layer.thickness = max(params.cloudLayer.y, 1.0);
-    layer.coverage  = clamp(params.cloudParams.x, 0.0, 1.0);
+    layer.coverage  = clamp(params.cloudParams.x, 0.0, 0.99);
     layer.density   = max(params.cloudParams.y, 0.0);
     layer.detail    = clamp(params.cloudMarch.z, 0.0, 0.9);
     layer.speed     = params.cloudParams.z;

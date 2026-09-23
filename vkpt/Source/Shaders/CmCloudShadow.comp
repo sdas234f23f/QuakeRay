@@ -73,7 +73,7 @@ void main()
     CloudLayer layer;
     layer.altitude  = params.sunDirection.w;
     layer.thickness = max(params.cloudLayer.x, 1.0);
-    layer.coverage  = clamp(params.cloudLayer.y, 0.0, 1.0);
+    layer.coverage  = clamp(params.cloudLayer.y, 0.0, 0.99);
     layer.density   = max(params.cloudLayer.z, 0.0);
     layer.detail    = clamp(params.cloudLayer.w, 0.0, 0.9);
     layer.time      = params.cloudMarch.x;
