@@ -50,11 +50,6 @@ public:
         float cloudLayer[4];    // x = altitude of the layer's bottom over the eye, y = thickness, z = sunlight strength, w = sky light strength
         float cloudMarch[4];    // x = view march steps, y = sun march steps, z = detail erosion strength, w = forward scattering
         float cloudAnchor[4];   // xy = the eye's place in the world's horizontal plane, z = its height in the world, w = which quarter of the layer's map this frame marches (CLOUD_UPDATE_FRAMES meaning all of it)
-        // Where the eye has moved since the frame before, which is what the cloud
-        // pass reads the history of its own cubemap through (CmSkyClouds.comp): the
-        // layer is anchored in the world's plane, so a texel stands for another
-        // column of cloud once the eye has walked over it.
-        float cloudAnchorDelta[4]; // xy = the eye's movement over the world, one frame; zw unused
     };
 
 public:
@@ -237,18 +232,9 @@ private:
 
     // The layer is marched in a quarter of its map a frame (see DispatchClouds):
     // which quarter this frame is for, and whether the map is new and all of it has
-    // to be filled at once rather than a quarter of it. A frame the look of the layer
-    // changed in is filled whole as well, which is what drops the history the pass
-    // accumulates its cubemap over (SameCloudLook, DrawProcedural).
+    // to be filled at once rather than a quarter of it.
     uint32_t cloudsCycle = 0;
     bool     cloudsFullUpdate = true;
-
-    // The eye's place in the world's horizontal plane the frame before, for the
-    // movement the cloud pass reads the history of its cubemap through, and the
-    // parameters of that frame, for telling a frame the layer is drawn anew in from
-    // one that only goes on holding it.
-    float cloudAnchorPrev[2] = {};
-    ProceduralSkyParams procSkyLook = {};
 
     // The quality level both the cloud cubemap and the volume of its shadow are
     // sized and refreshed at (see SetQuality).

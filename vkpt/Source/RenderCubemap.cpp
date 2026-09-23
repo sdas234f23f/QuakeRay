@@ -113,45 +113,6 @@ constexpr uint32_t CLOUD_UPDATE_FRAMES = CLOUD_UPDATE_QUARTERS * CLOUD_UPDATE_QU
 // them is linear in the cloud.
 constexpr VkFormat CLOUD_SHADOW_FORMAT = VK_FORMAT_R16_SFLOAT;
 
-namespace
-{
-
-// Whether two sets of the sky's parameters describe the same look of the cloud
-// layer: the sun, the sky that lights the layer, the layer's own colour and body,
-// and the march through it. The rest of ProceduralSkyParams is where the frame is
-// rather than what is drawn with it -- the time the layer drifts by and the phase of
-// the taps taken from it, the eye's own place, the quarter of the map the frame
-// marches, and the two fields the map of the layer's shadow rides in -- and a frame
-// that differs in those alone is a frame the history of the layer's cubemap holds
-// (RenderCubemap::DrawProcedural).
-bool SameCloudLook(const vkpt::RenderCubemap::ProceduralSkyParams &a,
-                   const vkpt::RenderCubemap::ProceduralSkyParams &b)
-{
-    const auto same = [](const float *x, const float *y, int count)
-    {
-        for (int i = 0; i < count; i++)
-        {
-            if (fabsf(x[i] - y[i]) > 1.0e-4f)
-            {
-                return false;
-            }
-        }
-
-        return true;
-    };
-
-    return same(a.sunDirection, b.sunDirection, 4) &&   // xyz and how much sun the sky shows
-           same(a.skyColor, b.skyColor, 3) &&           // w is the shadow map's "there is one" flag
-           same(a.skyParams, b.skyParams, 4) &&
-           same(a.sunDiscColor, b.sunDiscColor, 3) &&   // w is the extent of that map
-           same(a.cloudColor, b.cloudColor, 3) &&       // w is the time the layer drifts by
-           same(a.cloudParams, b.cloudParams, 4) &&
-           same(a.cloudLayer, b.cloudLayer, 4) &&
-           same(a.cloudMarch, b.cloudMarch, 4);
-}
-
-}
-
 
 namespace vkpt
 {
@@ -938,7 +899,7 @@ void vkpt::RenderCubemap::CreateProceduralSkyDescriptors(const std::shared_ptr<S
 {
     VkResult r;
 
-    VkDescriptorSetLayoutBinding bindings[7] = {};
+    VkDescriptorSetLayoutBinding bindings[6] = {};
 
     bindings[0].binding = 0;
     bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
@@ -976,16 +937,9 @@ void vkpt::RenderCubemap::CreateProceduralSkyDescriptors(const std::shared_ptr<S
     bindings[5].descriptorCount = 1;
     bindings[5].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 
-    // 6: that same cubemap of the layer again, in the layout the pass that fills it
-    // writes it in, read back as its own history (CmSkyClouds.comp)
-    bindings[6].binding = 6;
-    bindings[6].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    bindings[6].descriptorCount = 1;
-    bindings[6].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-
     VkDescriptorSetLayoutCreateInfo layoutInfo = {};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutInfo.bindingCount = 7;
+    layoutInfo.bindingCount = 6;
     layoutInfo.pBindings = bindings;
 
     r = vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &procSkyDescSetLayout);
@@ -999,7 +953,7 @@ void vkpt::RenderCubemap::CreateProceduralSkyDescriptors(const std::shared_ptr<S
     poolSizes[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     poolSizes[1].descriptorCount = 1;
     poolSizes[2].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSizes[2].descriptorCount = 3;
+    poolSizes[2].descriptorCount = 2;
 
     VkDescriptorPoolCreateInfo poolInfo = {};
     poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -1041,13 +995,6 @@ void vkpt::RenderCubemap::CreateProceduralSkyDescriptors(const std::shared_ptr<S
     cloudsSampledInfo.imageView = clouds.view;
     cloudsSampledInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-    // The same cubemap again, in the layout the cloud pass writes it in and reads its
-    // own history in (binding 6), where binding 4 is it in the layout the sky reads.
-    VkDescriptorImageInfo cloudsHistoryInfo = {};
-    cloudsHistoryInfo.sampler = cloudsSampler;
-    cloudsHistoryInfo.imageView = clouds.view;
-    cloudsHistoryInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-
     // The map of the layer's shadow, which is made before this set is (see the
     // constructor) and is read by the cloud pass through it.
     VkDescriptorImageInfo cloudShadowImgInfo = {};
@@ -1060,7 +1007,7 @@ void vkpt::RenderCubemap::CreateProceduralSkyDescriptors(const std::shared_ptr<S
     bufInfo.offset = 0;
     bufInfo.range = VK_WHOLE_SIZE;
 
-    VkWriteDescriptorSet writes[7] = {};
+    VkWriteDescriptorSet writes[6] = {};
     writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[0].dstSet = procSkyDescSet;
     writes[0].dstBinding = 0;
@@ -1103,14 +1050,7 @@ void vkpt::RenderCubemap::CreateProceduralSkyDescriptors(const std::shared_ptr<S
     writes[5].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     writes[5].pImageInfo = &cloudShadowImgInfo;
 
-    writes[6].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[6].dstSet = procSkyDescSet;
-    writes[6].dstBinding = 6;
-    writes[6].descriptorCount = 1;
-    writes[6].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    writes[6].pImageInfo = &cloudsHistoryInfo;
-
-    vkUpdateDescriptorSets(device, 7, writes, 0, nullptr);
+    vkUpdateDescriptorSets(device, 6, writes, 0, nullptr);
 }
 
 void vkpt::RenderCubemap::CreateProceduralSkyPipelineLayout()
@@ -1792,13 +1732,6 @@ void vkpt::RenderCubemap::UpdateQualityDescriptors()
     cloudsSampled.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     cloudsSampled.imageView = clouds.view;
 
-    // The same layer as the pass that fills it reads its own history: the layout it
-    // writes in, which is the layout it reads in (binding 6).
-    VkDescriptorImageInfo cloudsHistory = {};
-    cloudsHistory.sampler = cloudsSampler;
-    cloudsHistory.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-    cloudsHistory.imageView = clouds.view;
-
     VkDescriptorImageInfo shadowSampled = {};
     shadowSampled.sampler = cloudShadowSampler;
     shadowSampled.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -1812,10 +1745,9 @@ void vkpt::RenderCubemap::UpdateQualityDescriptors()
 
     // The two bindings of the sky pass that name the layer (the one it is drawn
     // into and the one it is sampled through), the binding of the cubemap set that
-    // names the map of its shadow, the storage image of the pass that fills it, the
-    // binding the cloud pass itself reads the map through, and the binding it reads
-    // its own history through.
-    VkWriteDescriptorSet writes[6] = {};
+    // names the map of its shadow, the storage image of the pass that fills it, and
+    // the binding the cloud pass itself reads the map through.
+    VkWriteDescriptorSet writes[5] = {};
 
     for (VkWriteDescriptorSet &write : writes)
     {
@@ -1846,11 +1778,7 @@ void vkpt::RenderCubemap::UpdateQualityDescriptors()
     writes[4].dstBinding = 5;
     writes[4].pImageInfo = &shadowSampled;
 
-    writes[5].dstSet = procSkyDescSet;
-    writes[5].dstBinding = 6;
-    writes[5].pImageInfo = &cloudsHistory;
-
-    vkUpdateDescriptorSets(device, 6, writes, 0, nullptr);
+    vkUpdateDescriptorSets(device, 5, writes, 0, nullptr);
 }
 
 void vkpt::RenderCubemap::DrawProcedural(VkCommandBuffer cmd, const ProceduralSkyParams &inParams)
@@ -1864,34 +1792,6 @@ void vkpt::RenderCubemap::DrawProcedural(VkCommandBuffer cmd, const ProceduralSk
     // the level, so the march has to resolve what the finer map can hold.
     params.cloudMarch[0] = float(CLOUDS_VIEW_STEPS[quality]);
     params.cloudMarch[1] = float(CLOUDS_SUN_STEPS[quality]);
-
-    // A frame the look of the layer changed in is not a frame the history of its
-    // cubemap can be averaged into: the layer, the sky that lights it and the sun are
-    // what is being drawn, and nothing of the frames before them is that. Such a
-    // frame fills the whole map rather than a quarter of it, and the pass reads no
-    // history in it. The sun editor moves the sun every frame it is on, and a sun a
-    // tenth of a second late is a look of its own (SameCloudLook above says what the
-    // look is).
-    if (!SameCloudLook(procSkyLook, params))
-    {
-        cloudsFullUpdate = true;
-    }
-
-    procSkyLook = params;
-
-    // What the pass reads the history of the layer through: the frames before this
-    // one drew the same texels of the cubemap, and the eye moving over the world is
-    // what makes a texel stand for another column of cloud than it did -- the layer
-    // is anchored in the world's plane, so the point of it a direction names moves
-    // with where the eye stands. Filled before the anchor is frozen below, so that a
-    // frame with the clouds off still carries the eye's real movement.
-    const float anchor[2] = { params.cloudAnchor[0], params.cloudAnchor[1] };
-    params.cloudAnchorDelta[0] = anchor[0] - cloudAnchorPrev[0];
-    params.cloudAnchorDelta[1] = anchor[1] - cloudAnchorPrev[1];
-    params.cloudAnchorDelta[2] = 0.0f;
-    params.cloudAnchorDelta[3] = 0.0f;
-    cloudAnchorPrev[0] = anchor[0];
-    cloudAnchorPrev[1] = anchor[1];
 
     // Clouds off: freeze the animation time so the cached sky isn't re-rendered
     // every frame (only when sun/sky params change).
