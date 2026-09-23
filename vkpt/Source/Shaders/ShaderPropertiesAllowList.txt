@@ -8,3 +8,6 @@
 #
 # Add a line only when the difference is understood and harmless for the host, and write down why.
 # Everything else is a bug in the HLSL and must be fixed there.
+
+CmProceduralSky.comp descriptor set 0 binding 0 = HLSL has no writable cube texture type; the port writes the six faces through an RWTexture2DArray<float4> and the host binds a 2D-array view of the same layers (RenderCubemap.cpp: viewArray), which a cube view bound to an image2DArray descriptor could not be
+CmProceduralSky.comp descriptor set 0 binding 2 = the same cube-to-array difference as binding 0

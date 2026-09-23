@@ -25,9 +25,16 @@
 //
 // Spellings that had to change:
 //   * uint(...) / float(...) constructor -> C style cast, same truncation and rounding
-//   * texelFetch(t, ivec3(x, y, slice), 0) -> t.Load(int4(x, y, 0, slice)), because HLSL spells
-//     the array slice as the 4th component and widens nothing implicitly, so the arguments are
-//     cast: `t.Load(int4((int)offset.x, (int)offset.y, 0, (int)texIndex))`
+//   * texelFetch(t, ivec3(x, y, slice), 0) -> t.Load(int4(x, y, slice, 0)): dxc's
+//     Texture2DArray.Load takes the array slice as the 3rd component and the mip level as the
+//     4th, the opposite of what the argument order suggests and of what this port said first
+//     (measured: Load(int4(x, y, 7, 3)) lowers to an OpImageFetch whose Lod operand is 3, the
+//     4th component). The first spelling, (x, y, 0, slice), put the slice index into the mip
+//     lane, and since a mip index is clamped to the top 1x1 level, every random sample drawn
+//     through rndBlueNoise8 froze for slices above the mip count - which made the bounce
+//     directions of RtQ2Indirect deterministic and showed up as a mirror-like projection of the
+//     room in the indirect channel. Nothing is widened implicitly, so the casts stay:
+//     `t.Load(int4((int)offset.x, (int)offset.y, (int)texIndex, 0))`
 //   * `r == 0 ? 0 : ...` inside a float expression -> `0.0`
 //   * a matrix row is not an lvalue and can not be passed as an `out` argument, so getONB builds
 //     the two remaining columns in locals and assembles the matrix afterwards (see there)
@@ -255,7 +262,7 @@ float4 rndBlueNoise8(uint seed, uint salt)
 
     texIndex = (texIndex + salt) % BLUE_NOISE_TEXTURE_COUNT;
 
-    return blueNoiseTextures.Load(int4((int)offset.x, (int)offset.y, 0, (int)texIndex));
+    return blueNoiseTextures.Load(int4((int)offset.x, (int)offset.y, (int)texIndex, 0));
 }
 #endif // DESC_SET_RANDOM
 

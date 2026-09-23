@@ -122,14 +122,17 @@ vkpt::RenderCubemap::~RenderCubemap()
 
     vkDestroyImage(device, cubemap.image, nullptr);
     vkDestroyImageView(device, cubemap.view, nullptr);
+    vkDestroyImageView(device, cubemap.viewArray, nullptr);
     vkFreeMemory(device, cubemap.memory, nullptr);
 
     vkDestroyImage(device, envCubemap.image, nullptr);
     vkDestroyImageView(device, envCubemap.view, nullptr);
+    vkDestroyImageView(device, envCubemap.viewArray, nullptr);
     vkFreeMemory(device, envCubemap.memory, nullptr);
 
     vkDestroyImage(device, cubemapDepth.image, nullptr);
     vkDestroyImageView(device, cubemapDepth.view, nullptr);
+    vkDestroyImageView(device, cubemapDepth.viewArray, nullptr);
     vkFreeMemory(device, cubemapDepth.memory, nullptr);
 
     vkDestroyFramebuffer(device, cubemapFramebuffer, nullptr);
@@ -481,6 +484,8 @@ void vkpt::RenderCubemap::CreateAttch(
     VkCommandBuffer cmd,
     uint32_t sideSize, Attachment &result, bool isDepth)
 {
+    result.viewArray = VK_NULL_HANDLE;
+
     VkImageCreateInfo imageInfo = {};
     imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     imageInfo.imageType = VK_IMAGE_TYPE_2D;
@@ -536,6 +541,20 @@ void vkpt::RenderCubemap::CreateAttch(
     r = vkCreateImageView(device, &viewInfo, nullptr, &result.view);
     VK_CHECKERROR(r);
     SET_DEBUG_NAME(device, result.view, VK_OBJECT_TYPE_IMAGE_VIEW, isDepth ? "Render cubemap depth image view" : "Render cubemap image view");
+
+    // The sky compute pass writes the cubemap through an image2DArray binding -- HLSL has no
+    // writable cube texture and D3D12 has no cube UAV -- so the same six layers get a 2D-array
+    // view beside the cube view. The cube view stays for sampling and for the multiview render
+    // pass; only the storage-image bindings use this one, and a cube view bound to an
+    // image2DArray descriptor would violate VUID-vkCmdDispatch-viewType-07752.
+    // TODO(refactor): the two views of one image are a port shim, not a design; the NVRHI rewrite
+    // (A2/A5, plan §14.14) should drop the double-view path and decide how a cubemap is written
+    // on both backends.
+    viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+
+    r = vkCreateImageView(device, &viewInfo, nullptr, &result.viewArray);
+    VK_CHECKERROR(r);
+    SET_DEBUG_NAME(device, result.viewArray, VK_OBJECT_TYPE_IMAGE_VIEW, isDepth ? "Render cubemap depth array view" : "Render cubemap array view");
 
 
     // make transition from undefined manually, so initialLayout can be specified
@@ -792,11 +811,11 @@ void vkpt::RenderCubemap::CreateProceduralSkyDescriptors()
     SET_DEBUG_NAME(device, procSkyDescSet, VK_OBJECT_TYPE_DESCRIPTOR_SET, "Procedural sky desc set");
 
     VkDescriptorImageInfo imgInfo = {};
-    imgInfo.imageView = cubemap.view;
+    imgInfo.imageView = cubemap.viewArray;   // the sky pass writes through an image2DArray binding
     imgInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 
     VkDescriptorImageInfo envImgInfo = {};
-    envImgInfo.imageView = envCubemap.view;
+    envImgInfo.imageView = envCubemap.viewArray;
     envImgInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 
     VkDescriptorBufferInfo bufInfo = {};

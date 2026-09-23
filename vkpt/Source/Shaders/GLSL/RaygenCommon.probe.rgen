@@ -1,0 +1,312 @@
+#version 460
+
+// Hand written counterpart of Probes/RaygenCommon.probe.rgen.hlsl.
+//
+// RaygenCommon.h has no entry point of its own: it is the raygen side of the renderer, included by
+// RaygenPrimary.inl, RtQ2Indirect.rgen and RtRaygenDirect.rgen. This pair therefore pins the header
+// directly, with the define set of a shipped raygen consumer.
+//
+// Variant pinned here: LIGHT_SAMPLE_METHOD == LIGHT_SAMPLE_METHOD_DIRECT, one of the three values
+// the consumers use. Measured: RaygenPrimary.inl:54 pins NONE, RtQ2Indirect.rgen:41 pins INDIR and
+// RtRaygenDirect.rgen:34 pins DIRECT; the header's only test is `!= LIGHT_SAMPLE_METHOD_NONE`,
+// which is why DIRECT compiles the same block as INDIR. DESC_SET_CUBEMAPS defined,
+// DESC_SET_RENDER_CUBEMAP and DESC_SET_PORTALS left undefined. No shipped shader has exactly this
+// combination -- RtRaygenDirect.rgen has no cubemaps at all, RaygenPrimary.inl has cubemaps, the
+// render cubemap and portals -- so this pair compiles the intersection of the two: every branch it
+// compiles is compiled by a shipped shader too, and the branches it drops are dropped by at least
+// one of them.
+//
+// The two matrix sites (:284 in getSkyPrimary and :319 in getSkyFiltered) are touched twice: with
+// the header's own text, reading globalUniform, which is what the real shaders run, and with a
+// literal 4x4 in place of the uniform member, so that the product is a compile time constant and
+// CheckShaderProperties.py can compare the arithmetic of the two compilers. The literal is a real
+// rotation about (0.2, 0.8, 0.4) by 0.7 rad: not symmetric and not axis aligned, so a transposed
+// read cannot fold to the same numbers. Each site also gets the mirrored spelling as a negative
+// control, because a proof whose control agrees proves nothing.
+//
+// The three hit-tracing functions are reached from main(), in the order in which the golden
+// declares the two payloads, PAYLOAD_INDEX_DEFAULT before PAYLOAD_INDEX_SHADOW. That order is not
+// needed here -- the two rayPayloadEXT globals of the header are at module scope and carry their
+// location decorations without a call -- but the HLSL half has no payload globals: its payload
+// locations exist only because main() reaches both types, and dxc numbers them in the order they
+// are first used. Both halves therefore trace the same three calls in the same order, and the
+// locations come out 0 and 1 in both, i.e. PAYLOAD_INDEX_DEFAULT and PAYLOAD_INDEX_SHADOW.
+//
+// The flags of the shadow ray are folded one by one, because what has to be shown is that the bits
+// behind the two spellings (gl_RayFlagsTerminateOnFirstHitEXT / RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH,
+// gl_RayFlagsSkipClosestHitShaderEXT / RAY_FLAG_SKIP_CLOSEST_HIT_SHADER) are equal.
+//
+// The arguments of the functions that cannot be folded (the sky getters, the shadow helpers,
+// shade/shadeDiffuse) are chosen so that no divisor is zero and no normalized vector is zero: a NaN
+// would make the comparison vacuous.
+//
+// Five of the fifty seven slots agree to one ulp instead of bit for bit: 13, 17, 52, 53, 55, the
+// chroma sites. What separates them is the front end constant folders, not the ported arithmetic.
+// glslang folds the const qualified mix()/max() chain of those sites in its AST evaluator, dxc folds
+// the lerp() and leaves the max() call to spirv-opt, and the two folders round the last bit
+// differently. mix(x, y, a) is x*(1-a) + y*a and lerp(x, y, s) is x + s*(y-x): algebraically equal,
+// one ulp apart in single precision. Measured with the four literal operands of slot 13
+// (0.2125*0.25 + 0.7154*0.5 + 0.0721*1.0, 0.25, 1.3, 8.0): glslc mix 0.180122495, dxc lerp
+// 0.18012251, the same expression left to spirv-opt -O instead of glslang's folder 0.18012251, i.e.
+// dxc's number, and x*(1-a) + y*a written out in dxc 0.18012248, a third value. No source spelling
+// makes the two front end folders agree bit for bit on those sites, and every slot both compilers
+// fold the same way -- the other fifty two -- agrees bit for bit, including the negative controls.
+//
+// probeOutput slot map, identical in both halves:
+//
+//    0     v, the accumulator
+//    1..3  :284 folded with the header's spelling (mat3(M) * d)
+//    4..6  :284 folded with the mirrored spelling (d * mat3(M)), negative control
+//    7..9  :319 folded with the header's spelling
+//    10..12 :319 folded with the mirrored spelling, negative control
+//    13..15 boostChroma expression, LIGHT_CHROMA_BOOST (slot 13 differs by one ulp)
+//    16..18 boostEmissionChroma expression, EMISSION_CHROMA_BOOST (slot 17 differs by one ulp)
+//    19    SKY_MIP_COUNT
+//    20    SKY_DIFFUSE_BOUNCE_LOD
+//    21    SHADOW_RAY_EPS
+//    22    RAY_ORIGIN_LEAK_BIAS
+//    23    LIGHT_CHROMA_BOOST
+//    24    EMISSION_CHROMA_BOOST
+//    25..29 RAY_STATS_CATEGORY_PRIMARY .. SHADOW_INDIRECT
+//    30    RAY_STATS_CATEGORY_COUNT
+//    31    PAYLOAD_INDEX_DEFAULT
+//    32    PAYLOAD_INDEX_SHADOW
+//    33    SBT_INDEX_MISS_DEFAULT
+//    34    SBT_INDEX_MISS_SHADOW
+//    35    1.0 / M_PI
+//    36    the constant part of the shadow ray flags
+//    37    gl_RayFlagsSkipClosestHitShaderEXT / RAY_FLAG_SKIP_CLOSEST_HIT_SHADER
+//    38    gl_RayFlagsTerminateOnFirstHitEXT / RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH
+//    39    gl_RayFlagsCullFrontFacingTrianglesEXT / RAY_FLAG_CULL_FRONT_FACING_TRIANGLES
+//    40    gl_RayFlagsCullBackFacingTrianglesEXT / RAY_FLAG_CULL_BACK_FACING_TRIANGLES, control
+//    41    Q2_MAX_CLUSTERS
+//    42    LIGHT_ARRAY_DIRECTIONAL_LIGHT_OFFSET
+//    43..45 INSTANCE_MASK_REFRACT, FIRST_PERSON, FIRST_PERSON_VIEWER
+//    46    GEOM_INST_FLAG_IGNORE_REFRACT_AFTER
+//    47..49 INSTANCE_CUSTOM_INDEX_FLAG_FIRST_PERSON, FIRST_PERSON_VIEWER, SKY
+//    50    direction.x after the header's own statement, reading the uniform: not folded
+//    51..53 mix() with the arguments swapped, negative control (slots 52, 53 differ by one ulp)
+//    54..56 boostEmissionChroma without the max(), negative control (slot 55 differs by one ulp)
+
+// don't need albedo for direct illumination, as in RtRaygenDirect.rgen
+#define MATERIAL_MAX_ALBEDO_LAYERS 0
+
+#define DESC_SET_TLAS 0
+#define DESC_SET_FRAMEBUFFERS 1
+#define DESC_SET_GLOBAL_UNIFORM 2
+#define DESC_SET_VERTEX_DATA 3
+#define DESC_SET_TEXTURES 4
+#define DESC_SET_RANDOM 5
+#define DESC_SET_LIGHT_SOURCES 6
+#define DESC_SET_CUBEMAPS 7
+#define DESC_SET_RAY_STATS 11
+#define LIGHT_SAMPLE_METHOD (LIGHT_SAMPLE_METHOD_DIRECT)
+
+#include "RaygenCommon.h"
+
+#define PROBE_DESC_SET 12
+
+layout(set = PROBE_DESC_SET, binding = 0, std430) writeonly buffer ProbeOutput_BT
+{
+    float probeOutput[];
+};
+
+// The literal rotation of the folded matrix sites. It is the same logical matrix in both halves:
+// mat4() takes columns in GLSL and float4x4() takes rows in HLSL, so the two argument lists are
+// each other's transpose. The upper left 3x3 is what mat3() / (float3x3) keeps.
+#define PROBE_ROT_MAT4 mat4(0.776040196, 0.325951606, -0.53992331, 0.0, -0.236367688, 0.944010019, 0.230163753, 0.0, 0.584715307, -0.0509958975, 0.809634149, 0.0, 0.0, 0.0, 0.0, 1.0)
+#define PROBE_DIRECTION vec3(1.0, 2.0, 3.0)
+
+void main()
+{
+    float v = 0.0;
+
+    // ---- the two matrix sites, folded ---------------------------------------------------------
+    vec3 direction = PROBE_DIRECTION;
+    direction = mat3(PROBE_ROT_MAT4) * direction;    // RaygenCommon.h:284, getSkyPrimary()
+    probeOutput[1] = direction.x;
+    probeOutput[2] = direction.y;
+    probeOutput[3] = direction.z;
+
+    direction = PROBE_DIRECTION;                     // negative control
+    direction = direction * mat3(PROBE_ROT_MAT4);
+    probeOutput[4] = direction.x;
+    probeOutput[5] = direction.y;
+    probeOutput[6] = direction.z;
+
+    direction = PROBE_DIRECTION;
+    direction = mat3(PROBE_ROT_MAT4) * direction;    // RaygenCommon.h:319, getSkyFiltered()
+    probeOutput[7] = direction.x;
+    probeOutput[8] = direction.y;
+    probeOutput[9] = direction.z;
+
+    direction = PROBE_DIRECTION;                     // negative control
+    direction = direction * mat3(PROBE_ROT_MAT4);
+    probeOutput[10] = direction.x;
+    probeOutput[11] = direction.y;
+    probeOutput[12] = direction.z;
+
+    // ---- the header's own statement, against the real uniform ---------------------------------
+    // Not folded, so it proves no order; it is here so that the statement as the header ships it
+    // reaches the module, together with the read of globalUniform.skyCubemapRotationTransform.
+    direction = PROBE_DIRECTION;
+    direction = mat3(globalUniform.skyCubemapRotationTransform) * direction;
+    probeOutput[50] = direction.x;
+
+    // ---- chroma --------------------------------------------------------------------------------
+    const vec3  probeColor = vec3(0.25, 0.5, 1.0);
+    const float probeLum   = 0.2125 * probeColor.r + 0.7154 * probeColor.g + 0.0721 * probeColor.b;
+
+    const vec3 probeChroma = max(mix(vec3(probeLum), probeColor, LIGHT_CHROMA_BOOST), vec3(0.0));
+    probeOutput[13] = probeChroma.x;
+    probeOutput[14] = probeChroma.y;
+    probeOutput[15] = probeChroma.z;
+
+    const vec3 probeEmission = max(mix(vec3(probeLum), probeColor, EMISSION_CHROMA_BOOST), vec3(0.0));
+    probeOutput[16] = probeEmission.x;
+    probeOutput[17] = probeEmission.y;
+    probeOutput[18] = probeEmission.z;
+
+    const vec3 probeMixSwapped = max(mix(probeColor, vec3(probeLum), LIGHT_CHROMA_BOOST), vec3(0.0));
+    probeOutput[51] = probeMixSwapped.x;
+    probeOutput[52] = probeMixSwapped.y;
+    probeOutput[53] = probeMixSwapped.z;
+
+    const vec3 probeEmissionNoMax = mix(vec3(probeLum), probeColor, EMISSION_CHROMA_BOOST);
+    probeOutput[54] = probeEmissionNoMax.x;
+    probeOutput[55] = probeEmissionNoMax.y;
+    probeOutput[56] = probeEmissionNoMax.z;
+
+    // ---- the constants of the header -----------------------------------------------------------
+    probeOutput[19] = SKY_MIP_COUNT;
+    probeOutput[20] = SKY_DIFFUSE_BOUNCE_LOD;
+    probeOutput[21] = SHADOW_RAY_EPS;
+    probeOutput[22] = RAY_ORIGIN_LEAK_BIAS;
+    probeOutput[23] = LIGHT_CHROMA_BOOST;
+    probeOutput[24] = EMISSION_CHROMA_BOOST;
+
+    probeOutput[25] = float(RAY_STATS_CATEGORY_PRIMARY);
+    probeOutput[26] = float(RAY_STATS_CATEGORY_REFLECTION_REFRACTION);
+    probeOutput[27] = float(RAY_STATS_CATEGORY_INDIRECT);
+    probeOutput[28] = float(RAY_STATS_CATEGORY_SHADOW_DIRECT);
+    probeOutput[29] = float(RAY_STATS_CATEGORY_SHADOW_INDIRECT);
+    probeOutput[30] = float(RAY_STATS_CATEGORY_COUNT);
+
+    probeOutput[31] = float(PAYLOAD_INDEX_DEFAULT);
+    probeOutput[32] = float(PAYLOAD_INDEX_SHADOW);
+    probeOutput[33] = float(SBT_INDEX_MISS_DEFAULT);
+    probeOutput[34] = float(SBT_INDEX_MISS_SHADOW);
+    probeOutput[35] = 1.0 / M_PI;
+
+    probeOutput[36] = float(gl_RayFlagsSkipClosestHitShaderEXT | gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsCullFrontFacingTrianglesEXT);
+    probeOutput[37] = float(gl_RayFlagsSkipClosestHitShaderEXT);
+    probeOutput[38] = float(gl_RayFlagsTerminateOnFirstHitEXT);
+    probeOutput[39] = float(gl_RayFlagsCullFrontFacingTrianglesEXT);
+    probeOutput[40] = float(gl_RayFlagsCullBackFacingTrianglesEXT);
+
+    probeOutput[41] = float(Q2_MAX_CLUSTERS);
+    probeOutput[42] = float(LIGHT_ARRAY_DIRECTIONAL_LIGHT_OFFSET);
+    probeOutput[43] = float(INSTANCE_MASK_REFRACT);
+    probeOutput[44] = float(INSTANCE_MASK_FIRST_PERSON);
+    probeOutput[45] = float(INSTANCE_MASK_FIRST_PERSON_VIEWER);
+    probeOutput[46] = float(GEOM_INST_FLAG_IGNORE_REFRACT_AFTER);
+    probeOutput[47] = float(INSTANCE_CUSTOM_INDEX_FLAG_FIRST_PERSON);
+    probeOutput[48] = float(INSTANCE_CUSTOM_INDEX_FLAG_FIRST_PERSON_VIEWER);
+    probeOutput[49] = float(INSTANCE_CUSTOM_INDEX_FLAG_SKY);
+
+    // ---- the cull masks and the ray flags ------------------------------------------------------
+    v += float(getPrimaryVisibilityCullMask());
+    v += float(getReflectionRefractionCullMask(0u, 0u, false));
+    v += float(getReflectionRefractionCullMask(INSTANCE_CUSTOM_INDEX_FLAG_FIRST_PERSON, GEOM_INST_FLAG_IGNORE_REFRACT_AFTER, true));
+    v += float(getReflectionRefractionCullMask(INSTANCE_CUSTOM_INDEX_FLAG_FIRST_PERSON_VIEWER, GEOM_INST_FLAG_IGNORE_REFRACT_AFTER, false));
+    v += float(getShadowCullMask(INSTANCE_CUSTOM_INDEX_FLAG_FIRST_PERSON));
+    v += float(getIndirectIlluminationCullMask(0u));
+    v += float(getIndirectIlluminationCullMask(INSTANCE_CUSTOM_INDEX_FLAG_FIRST_PERSON));
+    v += float(getIndirectIlluminationCullMask(INSTANCE_CUSTOM_INDEX_FLAG_FIRST_PERSON_VIEWER));
+    v += float(getAdditionalRayFlags());
+
+    // ---- payloads ------------------------------------------------------------------------------
+    // doesPayloadContainHitInfo() is fed the header's own payload after resetPayload(), and a
+    // payload that carries a hit, so that both the false and the true branch are reached.
+    resetPayload();
+    v += doesPayloadContainHitInfo(g_payload) ? 1.0 : 0.0;
+
+    g_payload.baryCoords = vec2(0.25, 0.5);
+    g_payload.instIdAndIndex = 7u;
+    g_payload.geomAndPrimIndex = 9u;
+    v += doesPayloadContainHitInfo(g_payload) ? 1.0 : 0.0;
+
+    // ---- the three tracing functions of the header, and the two payload types ------------------
+    // Reached from main() so that the whole tracing path is in the module; the results are discarded
+    // because the payloads are the header's module scope globals. See the header comment for why the
+    // order (default payload first, shadow payload second) matters to the other half.
+    tracePrimaryRay(PROBE_DIRECTION, vec3(0.0, 0.0, 1.0));
+    traceReflectionRefractionRay(PROBE_DIRECTION, vec3(0.0, 0.0, 1.0), 0u, 0u, false);
+    traceIndirectRay(0u, PROBE_DIRECTION, vec3(0.0, 0.0, 1.0));
+
+    // ---- sky -----------------------------------------------------------------------------------
+    const vec3 probeSurfPosition = vec3(0.0, 1.0, 0.0);
+    const vec3 probeSurfNormal   = vec3(0.0, 1.0, 0.0);
+    const vec3 probeViewDir      = vec3(0.0, 0.5, 1.0);
+    const vec3 probeLightPos     = vec3(0.0, 3.0, 0.0);
+    const vec3 probeSkyDir       = vec3(0.25, 0.5, 1.0);
+    const float probeLod         = 3.0;
+
+    v += getSkyPrimary(probeSkyDir).r;
+    v += getSky(probeSkyDir).g;
+    v += getSkyFiltered(probeSkyDir, probeLod).b;
+    v += getSkyFilteredMultiplied(probeSkyDir, probeLod).r;
+    v += getSkyAmbientMultiplied(probeSkyDir, probeLod).g;
+    v += evalSkyNeePdf(probeSurfNormal, probeSkyDir);
+
+    // ---- shadow rays and shading ---------------------------------------------------------------
+    ShHitInfo h;
+    h.albedo                = vec3(0.5, 0.5, 0.5);
+    h.metallic              = 0.25;
+    h.normal                = probeSurfNormal;
+    h.roughness             = 0.5;
+    h.normalGeom            = probeSurfNormal;
+    h.emission              = 1.0;
+    h.hitPosition           = probeSurfPosition;
+    h.instCustomIndex       = 0u;
+    h.geometryInstanceFlags = 0u;
+    h.portalIndex           = 0u;
+    h.cluster               = 0u;
+
+    Surface surf = hitInfoToSurface_Indirect(h, probeViewDir);
+    surf.position      = probeSurfPosition;
+    surf.normal        = probeSurfNormal;
+    surf.normalGeom    = probeSurfNormal;
+    surf.toViewerDir   = probeViewDir;
+    surf.roughness     = 0.5;
+    surf.specularColor = vec3(0.25, 0.25, 0.25);
+
+    LightSample light;
+    light.position = probeLightPos;
+    light.color    = vec3(1.0, 0.5, 0.25);
+    light.dw       = 1.0;
+
+    bool        traced;
+    vec3        diffuse;
+    vec3        specular;
+    vec3        diffuseOnly;
+
+    v += traceVisibility(surf, light.position, 1u);
+    v += traceLightVisibility(surf, light, 2u, traced);
+    v += traceSunVisibility(surf, light, traced);
+    v += traceSkyVisibility(surf, probeSkyDir);
+    v += traceShadowRay(surf.instCustomIndex, surf.position, light.position, false) ? 1.0 : 0.0;
+    v += traceShadowRay(surf.instCustomIndex, surf.position, light.position, true) ? 1.0 : 0.0;
+
+    shade(surf, light, 1.0, diffuse, specular);
+    shadeDiffuse(surf, light, 1.0, diffuseOnly);
+
+    v += diffuse.x + diffuse.y + diffuse.z;
+    v += specular.x + specular.y + specular.z;
+    v += diffuseOnly.x + diffuseOnly.y + diffuseOnly.z;
+
+    rayStatsAdd(RAY_STATS_CATEGORY_SHADOW_DIRECT, 1u);
+    rayStatsAdd(RAY_STATS_CATEGORY_SHADOW_INDIRECT, 2u);
+
+    probeOutput[0] = v;
+}

@@ -1,0 +1,143 @@
+#version 460
+
+#extension GL_EXT_nonuniform_qualifier : require
+#extension GL_EXT_samplerless_texture_functions : require
+
+// Hand written counterpart of Probes/Q2Fog.probe.comp.hlsl.
+//
+// Q2Fog.h has no shader stage of its own, so this pair exists to check Q2Fog.hlsli against it.
+// CmQ2Fog.comp and RaygenPrimary.inl are the consumers of Q2Fog.h, and both reach it after
+// ShaderCommonGLSLFunc.h, so the probe pulls in the same layer of accessors: the global uniform,
+// which is the whole of what the header reads (fogIsActive, fogMins, fogMaxs, fogColor,
+// fogDensity) plus the MAX_FOG_VOLUMES bound of its loop. The header declares no resource of its
+// own and reads no texture, so that one set is the only one the probe enables, and all five fog
+// arrays are read on both halves.
+//
+// All nine functions of the header are instantiated here on both halves, with the constants of
+// their arguments so that everything that glslang and dxc are willing to fold is folded and the
+// two disassemblies can be compared number by number:
+//   q2FogVMin and q2FogVMax       -> on vec3(2.0) and on the reciprocal of vec3(2,4,8)
+//   q2PackHalf4x16                -> on vec4(1,2,3,4), read back through q2UnpackHalf4x16
+//   q2UnpackHalf4x16              -> on uvec2(0x3C00, 0x4200)
+//   q2FindFogVolumes              -> the uniform-driven path; it is the only caller of the three
+//                                    that follow and it cannot fold, because everything it reads
+//                                    comes from the global uniform
+//   q2EvaluateFog                 -> on the volume the finder returned, with t1 = 1, t2 = 3
+//   q2AlphaBlendPremultiplied     -> on that result and a constant
+//   q2SegmentFog and q2ApplyFog   -> the two wrappers, on the two volumes the finder returned
+//   Q2_FOG_BRIGHTNESS             -> the one macro of the header, on its own as well, so that its
+//                                    value is pinned by a folded number and not only by its use
+//
+// The one substitution of this port that has no HLSL intrinsic is GLSL's packHalf2x16 /
+// unpackHalf2x16: the HLSL half spells them f32tof16 / f16tof32. Both are worked into this file as
+// a raw pair next to the functions of the header that use them, on the same constant, so that the
+// two halves can be read against each other: this half hands the constant word 0xC0003C00 to the
+// builtin, the HLSL half builds it as f32tof16(1.0) | (f32tof16(-2.0) << 16). Neither front end
+// folds the pack or the unpack itself -- both keep an OpExtInst PackHalf2x16 / UnpackHalf2x16 on
+// the constant operand -- so those two sites are compared on the instruction and on the operand,
+// and the folded numbers of this pair are taken from the sites that do fold, see the slot table.
+//
+// Q2Fog.h reads nothing but the global uniform and writes nothing, so there is no storage image
+// and no sampler in this file, and the header's own comment on the brightening of its color is not
+// touched by the probe. This file has to be edited together with the HLSL one: what one side
+// reaches and the other does not is reported as a mismatch, which is exactly the point.
+
+#define DESC_SET_GLOBAL_UNIFORM 0
+
+#include "ShaderCommonGLSLFunc.h"
+#include "Q2Fog.h"
+
+layout(binding = 0, set = 8, std430) writeonly buffer ProbeOutput { float o[]; };
+
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+
+void main()
+{
+    float v = 0.0;
+
+    // The two helpers that the slab test of q2FindFogVolumes is built from. q2FogVMin(vec3(2.0))
+    // is 2.0 only if the constructor broadcasts its argument into all three lanes, and 0.0 if it
+    // filled one lane and left the other two at zero; q2FogVMax(vec3(1.0) / vec3(2,4,8)) is the
+    // same construction under the reciprocal division of the header
+    v += q2FogVMin(vec3(2.0));
+    v += q2FogVMax(vec3(1.0) / vec3(2.0, 4.0, 8.0));
+
+    // The half packing of the header, on the two shapes it is used with: the (t_in, t_out) pair in
+    // .z, and the four color components of the .xy pair, both read back through q2UnpackHalf4x16
+    v += float(q2PackHalf4x16(vec4(1.0, 2.0, 3.0, 4.0)).x);
+    v += q2UnpackHalf4x16(uvec2(0x3C00u, 0x4200u)).x;
+    v += q2UnpackHalf4x16(q2PackHalf4x16(vec4(1.0, 2.0, 3.0, 4.0))).y;
+
+    // The density pair, which the header stores scaled by 65536.0 because the values are in the
+    // denormal range of fp16, and which q2EvaluateFog divides back by the same constant
+    v += unpackHalf2x16(packHalf2x16(vec2(0.5, -0.25) * 65536.0)).x;
+
+    // The raw half pack pair, spelled with the builtins here and with f32tof16 / f16tof32 on the
+    // other half. 0xC0003C00 is (1.0, -2.0) packed and its high half is -2.0, but neither front end
+    // folds the pack of a constant operand, so both halves keep the extended instruction here
+    v += float(packHalf2x16(vec2(1.0, -2.0)));
+    v += unpackHalf2x16(0xC0003C00u).y;
+
+    // Q2_FOG_BRIGHTNESS, the one macro of the header and the multiplier of the color it packs
+    v += Q2_FOG_BRIGHTNESS * 100.0;
+
+    // The two closest volumes of the ray, over the five members of the global uniform that only
+    // this header reads. The finder cannot fold: every value it uses comes from the uniform
+    const vec3 origin = vec3(1.0, 2.0, 3.0);
+    const vec3 dir = vec3(0.0, 0.0, 1.0);
+    uvec4 fog1;
+    uvec4 fog2;
+    q2FindFogVolumes(origin, dir, 0.0, 1000.0, fog1, fog2);
+    v += float(fog1.w) + float(fog2.w);
+
+    // The analytic transmittance of the closer volume, the premultiplied blend that both wrappers
+    // are built from, and the two wrappers over the furthest span of the ray
+    const vec4 fog_eval = q2EvaluateFog(fog1, 1.0, 3.0);
+    v += fog_eval.x + fog_eval.w;
+    v += q2AlphaBlendPremultiplied(fog_eval, vec4(0.25, 0.5, 0.75, 1.0)).x;
+    v += q2SegmentFog(fog1, fog2, 1000.0).y;
+    v += q2ApplyFog(fog1, fog2, 1000.0, vec3(0.25, 0.5, 0.75)).z;
+
+    // Slot 0 is the accumulator: it is the one store the reach of the header is read from, because
+    // every function above contributed to it. The slots after it hold one site of the header each,
+    // with the constants of the site written out, so that the two disassemblies can be read against
+    // each other site by site:
+    //   [1] q2FogVMin(vec3(2.0))                       operand: %473 = (2, 2, 2)
+    //   [2] q2FogVMax(vec3(1.0) / vec3(2,4,8))         operand: %480 = (0.5, 0.25, 0.125)
+    //   [3] the low half of q2PackHalf4x16(vec4(1,2,3,4))   operand: %487 = (1, 2, 3, 4)
+    //   [4] q2UnpackHalf4x16(uvec2(0x3C00, 0x4200)).x  operand: %496 = (15360, 16896)
+    //   [5] the round trip of [3] through q2UnpackHalf4x16 .y   as [3]
+    //   [6] the density pair at the scale of the header, 0.5 * 65536.0   operand: %511 = (32768, -16384)
+    //   [7] packHalf2x16(vec2(1.0, -2.0))              operand: %518 = (1, -2)
+    //   [8] unpackHalf2x16(0xC0003C00u).y              operand: the literal 3221240832 (0xC0003C00)
+    //   [9] Q2_FOG_BRIGHTNESS                          FOLDED: %float_0_00999999978 = 0.00999999978
+    //  [10] Q2_FOG_BRIGHTNESS * 100.0                 FOLDED: %float_1 = 1
+    //  [11] to [15]: the five sites that read the global uniform, in the order the header reaches
+    //   them -- the two volume indices, the transmittance pair, the blend and the two wrappers.
+    //   They cannot fold on either half, because every value they use comes from the uniform, and
+    //   they are in this file for reach only. [11] and [12] still show the arithmetic as an OpFAdd
+    //   of two loads, so the two read paths are visible even there.
+    //
+    // [1] to [8] do NOT fold, on either front end: min/max stay OpExtInst FMin / FMax here and
+    // NMin / NMax on the dxc half, and the half pack stays OpExtInst PackHalf2x16 / UnpackHalf2x16
+    // on both. What folds on both halves is only what is listed in the "operand" column above --
+    // the same constants on both halves, up to the zero second lane of dxc's two-lane form -- and
+    // the two macro sites [9] and [10], which are the same literal on both sides. Measured with
+    // spirv-dis on Build/Q2Fog.probe.comp.{glsl,hlsl}.spv.
+    o[0] = v;
+    o[1] = q2FogVMin(vec3(2.0));
+    o[2] = q2FogVMax(vec3(1.0) / vec3(2.0, 4.0, 8.0));
+    o[3] = float(q2PackHalf4x16(vec4(1.0, 2.0, 3.0, 4.0)).x);
+    o[4] = q2UnpackHalf4x16(uvec2(0x3C00u, 0x4200u)).x;
+    o[5] = q2UnpackHalf4x16(q2PackHalf4x16(vec4(1.0, 2.0, 3.0, 4.0))).y;
+    o[6] = unpackHalf2x16(packHalf2x16(vec2(0.5, -0.25) * 65536.0)).x;
+    o[7] = float(packHalf2x16(vec2(1.0, -2.0)));
+    o[8] = unpackHalf2x16(0xC0003C00u).y;
+    o[9] = Q2_FOG_BRIGHTNESS;
+    o[10] = Q2_FOG_BRIGHTNESS * 100.0;
+    o[11] = float(fog1.w) + float(fog2.w);
+    o[12] = fog_eval.x + fog_eval.w;
+    o[13] = q2AlphaBlendPremultiplied(fog_eval, vec4(0.25, 0.5, 0.75, 1.0)).x;
+    o[14] = q2SegmentFog(fog1, fog2, 1000.0).y;
+    o[15] = q2ApplyFog(fog1, fog2, 1000.0, vec3(0.25, 0.5, 0.75)).z;
+}

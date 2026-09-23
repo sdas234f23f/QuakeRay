@@ -84,7 +84,13 @@ private:
     struct Attachment
     {
         VkImage image;
-        VkImageView view;
+        VkImageView view;       // cube view: sampled as a samplerCube, used by the render pass and the sky pass
+        VkImageView viewArray;  // 2D-array view of the same six layers, for the storage-image bindings:
+                                // the sky compute pass writes the cubemap through an image2DArray binding
+                                // (HLSL has no writable cube texture, and D3D12 has no cube UAV either),
+                                // so a cube view there violates VUID-vkCmdDispatch-viewType-07752
+                                // TODO(refactor): a port shim, not a design -- the cubemap write path gets
+                                // one view model for both backends in the NVRHI rewrite (A2/A5, §14.14)
         VkDeviceMemory memory;
     };
 

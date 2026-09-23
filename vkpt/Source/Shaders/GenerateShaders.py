@@ -31,19 +31,28 @@ CACHE_FILE_NAME             = "GenerateShadersCache.txt"
 EXTENSIONS                  = [ ".comp", ".vert", "frag", ".rgen", ".rahit", ".rchit", ".rmiss" ]
 DEPENDENCY_EXTENSIONS       = [ ".h", ".inl", ".glsl", ".hlsl", ".hlsli" ]
 DEPENDENCY_FOLDERS          = { "", "../Generated/" }
-DEPENDENCY_FOLDERS_IGNORE   = [ CACHE_FOLDER_PATH, ".vscode/", "GLSL/" ]
+# HLSL_FOLDER_PATH holds stage *sources*, not dependencies: keeping it off this list is what lets
+# the build loop see a changed source (its mtime is compared against the cache), because the
+# dependency scan would otherwise seed the cache with the source's own mtime first and the source
+# would look up to date forever. GLSL/ holds the goldens, which nothing includes.
+HLSL_FOLDER_PATH            = "HLSL/"
+SOURCE_FOLDERS              = [ "", HLSL_FOLDER_PATH ]
+DEPENDENCY_FOLDERS_IGNORE   = [ CACHE_FOLDER_PATH, ".vscode/", "GLSL/", HLSL_FOLDER_PATH ]
 DEPENDENCY_IGNORE           = [ "BlueNoiseFileNames.h", "ShaderCommonC.h", "ShaderCommonCFramebuf.h" ]
 
 # HLSL sources are named <name><stage>.hlsl (e.g. CmBloomUpsample.comp.hlsl), so the produced
 # blob keeps the name the host already looks up (CmBloomUpsample.comp.spv). Plain .hlsl and
 # .hlsli files are headers and are never compiled on their own.
+# The ported stage sources live in HLSL/ beside their GLSL originals in GLSL/; the root holds the
+# shared headers (.hlsli and the goldens). Both folders below are scanned for stage sources, the
+# root first.
 # Ported shaders move their GLSL original to GLSL/ so that CheckShaderProperties.py can keep
 # comparing them against the HLSL replacement.
 HLSL_SUFFIX                 = ".hlsl"
 HLSL_PROFILES               = {
     ".comp":    "cs_6_2",
     ".vert":    "vs_6_2",
-    "frag":     "fs_6_2",
+    "frag":     "ps_6_2",
     ".rgen":    "lib_6_3",
     ".rahit":   "lib_6_3",
     ".rchit":   "lib_6_3",
@@ -81,7 +90,9 @@ def printInPowerShell(msg, color):
 
 
 def getDependentFoldersProcArg():
-    return [a for p in DEPENDENCY_FOLDERS if p != "" for a in ("-I", p)]
+    # The root ("") is part of DEPENDENCY_FOLDERS and reaches the compiler as `-I .`: a stage source
+    # in HLSL/ includes the shared headers by their bare names, and its own folder is not the root.
+    return [a for p in DEPENDENCY_FOLDERS for a in ("-I", p if p != "" else ".")]
 
 
 def getHLSLStage(filename):
@@ -280,7 +291,7 @@ def main():
     #    print("> Dependency files were modified. Rebuilding all...")
     # print()
 
-    for filenameRelative in os.listdir():
+    for filenameRelative in [folder + entry for folder in SOURCE_FOLDERS for entry in os.listdir(folder or ".")]:
         filename = abspath(filenameRelative)
 
         if not isShaderSource(filename):
@@ -307,7 +318,7 @@ def main():
                             if os.path.exists(dpd):
                                 dependencyMap[filename].add(dpd)
 
-        if filename not in cache or isOutdated or not os.path.exists(outputFilename) or wereDependentModified(dependencyMap, modifiedDependent, cache, filename):
+        if forceRebuild or filename not in cache or isOutdated or not os.path.exists(outputFilename) or wereDependentModified(dependencyMap, modifiedDependent, cache, filename):
             print("> Building " + os.path.basename(filename))
 
             command = getCompileCommand(filename, outputFilename)

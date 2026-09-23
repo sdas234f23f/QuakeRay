@@ -26,9 +26,10 @@ compared as text:
     a real difference and it is reported, not normalized. Fix it in HLSL with [[vk::offset]].
 
 Compared properties: entry point and execution model, workgroup size, specialization
-constants, descriptor set/binding assignment and resource kind, the byte layout of every
-block (recursively, including nested structs and array strides), input/output locations and
-the builtins the entry point uses.
+constants, descriptor set/binding assignment, resource kind and storage class (the kind of
+descriptor the host binds: a uniform buffer, a storage buffer, or a sampler/image/TLAS), the
+byte layout of every block (recursively, including nested structs and array strides),
+input/output locations and the builtins the entry point uses.
 
 A header has no stage of its own and is therefore never compiled on its own, so a header is
 pinned by a probe: a shader that instantiates what the header declares and touches every
@@ -51,6 +52,7 @@ import sys
 
 
 GLSL_FOLDER_PATH = "GLSL/"
+HLSL_FOLDER_PATH = "HLSL/"
 PROBES_FOLDER_PATH = "Probes/"
 GLSL_EXTENSIONS = [".comp", ".vert", ".frag", ".rgen", ".rahit", ".rchit", ".rmiss"]
 HLSL_SUFFIX = ".hlsl"
@@ -60,7 +62,7 @@ ALLOW_LIST_FILE_NAME = "ShaderPropertiesAllowList.txt"
 HLSL_PROFILES = {
     ".comp":    "cs_6_2",
     ".vert":    "vs_6_2",
-    ".frag":    "fs_6_2",
+    ".frag":    "ps_6_2",
     ".rgen":    "lib_6_3",
     ".rahit":   "lib_6_3",
     ".rchit":   "lib_6_3",
@@ -341,7 +343,10 @@ class Module:
 
             description = TAB * depth + "[%d] offset %s %s" % (index, offset, self.describeType(memberId))
 
-            stride = self.arrayStride(self.elementType(memberId))
+            # ArrayStride is decorated on the array type itself, not on its element type: a plain
+            # array member therefore carries its stride here, where a lookup on the element would
+            # find nothing and silently compare no stride at all.
+            stride = self.arrayStride(memberId)
             if stride is not None:
                 description += " stride " + stride
             if "MatrixStride" in decor:
@@ -376,6 +381,12 @@ class Module:
         return "set " + decor.get("DescriptorSet", ["?"])[0] + " binding " + decor.get("Binding", ["?"])[0]
 
     def getDescribedDescriptors(self):
+        """Returns {property-path: description} for the descriptors, keyed by their binding.
+
+        Two properties are reported per descriptor: the pointee kind under
+        "descriptor <set/binding>", and the storage class of the variable under
+        "descriptor <set/binding>: storage class".
+        """
         descriptors = {}
 
         for instruction in self.instructions:
@@ -399,6 +410,17 @@ class Module:
                 description += " nonwritable"
 
             descriptors[path] = description
+
+            # The storage class is the kind of descriptor the host binds: a Uniform block is
+            # a VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, a StorageBuffer is a ..._STORAGE_BUFFER,
+            # and a UniformConstant is a sampler, an image or a TLAS. It needs a property of
+            # its own, because the pointee kind above cannot separate an HLSL
+            # StructuredBuffer from the GLSL uniform block it replaces: dxc spells the
+            # former as a struct holding a runtime array and glslang wraps the latter in a
+            # struct too, so both sides describe as "struct". The storage class separates
+            # them, and reporting it separately names the resource and lets a deliberate
+            # difference be allow-listed on its own.
+            descriptors[path + ": storage class"] = storageClass
 
         return descriptors
 
@@ -438,8 +460,21 @@ class Module:
                 # names are language independent in SPIR-V (SV_DispatchThreadID becomes
                 # GlobalInvocationId for both compilers).
                 if "BuiltIn" in decor:
-                    properties["builtin " + decor["BuiltIn"][0]] = self.describeType(pointeeId)
+                    properties["builtin " + decor["BuiltIn"][0]] = self.builtinType(pointeeId)
                     continue
+
+                # A block whose members carry BuiltIn decorations is compared through those
+                # members: glslang puts the gl_PerVertex block's Position on a *member* of a
+                # block variable, dxc puts it on a plain output variable, and the property list
+                # has to see the same builtin on both sides. Only the members the module
+                # accesses are expanded -- the block type always carries PointSize,
+                # ClipDistance and CullDistance, which a shader writing only gl_Position
+                # neither reads nor writes.
+                if self.typeOf(pointeeId)[0] == "OpTypeStruct":
+                    expanded = self.expandBlockBuiltins(id, pointeeId)
+                    if expanded:
+                        properties.update(expanded)
+                        continue
 
                 if model not in ["Vertex", "Fragment"] or "Location" not in decor:
                     continue
@@ -452,6 +487,48 @@ class Module:
                 properties[key] = self.describeType(pointeeId)
 
         return properties
+
+    def builtinType(self, pointeeId):
+        """The builtin's type with the integer sign normalized away.
+
+        glslang spells the vertex/instance index builtins as signed and dxc as unsigned
+        (SV_VertexID/SV_InstanceID are uint in HLSL while gl_VertexIndex/gl_InstanceIndex are
+        int in GLSL); SPIR-V fixes the width but not the sign, the host cannot see either, and
+        the DXIL path rejects the signed spelling outright. The comparison therefore keeps the
+        width and drops the sign, so a genuinely different width still shows up.
+        """
+        description = self.describeType(pointeeId)
+        if description.startswith("uint"):
+            return "int" + description[len("uint"):]
+        if "(uint" in description:
+            return description.replace("(uint", "(int")
+        return description
+
+    def expandBlockBuiltins(self, blockVariableId, blockTypeId):
+        """{property name: type} for the builtin members of a block the module accesses.
+
+        The per-vertex block of a GLSL vertex shader declares Position, PointSize,
+        ClipDistance and CullDistance; only the members the shader touches are compared, so a
+        port that writes just the position is not asked to declare the rest.
+        """
+        accessed = set()
+        for instruction in self.instructions:
+            if instruction.opcode != "OpAccessChain":
+                continue
+            if len(instruction.operands) < 3 or instruction.operands[1] != blockVariableId:
+                continue
+            accessed.add(self.constantValue(instruction.operands[2]))
+
+        expanded = {}
+        op, members = self.typeOf(blockTypeId)
+        if op != "OpTypeStruct":
+            return expanded
+        for index, memberId in enumerate(members):
+            decor = self.memberDecorations.get((blockTypeId, index), {})
+            if "BuiltIn" not in decor or str(index) not in accessed:
+                continue
+            expanded["builtin " + decor["BuiltIn"][0]] = self.describeType(memberId)
+        return expanded
 
     def getPropertySet(self):
         properties = {
@@ -482,9 +559,18 @@ def compileShader(sourcePath, outputPath, isHLSL):
             return False, sourcePath + " does not name a known shader stage"
 
         command = ["dxc", "-spirv", "-T", HLSL_PROFILES[profile], "-fspv-target-env=vulkan1.2",
-            "-I", ".", "-I", "../Generated/", sourcePath, "-Fo", outputPath]
+            "-I", ".", "-I", "LPM", "-I", "CAS", "-I", "../Generated/", sourcePath, "-Fo", outputPath]
     else:
-        command = ["glslc", "--target-env=vulkan1.2", "-I", ".", "-I", "../Generated/",
+        # -O on the golden side, so that both compilers are compared at their own full
+        # optimization: dxc optimizes by default and drops the resources of dead code, while
+        # plain glslc keeps them, which used to surface as a descriptor difference where only
+        # liveness differed (the RFL/Q2 raygen configurations were the first to show it).
+        #
+        # The two header subfolders are on the include path as they are in the host build
+        # (GenerateShaders.py adds every subfolder): CmPrepareFinal.comp includes the AMD
+        # header as a bare "ffx_a.h", which lives in LPM/ and CAS/. LPM first, the copy its
+        # ported twin names.
+        command = ["glslc", "-O", "--target-env=vulkan1.2", "-I", ".", "-I", "LPM", "-I", "CAS", "-I", "../Generated/",
             sourcePath, "-o", outputPath]
 
     try:
@@ -602,6 +688,8 @@ def checkPair(name, allowList):
 def resolveProbeName(name):
     if os.path.isfile(name + HLSL_SUFFIX):
         return name
+    if os.path.isfile(HLSL_FOLDER_PATH + name + HLSL_SUFFIX):
+        return HLSL_FOLDER_PATH + name
     if os.path.isfile(PROBES_FOLDER_PATH + name + HLSL_SUFFIX):
         return PROBES_FOLDER_PATH + name
     return name
@@ -615,7 +703,7 @@ def getPairs(arguments):
         return [resolveProbeName(name) for name in names]
 
     pairs = []
-    for folder in ["./", PROBES_FOLDER_PATH]:
+    for folder in ["./", HLSL_FOLDER_PATH, PROBES_FOLDER_PATH]:
         if not os.path.isdir(folder):
             continue
         for entry in sorted(os.listdir(folder)):
