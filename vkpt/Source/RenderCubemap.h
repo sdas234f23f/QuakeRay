@@ -50,11 +50,6 @@ public:
         float cloudLayer[4];    // x = altitude of the layer's bottom over the eye, y = thickness, z = sunlight strength, w = sky light strength
         float cloudMarch[4];    // x = view march steps, y = sun march steps, z = detail erosion strength, w = forward scattering
         float cloudAnchor[4];   // xy = the eye's place in the world's horizontal plane, z = its height in the world, w = which quarter of the layer's map this frame marches (CLOUD_UPDATE_FRAMES meaning all of it)
-        // Where the eye has moved since the frame before, which is what the cloud pass
-        // reads the history of its own cubemaps through (CmSkyClouds.comp): the layer
-        // is anchored in the world's plane, so a texel stands for another column of
-        // cloud once the eye has walked over it.
-        float cloudAnchorDelta[4]; // xy = the eye's movement over the world, one frame; zw unused
     };
 
 public:
@@ -150,10 +145,6 @@ private:
     // procedural sky (compute)
     void CreateProceduralSkyPipelineLayout();
     void CreateProceduralSkyDescriptors(const std::shared_ptr<SamplerManager> &samplerManager);
-    // Names the layer's cubemaps and the volume of its shadow in both sets of the
-    // procedural sky: one set per cubemap of the layer, because the two swap every
-    // frame and a frame binds the one that names the cubemap it writes.
-    void WriteProceduralSkyDescriptors();
     void CreateProceduralSkyParamsBuffer();
     void CreateProceduralSkyPipeline(const ShaderManager *shaderManager);
     void DestroyProceduralSkyPipelines();
@@ -226,35 +217,16 @@ private:
 
     VkDescriptorSetLayout procSkyDescSetLayout = VK_NULL_HANDLE;
     VkDescriptorPool      procSkyDescPool      = VK_NULL_HANDLE;
-    // One set per cubemap of the layer: the set that names clouds[i] as the one to
-    // write is the one a frame that writes it binds -- to the pass that fills it and
-    // to the sky that composites it after -- and the two frames after that bind the
-    // other.
-    VkDescriptorSet       procSkyDescSet[2]    = {};
+    VkDescriptorSet       procSkyDescSet       = VK_NULL_HANDLE;
 
     VkPipelineLayout procSkyPipelineLayout = VK_NULL_HANDLE;
     VkPipeline       procSkyPipeline       = VK_NULL_HANDLE;
 
     // The cloud layer that the procedural sky composites in front of everything it
     // draws: a small cubemap (rgb = light scattered in the cloud, a = how much of
-    // the sky behind it gets through) sampled by direction. Two of them: the frame
-    // marches into one and reads the other as the history of the pass, and they swap
-    // every frame (DispatchClouds), which is what keeps every texel of that history
-    // one frame old.
-    Attachment clouds[2];
+    // the sky behind it gets through) sampled by direction.
+    Attachment clouds;
     uint32_t   cloudsSize = 0;
-    uint32_t   cloudsIndex = 0;   // the one this frame marches into; the other is the history
-    // How many of the frames still to come march the whole map rather than a quarter
-    // of it -- this one included. A map that is new, or a frame the look of the layer
-    // changed in, needs two of them: the cubemap the second frame would read as its
-    // history is the one no frame has written yet (DispatchClouds).
-    uint32_t   cloudsWhole = 2;
-    // The eye's place in the world's horizontal plane the frame before, which is what
-    // the cloud pass reads the history of its cubemaps through, and the parameters of
-    // that frame, for telling a frame the layer is drawn anew in from one that only
-    // goes on holding it (SameCloudLook, DrawProcedural).
-    float cloudAnchorPrev[2] = {};
-    ProceduralSkyParams procSkyLook = {};
     VkPipeline cloudsPipeline = VK_NULL_HANDLE;
     VkSampler  cloudsSampler  = VK_NULL_HANDLE; // names the layer in the sky's descriptor set
 
