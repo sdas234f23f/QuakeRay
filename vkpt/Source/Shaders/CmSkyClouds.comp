@@ -178,15 +178,16 @@ void main()
 
     // The whole map is dispatched every frame, and a quarter of it is marched: the
     // texels of the other three quarters are read back from the frame before and put
-    // where the cloud they hold has moved under the eye since (historyDir below).
-    // That is what keeps every texel of the layer one frame old at most -- and what
-    // keeps the quarters agreeing about the one cloud the whole map shows, which a
-    // map filled a quarter at a time could not: each quarter would carry the camera
+    // where the cloud they hold has moved under the eye since (historyDir below). What
+    // that buys is the quarters agreeing about the one cloud the whole map shows, which
+    // a map filled a quarter at a time could not: each quarter would carry the camera
     // of the frame that marched it, and the drift of that anchor is a weave over the
-    // sky while the eye moves. CLOUD_UPDATE_FRAMES in cloudAnchor.w means the whole
-    // map is marched rather than a quarter, which is what a new map and a frame the
-    // look of the layer changed in get -- and the frame after them, whose history
-    // nothing has written yet.
+    // sky while the eye moves. A texel here is marched once in four frames and copied
+    // in between -- each copy standing for the column of its own march, one to three
+    // frames back -- and nothing is ever averaged. CLOUD_UPDATE_FRAMES in cloudAnchor.w
+    // means the whole map is marched rather than a quarter, which is what a new map and
+    // a frame the look of the layer changed in get -- and the frame after them, whose
+    // history nothing has written yet.
     const int packedUpdate = int(params.cloudAnchor.w + 0.5);
     const bool wholeMap = packedUpdate >= CLOUD_UPDATE_FRAMES;
     const int  quarter = wholeMap ? 0 : packedUpdate;
@@ -357,9 +358,9 @@ void main()
 
     // rgb = the light scattered towards the eye, a = how much of the sky behind
     // the layer gets through it. A texel this frame did not march keeps the frame
-    // before, put where its cloud has moved to (historyDir): both carry the value of
-    // the same column of cloud, so nothing is averaged and nothing is older than one
-    // frame -- a texel that is marched is not mixed with its own past at all.
+    // before, put where its cloud has moved to (historyDir): both name the same column
+    // of the same cloud, and neither is mixed with anything -- a marched texel stores
+    // what it marched, a copied one what it read.
     if (!marched)
     {
         imageStore(cloudCubemapOut, ipos, texture(cloudCubemapHistory, historyDir));

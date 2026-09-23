@@ -1191,6 +1191,15 @@ void vkpt::RenderCubemap::DispatchClouds(VkCommandBuffer cmd, const ProceduralSk
 
     CmdLabel label(cmd, "Cloud layer");
 
+    // The shift the pass was handed is measured from the last frame that marched, and
+    // this is where a dispatch really leaves: a frame whose parameters the cache above
+    // found unchanged dispatches nothing, and the frame after it reads a map one frame
+    // older, so its shift has to reach back that far. (The clouds being off, which
+    // returns above, never marches and never advances this either.)
+    cloudAnchorPrev[0] = params.cloudAnchor[0];
+    cloudAnchorPrev[1] = params.cloudAnchor[1];
+    cloudTimePrev = params.cloudColor[3];
+
     // This frame writes one of the two cubemaps and reads the other as the history of
     // the quarters it does not march (CmSkyClouds.comp). Which one is which follows
     // the frame index, so the descriptor sets that name them -- one per frame, written
@@ -1929,11 +1938,13 @@ void vkpt::RenderCubemap::DrawProcedural(VkCommandBuffer cmd, const ProceduralSk
         cloudsWhole = 2;
     }
 
-    // The eye's own movement since the frame before, plus the wind's: together they
-    // are the shift of the column of cloud that stood under a texel, which is what the
-    // pass reads its history through (cloudAnchorDelta, CmSkyClouds.comp). The wind is
-    // the pattern's own drift -- `wind = time * speed * (30, 12)` (CloudLayer.h) -- so
-    // its movement over the frame is the time's own step times the same factors.
+    // The eye's own movement since the last frame that marched, plus the wind's:
+    // together they are the shift of the column of cloud that stood under a texel,
+    // which is what the pass reads its history through (cloudAnchorDelta,
+    // CmSkyClouds.comp). The wind is the pattern's own drift -- `wind = time * speed *
+    // (30, 12)` (CloudLayer.h) -- so its movement over the frame is the time's own
+    // step times the same factors. The point this is measured from is advanced where
+    // the dispatch leaves (DispatchClouds), not here.
     {
         const float anchorNow[2] = { params.cloudAnchor[0], params.cloudAnchor[1] };
         const float timeNow = params.cloudColor[3];
@@ -1944,10 +1955,6 @@ void vkpt::RenderCubemap::DrawProcedural(VkCommandBuffer cmd, const ProceduralSk
         params.cloudAnchorDelta[1] = (anchorNow[1] - cloudAnchorPrev[1]) + timeStep * speed * 12.0f;
         params.cloudAnchorDelta[2] = 0.0f;
         params.cloudAnchorDelta[3] = 0.0f;
-
-        cloudAnchorPrev[0] = anchorNow[0];
-        cloudAnchorPrev[1] = anchorNow[1];
-        cloudTimePrev = timeNow;
     }
 
     // Clouds off: freeze the animation time so the cached sky isn't re-rendered

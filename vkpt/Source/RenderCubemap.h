@@ -237,10 +237,13 @@ private:
     // The cloud layer that the procedural sky composites in front of everything it
     // draws: a cubemap (rgb = light scattered in the cloud, a = how much of the sky
     // behind it gets through) sampled by direction. Two of them: a frame marches a
-    // quarter of the one it writes and reads the other as the history for the three
-    // quarters it leaves alone, so that no texel of the layer is older than the frame
-    // before. Which one is which follows the frame index, so the descriptor sets that
-    // name them never change (WriteProceduralSkyDescriptors).
+    // quarter of the one it writes and takes the other three quarters from the other
+    // one -- the frame before -- put where the cloud they hold has moved since. A texel
+    // is therefore marched once in four frames and copied in between, each copy
+    // standing for the column its own march was about; nothing is ever averaged with a
+    // frame of its own past. Which one is written and which is read follows the frame
+    // index, so the descriptor sets that name them never change
+    // (WriteProceduralSkyDescriptors).
     Attachment clouds[2];
     uint32_t   cloudsSize = 0;
     VkPipeline cloudsPipeline = VK_NULL_HANDLE;
