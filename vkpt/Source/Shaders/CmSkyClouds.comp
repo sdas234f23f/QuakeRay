@@ -52,6 +52,11 @@ layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 // The cloud cubemap this pass fills (binding 3 of the procedural sky set).
 layout(rgba16f, set = 0, binding = 3) uniform imageCube cloudCubemapOut;
 
+// The volume of the layer's own shadow on the world (binding 5, filled by
+// CmCloudShadow.comp), which is what the light of a cloud is read from instead of
+// a march to the sun (CloudShadowMap.h).
+layout(set = 0, binding = 5) uniform sampler3D cloudShadowMap;
+
 layout(std140, set = 0, binding = 1) uniform Params
 {
     vec4 faceBasis[18]; // 6 faces * (right, up, forward)
@@ -67,6 +72,7 @@ layout(std140, set = 0, binding = 1) uniform Params
 } params;
 
 #include "CloudLayer.h"
+#include "CloudShadowMap.h"
 
 // The powder term uses the same scale as the extinction, as it is the same sample
 // of the same cloud being darkened. Light that enters a cloud at a grazing angle
@@ -87,6 +93,7 @@ const float CLOUD_MAX_MARCH_SPAN = 12.0;
 // frame writes one quarter of it (RenderCubemap::DispatchClouds, which keeps the
 // same number), and four frames fill the map. See how main() shifts the texel.
 const int CLOUD_UPDATE_QUARTERS = 2;
+const int CLOUD_UPDATE_FRAMES = CLOUD_UPDATE_QUARTERS * CLOUD_UPDATE_QUARTERS;
 
 // Henyey-Greenstein, normalized so that isotropic scattering gives 1.
 float henyeyGreenstein(float mu, float g)
@@ -124,6 +131,36 @@ float cloudMultiScatter(float mu, float sunDepth, float g)
     return sum;
 }
 
+// Optical depth of the cloud between a point of the layer and the sun, read from
+// the volume of the layer's shadow on the world (CloudShadowMap.h): the volume
+// holds the column of cloud the sun crosses over the spot a point stands at, slice
+// by slice over the height of the layer, and what is read here is the slice the
+// point itself stands at -- the part of that column above it, in one lookup. The
+// cone the sunlight of a cloud comes from is already in the volume: it was walked
+// through the same cloudSunSample this pass marches through (CmCloudShadow.comp).
+//
+// Negative when the volume does not reach the point -- it covers the world around
+// the eye and fades at its edge -- and then the march in the loop below is what
+// answers.
+float cloudSunTauFromMap(CloudLayer layer, vec3 p, vec3 sunDir)
+{
+    // Where the volume stands: on, the world-space corner of it and its extent. The
+    // corner is the eye's place in the world's horizontal plane, the volume being
+    // laid out around it (RenderCubemap::UpdateCloudShadow); its own origin is
+    // snapped to a texel of its own, so this is that corner to within one texel --
+    // a metre or two of ground, which no cloud's shadow can show. The eye's height
+    // in the world is cloudAnchor.z, as the point p is measured from the eye in z.
+    const vec4 placement = vec4(params.skyColor.w,
+                                params.cloudAnchor.xy - params.sunDiscColor.w * 0.5,
+                                params.sunDiscColor.w);
+    const vec3 worldPos = vec3(p.xy, params.cloudAnchor.z + p.z);
+
+    // How high in the layer the point stands: 0 at the base of it, 1 at the top.
+    const float height = clamp((p.z - layer.altitude) / layer.thickness, 0.0, 1.0);
+
+    return cloudShadowTau(cloudShadowMap, worldPos, sunDir, placement, height);
+}
+
 void main()
 {
     ivec3 ipos = ivec3(gl_GlobalInvocationID);
@@ -133,10 +170,14 @@ void main()
     // quarter of the map, shifted to the quarter that frame is for, and the other
     // three stand as the frames before left them. The drift is slow enough that a
     // texel three frames old reads as the same cloud, and a march of a quarter is a
-    // quarter of the cost (DispatchClouds). cloudAnchor.z is the quarter, and
-    // cloudAnchor.w says the map is new and all of it is filled at once.
-    const bool wholeMap = params.cloudAnchor.w > 0.5;
-    const int  quarter = int(params.cloudAnchor.z + 0.5);
+    // quarter of the cost (DispatchClouds). cloudAnchor.w is the quarter, and
+    // CLOUD_UPDATE_FRAMES itself means the map is new and all of it is filled at
+    // once. cloudAnchor.z is the eye's own height in the world, which the map of the
+    // layer's shadow is read with: the noise is indexed from the eye, that map from
+    // the world.
+    const int packedUpdate = int(params.cloudAnchor.w + 0.5);
+    const bool wholeMap = packedUpdate >= CLOUD_UPDATE_FRAMES;
+    const int  quarter = wholeMap ? 0 : packedUpdate;
     const ivec2 grid = wholeMap ? size : size / CLOUD_UPDATE_QUARTERS;
 
     if (ipos.x >= grid.x || ipos.y >= grid.y || ipos.z >= 6)
@@ -203,8 +244,9 @@ void main()
         float span = (pow(CLOUD_STEP_GROWTH, float(viewSteps)) - 1.0) / (CLOUD_STEP_GROWTH - 1.0);
         float dt = (tOut - tIn) / span;
 
-        // The seed of the sun marches, and what the cones they widen into are drawn
-        // with: two rays then ask the sun about different parts of the sky around it.
+        // The seed of the march, and what the places of its samples inside their
+        // stretches are drawn with: two rays then see the layer a little differently
+        // rather than through the very same samples.
         float jitter = hash13(vec3(ipos) * 0.371);
         float t = tIn;
         float step = dt;
@@ -237,9 +279,27 @@ void main()
                 // so that a deeper layer is a hazier one
                 float sigma = cloudOpticalDepth(layer, density);
 
-                float sunDepth = cloudSunDepth(layer, p, sunDir, jitter + float(i), sunSteps);
-                float sunTau = cloudOpticalDepth(layer, sunDepth);
-                float sunVisibility = exp(-sunTau);
+                // The light of the cloud: the volume of the layer's shadow answers
+                // for the column of cloud between the sample and the sun, and where
+                // it does not reach -- or the layer casts no shadow at all -- the
+                // march towards the sun answers instead, with the same march the
+                // volume was filled through, which is what makes the horizon, where
+                // the volume ends, still shaded.
+                float mapTau = cloudSunTauFromMap(layer, p, sunDir);
+
+                float sunTau;
+                float sunVisibility;
+                if (mapTau >= 0.0)
+                {
+                    sunTau = mapTau;
+                    sunVisibility = exp(-mapTau);
+                }
+                else
+                {
+                    float sunDepth = cloudSunDepth(layer, p, sunDir, sunSteps);
+                    sunTau = cloudOpticalDepth(layer, sunDepth);
+                    sunVisibility = exp(-sunTau);
+                }
 
                 // Light that enters a cloud at a grazing angle is the light that
                 // scatters first: with the sun behind the cloud, this darkens its

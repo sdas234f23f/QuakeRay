@@ -82,7 +82,7 @@ layout(set = DESC_SET_RENDER_CUBEMAP, binding = BINDING_RENDER_CUBEMAP) uniform 
 layout(set = DESC_SET_RENDER_CUBEMAP, binding = BINDING_RENDER_CUBEMAP_ENV) uniform samplerCube renderCubemapEnv;
 // The shadow the cloud layer puts on the world, which fades the sun where the
 // clouds are over it (see traceSunVisibility below)
-layout(set = DESC_SET_RENDER_CUBEMAP, binding = BINDING_RENDER_CUBEMAP_CLOUD_SHADOW) uniform sampler2D cloudShadowMap;
+layout(set = DESC_SET_RENDER_CUBEMAP, binding = BINDING_RENDER_CUBEMAP_CLOUD_SHADOW) uniform sampler3D cloudShadowMap;
 #endif
 
 #ifdef DESC_SET_PORTALS
@@ -436,8 +436,10 @@ float traceSunVisibility(const Surface surf, const LightSample sunLight, out boo
 
 #ifdef DESC_SET_RENDER_CUBEMAP
     // The clouds stand between the sun and the world, so they take their part of
-    // it away before any of it reaches the surface
-    visibility *= cloudShadowAt(cloudShadowMap, surf.position, l);
+    // it away before any of it reaches the surface. What is shaded stands on the
+    // ground, at the base of the layer of cloud, and so does not have to lose any
+    // of the column above it (CloudShadowMap.h).
+    visibility *= cloudShadowTransmittance(cloudShadowMap, surf.position, l, globalUniform.skyCubemapRotationTransform[3], 0.0);
 #endif
 
     return visibility;

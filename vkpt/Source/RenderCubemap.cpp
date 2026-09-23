@@ -42,17 +42,29 @@ constexpr uint32_t CUBEMAP_SIDE_SIZE = 1024;
 // it hides), and it is marched at a step size that already blurs away anything
 // finer than this. So its cubemap is a small one, without mips -- and how small it
 // is is what the quality level picks.
-constexpr uint32_t CLOUDS_SIDE_SIZES[vkpt::RenderCubemap::QUALITY_LEVELS] = { 128, 256, 512, 1024, 2048 };
+constexpr uint32_t CLOUDS_SIDE_SIZES[vkpt::RenderCubemap::QUALITY_LEVELS] = { 256, 512, 1024, 2048, 4096 };
 
-// The layer's shadow on the world is a map of the ground, read with whatever
-// resolution the eye needs from it: it holds how much of the sun a whole column
-// of cloud lets through, and it is what the volumetric sun shafts are gated
-// through as well, so its texels are what the edge of a cloud's shadow is drawn
-// with. A level doubles the texels a side over the same CLOUD_SHADOW_EXTENT
-// metres of ground -- four times the map and four times the march of the level
-// below -- from a texel every eight metres at the bottom of the ladder to one
-// every half a metre at the top.
-constexpr uint32_t CLOUD_SHADOW_SIZES[vkpt::RenderCubemap::QUALITY_LEVELS] = { 512, 1024, 2048, 4096, 8192 };
+// The layer's shadow on the world is a volume of cloud over the ground, read with
+// whatever resolution the eye needs from it: a texel of it holds the tau of the
+// column of cloud the sun crosses over a spot of the ground, and of the parts of
+// that column standing above each height of the layer, so that the sky can ask what
+// the sun still crosses to reach a point inside it (CloudShadowMap.h). It is what
+// the volumetric sun shafts are gated through as well, so its texels are what the
+// edge of a cloud's shadow is drawn with. A level doubles the texels a side over
+// the same CLOUD_SHADOW_EXTENT metres of ground -- four times the volume, and four
+// times the march filling it -- from a texel every four metres at the bottom of the
+// ladder to one every half a metre at the top; the two finest levels share their
+// texel size, a shadow of a cloud being a soft thing that stops paying for the
+// finest texel long before the top of the ladder is reached.
+constexpr uint32_t CLOUD_SHADOW_SIZES[vkpt::RenderCubemap::QUALITY_LEVELS] = { 1024, 2048, 4096, 4096, 8192 };
+
+// The slices the volume holds over the height of the layer, the base of the layer
+// in the first and the sky above it in the last (CmCloudShadow.comp fills as many,
+// CloudShadowMap.h reads them by the height of a point). They are the only reason
+// the shadow is a volume rather than a map, and a few of them are enough: what is
+// read between two of them is the light of a cloud, which is a gradient rather than
+// a step.
+constexpr uint32_t CLOUD_SHADOW_SLICES = 4;
 constexpr float    CLOUD_SHADOW_EXTENT = 4000.0f;
 
 // How many steps of the layer's thickness a column is marched in. The march
@@ -81,7 +93,8 @@ constexpr uint32_t CLOUDS_VIEW_STEPS[vkpt::RenderCubemap::QUALITY_LEVELS] = { 40
 constexpr uint32_t CLOUDS_SUN_STEPS[vkpt::RenderCubemap::QUALITY_LEVELS]  = { 6, 6, 6, 8, 8 };
 
 // Below this the sun is under the layer rather than over it, and the layer
-// shades nothing that can be seen.
+// shades nothing that can be
+// seen.
 constexpr float CLOUD_SHADOW_MIN_SUN_HEIGHT = 0.05f;
 
 // The layer of a frame is marched in a quarter of its map: a dispatch writes one
@@ -92,8 +105,10 @@ constexpr float CLOUD_SHADOW_MIN_SUN_HEIGHT = 0.05f;
 constexpr uint32_t CLOUD_UPDATE_QUARTERS = 2;
 constexpr uint32_t CLOUD_UPDATE_FRAMES = CLOUD_UPDATE_QUARTERS * CLOUD_UPDATE_QUARTERS;
 
-// What the map holds is how much of the sun gets past the clouds, so a single
-// channel is all it needs.
+// What the volume holds is the tau of a column of cloud, so a single channel is
+// all it needs -- and a tau rather than a transmittance because the slices of the
+// volume are read interpolated, which only adds up if what stands between two of
+// them is linear in the cloud.
 constexpr VkFormat CLOUD_SHADOW_FORMAT = VK_FORMAT_R16_SFLOAT;
 
 
@@ -882,7 +897,7 @@ void vkpt::RenderCubemap::CreateProceduralSkyDescriptors(const std::shared_ptr<S
 {
     VkResult r;
 
-    VkDescriptorSetLayoutBinding bindings[5] = {};
+    VkDescriptorSetLayoutBinding bindings[6] = {};
 
     bindings[0].binding = 0;
     bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
@@ -912,9 +927,17 @@ void vkpt::RenderCubemap::CreateProceduralSkyDescriptors(const std::shared_ptr<S
     bindings[4].descriptorCount = 1;
     bindings[4].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 
+    // 5: the map of the layer's shadow on the world, read by the cloud pass itself
+    // so that the light of a cloud is a lookup and not a march to the sun
+    // (CloudShadowMap.h)
+    bindings[5].binding = 5;
+    bindings[5].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[5].descriptorCount = 1;
+    bindings[5].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+
     VkDescriptorSetLayoutCreateInfo layoutInfo = {};
     layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layoutInfo.bindingCount = 5;
+    layoutInfo.bindingCount = 6;
     layoutInfo.pBindings = bindings;
 
     r = vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &procSkyDescSetLayout);
@@ -928,7 +951,7 @@ void vkpt::RenderCubemap::CreateProceduralSkyDescriptors(const std::shared_ptr<S
     poolSizes[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     poolSizes[1].descriptorCount = 1;
     poolSizes[2].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSizes[2].descriptorCount = 1;
+    poolSizes[2].descriptorCount = 2;
 
     VkDescriptorPoolCreateInfo poolInfo = {};
     poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -970,12 +993,19 @@ void vkpt::RenderCubemap::CreateProceduralSkyDescriptors(const std::shared_ptr<S
     cloudsSampledInfo.imageView = clouds.view;
     cloudsSampledInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
+    // The map of the layer's shadow, which is made before this set is (see the
+    // constructor) and is read by the cloud pass through it.
+    VkDescriptorImageInfo cloudShadowImgInfo = {};
+    cloudShadowImgInfo.sampler = cloudShadowSampler;
+    cloudShadowImgInfo.imageView = cloudShadow.view;
+    cloudShadowImgInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
     VkDescriptorBufferInfo bufInfo = {};
     bufInfo.buffer = procSkyParamsBuffer.GetBuffer();
     bufInfo.offset = 0;
     bufInfo.range = VK_WHOLE_SIZE;
 
-    VkWriteDescriptorSet writes[5] = {};
+    VkWriteDescriptorSet writes[6] = {};
     writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[0].dstSet = procSkyDescSet;
     writes[0].dstBinding = 0;
@@ -1011,7 +1041,14 @@ void vkpt::RenderCubemap::CreateProceduralSkyDescriptors(const std::shared_ptr<S
     writes[4].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     writes[4].pImageInfo = &cloudsSampledInfo;
 
-    vkUpdateDescriptorSets(device, 5, writes, 0, nullptr);
+    writes[5].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[5].dstSet = procSkyDescSet;
+    writes[5].dstBinding = 5;
+    writes[5].descriptorCount = 1;
+    writes[5].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[5].pImageInfo = &cloudShadowImgInfo;
+
+    vkUpdateDescriptorSets(device, 6, writes, 0, nullptr);
 }
 
 void vkpt::RenderCubemap::CreateProceduralSkyPipelineLayout()
@@ -1167,9 +1204,9 @@ void vkpt::RenderCubemap::CreateCloudShadowImage(const std::shared_ptr<MemoryAll
 
     VkImageCreateInfo imageInfo = {};
     imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-    imageInfo.imageType = VK_IMAGE_TYPE_2D;
+    imageInfo.imageType = VK_IMAGE_TYPE_3D;
     imageInfo.format = CLOUD_SHADOW_FORMAT;
-    imageInfo.extent = { size, size, 1 };
+    imageInfo.extent = { size, size, CLOUD_SHADOW_SLICES };
     imageInfo.mipLevels = 1;
     imageInfo.arrayLayers = 1;
     imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
@@ -1222,7 +1259,7 @@ void vkpt::RenderCubemap::CreateCloudShadowImage(const std::shared_ptr<MemoryAll
 
     VkImageViewCreateInfo viewInfo = {};
     viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-    viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    viewInfo.viewType = VK_IMAGE_VIEW_TYPE_3D;
     viewInfo.format = CLOUD_SHADOW_FORMAT;
     viewInfo.subresourceRange = {};
     viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
@@ -1706,8 +1743,9 @@ void vkpt::RenderCubemap::UpdateQualityDescriptors()
 
     // The two bindings of the sky pass that name the layer (the one it is drawn
     // into and the one it is sampled through), the binding of the cubemap set that
-    // names the map of its shadow, and the storage image of the pass that fills it.
-    VkWriteDescriptorSet writes[4] = {};
+    // names the map of its shadow, the storage image of the pass that fills it, and
+    // the binding the cloud pass itself reads the map through.
+    VkWriteDescriptorSet writes[5] = {};
 
     for (VkWriteDescriptorSet &write : writes)
     {
@@ -1734,7 +1772,11 @@ void vkpt::RenderCubemap::UpdateQualityDescriptors()
     writes[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     writes[3].pImageInfo = &shadowWritten;
 
-    vkUpdateDescriptorSets(device, 4, writes, 0, nullptr);
+    writes[4].dstSet = procSkyDescSet;
+    writes[4].dstBinding = 5;
+    writes[4].pImageInfo = &shadowSampled;
+
+    vkUpdateDescriptorSets(device, 5, writes, 0, nullptr);
 }
 
 void vkpt::RenderCubemap::DrawProcedural(VkCommandBuffer cmd, const ProceduralSkyParams &inParams)
@@ -1764,14 +1806,17 @@ void vkpt::RenderCubemap::DrawProcedural(VkCommandBuffer cmd, const ProceduralSk
     }
     else
     {
-        // Which quarter of the map this frame marches, and whether the map is new
-        // and has to be filled whole: the two fields of the anchor the sky itself
-        // does not read (it is given the eye's place in x and y only). They are part
-        // of the params the cache below compares, so the layer is never remembered
-        // away while it is being drawn -- the quarter of the frame is part of what
-        // the frame draws.
-        params.cloudAnchor[2] = float(cloudsCycle);
-        params.cloudAnchor[3] = cloudsFullUpdate ? 1.0f : 0.0f;
+        // Which quarter of the layer's map this frame marches, CLOUD_UPDATE_FRAMES
+        // meaning the map is new and has to be filled whole (DispatchClouds); the
+        // eye's own height in the world stays where the host put it, in
+        // cloudAnchor.z, because the map of the layer's shadow is read with it. What
+        // that map stands on rides in the two fields the sky itself does not read:
+        // skyColor.w is 1 while there is a map to read, sunDiscColor.w its extent in
+        // metres. All of them are part of the params the cache below compares, so the
+        // layer is never remembered away while it is being drawn.
+        params.cloudAnchor[3] = cloudsFullUpdate ? float(CLOUD_UPDATE_FRAMES) : float(cloudsCycle);
+        params.skyColor[3] = cloudShadowValid ? 1.0f : 0.0f;
+        params.sunDiscColor[3] = CLOUD_SHADOW_EXTENT;
     }
 
     if (mappedProcSkyParams)

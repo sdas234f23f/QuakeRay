@@ -49,7 +49,7 @@ layout(push_constant, std140) uniform PushConstants
 } push;
 
 layout(set = DESC_SET_GOD_RAYS_SHADOW, binding = 0) uniform sampler2D texShadowMap;
-layout(set = DESC_SET_CLOUD_SHADOW, binding = BINDING_RENDER_CUBEMAP_CLOUD_SHADOW) uniform sampler2D cloudShadowMap;
+layout(set = DESC_SET_CLOUD_SHADOW, binding = BINDING_RENDER_CUBEMAP_CLOUD_SHADOW) uniform sampler3D cloudShadowMap;
 
 layout(set = DESC_SET_GOD_RAYS_PARAMS, binding = 0) readonly buffer GodRaysParams_BT
 {
@@ -305,8 +305,11 @@ void main()
         const vec3 shadowBias = -godRaysParams.sunDirection.xyz * 20.0;
         float shadow = GetShadow(currentPos + shadowBias);
 
-        // The same clouds also hide the sun from the shafts themselves
-        shadow *= cloudShadowAt(cloudShadowMap, currentPos, godRaysParams.sunDirection.xyz);
+        // The same clouds also hide the sun from the shafts themselves. The sample
+        // is a point of the air rather than one of the ground, but what the shafts
+        // are gated by is the shadow the layer puts on the world under it, so it is
+        // the base of the layer that answers for it (CloudShadowMap.h).
+        shadow *= cloudShadowTransmittance(cloudShadowMap, currentPos, godRaysParams.sunDirection.xyz, globalUniform.skyCubemapRotationTransform[3], 0.0);
 
         const vec3 differentialInscatter = (shadow * phase * stepLength * density) * through;
         inscatter += differentialInscatter;

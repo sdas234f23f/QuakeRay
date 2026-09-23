@@ -39,9 +39,11 @@
 
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
-// The map this pass fills: red = how much of the sun gets past the clouds, 1
-// where there is no cloud at all.
-layout(r16f, set = 0, binding = 0) uniform image2D cloudShadowOut;
+// The volume this pass fills (CloudShadowMap.h reads it back): one slice per
+// height of the layer, and a texel of a slice holds the tau of the cloud column
+// that stands ABOVE that height along the sun -- the whole column at the base of
+// the layer, nothing at its top. One traversal of a column fills every slice of it.
+layout(r16f, set = 0, binding = 0) uniform image3D cloudShadowOut;
 
 layout(std140, set = 0, binding = 1) uniform Params
 {
@@ -52,6 +54,15 @@ layout(std140, set = 0, binding = 1) uniform Params
 } params;
 
 #include "CloudLayer.h"
+
+// The slices of the volume, over the height of the layer: the base slice is the
+// whole column and the top one is the sky above it, and everything between is read
+// by interpolation (CloudShadowMap.h). The C++ side (RenderCubemap.cpp) sizes the
+// volume with the same number, and the steps the column is marched in come from
+// the parameters, one entry per quality level; the march of a step is held for
+// every slice, so the count of steps is bounded here.
+const int CLOUD_SHADOW_SLICES = 4;
+const int CLOUD_SHADOW_STEPS_MAX = 64;
 
 void main()
 {
@@ -93,17 +104,39 @@ void main()
     vec3 origin = vec3(flatPos.x, flatPos.y, layer.altitude);
     origin.xy += sunDir.xy * (params.cloudMarch.w / max(sunDir.z, 1.0e-3));
 
-    // The steps are centred in the stretches they stand for, so that a thin cloud
-    // is not lost to the base of the layer falling between two of them.
-    float dt = layer.thickness / float(steps);
-    float t = 0.5 * dt;
-    float column = 0.0;
+    // The march goes from the base of the layer to its top, so that the whole of
+    // every column a point of the sky can stand under is walked in one go: the
+    // distance is the one the sun crosses over a thickness of the layer, and a step
+    // is centred in the height it stands for, so that a thin cloud is not lost to
+    // the base of the layer falling between two of them. The cone a cloud's light
+    // comes from is walked with them (cloudSunSample), which is what the samples
+    // that read the column back expect to have been done.
+    float dt = layer.thickness / max(sunDir.z, 1.0e-3) / float(steps);
+    float stepColumn[CLOUD_SHADOW_STEPS_MAX];
 
     for (int i = 0; i < steps; i++)
     {
-        column += cloudDensity(layer, origin + sunDir * t, false) * dt;
-        t += dt;
+        float at = (float(i) + 0.5) * dt;
+        stepColumn[i] = cloudDensity(layer, cloudSunSample(origin, sunDir, at, dt), false) * dt;
     }
 
-    imageStore(cloudShadowOut, ipos, vec4(exp(-cloudOpticalDepth(layer, column)), 0.0, 0.0, 1.0));
+    // What a slice holds is the tau of the column above the height it stands for:
+    // the base of the layer is the whole column -- what the shading of the world
+    // reads -- and the top of it is empty sky, which is what the top of a cloud is
+    // lit by. A step of the march belongs to every slice standing below it.
+    for (int k = 0; k < CLOUD_SHADOW_SLICES; k++)
+    {
+        float height = float(k) / float(CLOUD_SHADOW_SLICES - 1);
+        float above = 0.0;
+
+        for (int i = 0; i < steps; i++)
+        {
+            if ((float(i) + 0.5) / float(steps) > height)
+            {
+                above += stepColumn[i];
+            }
+        }
+
+        imageStore(cloudShadowOut, ivec3(ipos, k), vec4(cloudOpticalDepth(layer, above), 0.0, 0.0, 1.0));
+    }
 }

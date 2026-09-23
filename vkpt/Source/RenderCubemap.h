@@ -39,17 +39,17 @@ public:
     {
         float faceBasis[18][4]; // 6 faces * (right, up, forward)
         float sunDirection[4];  // xyz = direction toward the sun, w = how much sun the sky shows (0 = no sun)
-        float skyColor[4];      // xyz = the colour of the sky itself (rt_sky_color), w unused
+        float skyColor[4];      // xyz = the colour of the sky itself (rt_sky_color); w = 1 while the layer's shadow map is there to be read (see DrawProcedural), the sky itself not using it
         float skyParams[4];     // x = multiplier, y = cloud opacity (rt_sky_clouds_alpha), z = sun disc intensity, w = sun disc radius
         float cloudColor[4];    // xyz = cloud color, w = cloud time (s)
         float cloudParams[4];   // x = coverage, y = density (rt_sky_clouds_density), z = drift speed, w = enabled
         // Appended after everything else so that a stale compiled shader (which
         // does not know the field) still reads every field it does know at the
         // same offset.
-        float sunDiscColor[4];  // xyz = colour of the sun disc (rt_sky_sun_color), w unused
+        float sunDiscColor[4];  // xyz = colour of the sun disc (rt_sky_sun_color); w = the extent of the layer's shadow map in metres, the disc not using it
         float cloudLayer[4];    // x = altitude of the layer's bottom over the eye, y = thickness, z = sunlight strength, w = sky light strength
         float cloudMarch[4];    // x = view march steps, y = sun march steps, z = detail erosion strength, w = forward scattering
-        float cloudAnchor[4];   // xy = the eye's place in the world's horizontal plane, zw unused
+        float cloudAnchor[4];   // xy = the eye's place in the world's horizontal plane, z = its height in the world, w = which quarter of the layer's map this frame marches (CLOUD_UPDATE_FRAMES meaning all of it)
     };
 
 public:
@@ -80,26 +80,28 @@ public:
     VkDescriptorSetLayout GetDescSetLayout() const;
     VkDescriptorSet GetDescSet() const;
 
-    // Fills the map of the shadow the cloud layer puts on the world. The map is
+    // Fills the volume of the shadow the cloud layer puts on the world. It is
     // laid out around `cameraPos` and it is redrawn only when the clouds, the sun
-    // or that placement have moved enough to matter, so the map the lighting
+    // or that placement have moved enough to matter, so the volume the lighting
     // passes read always matches what GetCloudShadowPlacement() reports.
     void UpdateCloudShadow(VkCommandBuffer cmd, const ProceduralSkyParams &params,
                            const float cameraPos[3]);
 
-    // Where the standing map lies in the world: [0] is 1 while it holds anything,
-    // [1..2] its world-space origin, [3] its extent in metres. The host puts this
-    // in the global uniform for every pass that lights the world, which is where
-    // CloudShadowMap.h reads it back from.
+    // Where the standing volume lies in the world: [0] is 1 while it holds
+    // anything, [1..2] its world-space origin, [3] its extent in metres. The host
+    // puts this in the global uniform for every pass that lights the world, which
+    // is where CloudShadowMap.h reads it back from.
     void GetCloudShadowPlacement(float placement[4]) const;
 
-    // Drops the standing map: the clouds it was filled from are no longer drawn,
+    // Drops the standing volume: the clouds it was filled from are no longer drawn,
     // and until it is filled again nothing may be shadowed by it.
     void InvalidateCloudShadow();
 
     // The quality levels of rt_sky_clouds_quality and rt_sky_godrays_quality: low,
-    // medium, high, ultra, extreme. Every level doubles the resolution of the
-    // maps the clouds and the shafts are drawn and gated through.
+    // medium, high, ultra, extreme. Every level doubles the resolution the clouds
+    // are drawn at and the volume of their shadow is laid over the ground with, and
+    // leaves that volume standing for fewer frames (except the two finest levels,
+    // which share the finest size of it).
     static constexpr uint32_t QUALITY_LOW     = 0;
     static constexpr uint32_t QUALITY_HIGH    = 2;
     static constexpr uint32_t QUALITY_EXTREME = 4;
@@ -108,11 +110,12 @@ public:
     static uint32_t ClampQuality(uint32_t quality);
 
     // Turns the cloud layer and its shadow into the maps the level asks for: a
-    // finer cubemap for the layer, a finer map of its shadow, and that map is
-    // left standing for fewer frames. Called from the sky pass once a frame with
-    // the command buffer the frame draws with; it does nothing while the level
-    // is the one already in use. The layer is drawn again from scratch, so the
-    // call is only worth making where the sky is about to be drawn anyway.
+    // finer cubemap for the layer, a finer volume of its shadow read slice by
+    // slice, and that volume is left standing for fewer frames. Called from the
+    // sky pass once a frame with the command buffer the frame draws with; it does
+    // nothing while the level is the one already in use. The layer is drawn again
+    // from scratch, so the call is only worth making where the sky is about to be
+    // drawn anyway.
     void SetQuality(VkCommandBuffer cmd, uint32_t quality);
 
     void OnShaderReload(const ShaderManager *shaderManager) override;
@@ -151,7 +154,7 @@ private:
     void DestroyCloudsPipeline();
     void DispatchClouds(VkCommandBuffer cmd, const ProceduralSkyParams &params);
 
-    // cloud shadow map (compute, read back by every pass that lights the world)
+    // cloud shadow volume (compute, read back by every pass that lights the world)
     void CreateCloudShadowImage(const std::shared_ptr<MemoryAllocator> &allocator, VkCommandBuffer cmd,
                                 uint32_t size, Attachment &image, bool allowFailure = false);
     void CreateCloudShadowDescriptors();
@@ -161,9 +164,9 @@ private:
     void DestroyCloudShadowPipeline();
     void DispatchCloudShadow(VkCommandBuffer cmd);
 
-    // Both maps are recreated by SetQuality, so the descriptor sets that name
-    // them are written again: nothing else about them changes, so no set, pool
-    // or layout is recreated.
+    // Both are recreated by SetQuality, so the descriptor sets that name them are
+    // written again: nothing else about them changes, so no set, pool or layout is
+    // recreated.
     void UpdateQualityDescriptors();
 
     uint32_t CloudShadowRefreshFrames() const;
@@ -173,13 +176,15 @@ private:
     // clouds on the way down to a spot of it. That only depends on the column of
     // cloud a sun ray crosses before it reaches the spot, which is the same column
     // wherever along the ray the spot is, so the layer can be projected onto the
-    // ground along the sun once and read back as a lookup (CloudShadowMap.h).
+    // ground along the sun once and read back as a lookup (CloudShadowMap.h) --
+    // walked up the whole column in one go, so that a point standing inside the
+    // layer reads what is left above it rather than the whole of it.
     struct CloudShadowParams
     {
         float sunDirection[4];  // xyz = unit direction towards the sun, w = height of the layer's bottom over the eye
         float cloudLayer[4];    // x = thickness, y = coverage, z = density, w = detail erosion strength
-        float cloudMarch[4];    // x = cloud time (s), y = drift speed, z = march steps per column, w = height of the layer over the plane the map is keyed on
-        float mapProjection[4]; // xy = world-space corner of the map, z = its extent (m), w = its extent (texels)
+        float cloudMarch[4];    // x = cloud time (s), y = drift speed, z = march steps per column, w = height of the layer over the plane the volume is keyed on
+        float mapProjection[4]; // xy = world-space corner of the volume, z = its extent (m), w = its extent in texels a side
     };
 
     VkDevice device;
@@ -231,7 +236,8 @@ private:
     uint32_t cloudsCycle = 0;
     bool     cloudsFullUpdate = true;
 
-    // The quality level both maps are sized and refreshed at (see SetQuality).
+    // The quality level both the cloud cubemap and the volume of its shadow are
+    // sized and refreshed at (see SetQuality).
     uint32_t   quality = QUALITY_HIGH;
 
     // A level whose maps could not be made (out of memory) is not asked for again
@@ -243,10 +249,10 @@ private:
     uint32_t   failedQuality = QUALITY_LEVELS;
     uint32_t   qualityRetryAge = 0;
 
-    // cloud shadow map (compute, read back by every pass that lights the world)
+    // cloud shadow volume (compute, read back by every pass that lights the world)
     Attachment cloudShadow;
     uint32_t   cloudShadowSize = 0;
-    CloudShadowParams cloudShadowParams = {};   // the state the standing map was filled with
+    CloudShadowParams cloudShadowParams = {};   // the state the standing volume was filled with
     bool     cloudShadowValid = false;          // false until it is dispatched once
     uint32_t cloudShadowAge = 0;                // frames the standing map has been left alone
     float    cloudShadowPlacement[4] = {};      // where it stands: on, origin.x, origin.z, extent
@@ -257,7 +263,7 @@ private:
 
     VkPipelineLayout cloudShadowPipelineLayout = VK_NULL_HANDLE;
     VkPipeline       cloudShadowPipeline       = VK_NULL_HANDLE;
-    VkSampler        cloudShadowSampler        = VK_NULL_HANDLE; // names the map in the cubemap descriptor set
+    VkSampler        cloudShadowSampler        = VK_NULL_HANDLE; // names the volume in the cubemap descriptor set
 
     Buffer cloudShadowParamsBuffer;
     void *mappedCloudShadowParams = nullptr;

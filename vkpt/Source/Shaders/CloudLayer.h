@@ -67,11 +67,28 @@ const float CLOUD_LIGHT_CONE = 0.15;
 
 // The steps of the sequences the taps of a march are spread by, taken from the
 // golden ratio: successive taps land in different parts of the stretch they stand
-// for and of the cone they are drawn from (a low-discrepancy sequence), rather than
-// anywhere at all (white noise), which leaves a smaller and a finer error behind.
-const float CLOUD_SEQUENCE_STEP       = 0.6180339887; // along the march
-const float CLOUD_SEQUENCE_CONE_R     = 0.7548776662; // radius of the cone
-const float CLOUD_SEQUENCE_CONE_ANGLE = 0.5698402909; // angle around it
+// for (a low-discrepancy sequence), rather than anywhere at all (white noise),
+// which leaves a smaller and a finer error behind.
+const float CLOUD_SEQUENCE_STEP = 0.6180339887; // along the march
+
+// Where a march to the sun samples the layer: the place it has walked to, offset
+// inside the cone the sunlight of a cloud comes from -- what a cloud sees of the
+// sun is the sky around the sun rather than the sun alone, and the cone is what
+// keeps the edge of a cloud's shadow soft. The offset is a spiral, one turn per
+// step: a fixed pattern of taps rather than a random one, so that the map of the
+// layer's shadow (CmCloudShadow.comp) and the march the sky falls back on where
+// that map does not reach read the same light out of the same column.
+vec3 cloudSunSample(vec3 p, vec3 sunDir, float distance, float stepSize)
+{
+    vec3 helper = abs(sunDir.z) < 0.99 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0);
+    vec3 tangent = normalize(cross(helper, sunDir));
+    vec3 bitangent = cross(sunDir, tangent);
+
+    float angle = distance / max(stepSize, 1.0e-3) * 2.39996323; // the golden angle
+    float radius = CLOUD_LIGHT_CONE * distance * 0.5;
+
+    return p + sunDir * distance + (cos(angle) * tangent + sin(angle) * bitangent) * radius;
+}
 
 // --- noise -------------------------------------------------------------------
 
@@ -212,45 +229,30 @@ float cloudOpticalDepth(CloudLayer layer, float column)
 //
 // The march goes towards the sun through a cone that widens with the distance
 // travelled, so that what is being asked is how much of the sky AROUND the sun is
-// clouded, which is what a real cloud sees. The fine noise is left out of it: it
-// is what the widening of the light would blur anyway, and this is the most
-// called function of the pass.
+// clouded, which is what a real cloud sees (cloudSunSample). The fine noise is
+// left out of it: it is what the widening of the light would blur anyway, and this
+// is the most called function of the pass.
 //
 // It ends at the top of the layer and goes no further: above the layer there is
 // nothing but sky, and a sample standing high in the layer has little left to
 // cross at all -- the space above the cloud is what this march skips for free,
 // having no structure of the layer to consult for the rest of it.
-float cloudSunDepth(CloudLayer layer, vec3 p, vec3 sunDir, float seed, int steps)
+float cloudSunDepth(CloudLayer layer, vec3 p, vec3 sunDir, int steps)
 {
-    float span = clamp((layer.altitude + layer.thickness - p.z) / max(sunDir.z, 1.0e-3),
-                       0.0, layer.thickness);
+    float span = max((layer.altitude + layer.thickness - p.z) / max(sunDir.z, 1.0e-3), 0.0);
     if (span <= 0.0)
     {
         return 0.0;
     }
 
     float dt = span / float(steps);
-
-    vec3 helper = abs(sunDir.z) < 0.99 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0);
-    vec3 tangent = normalize(cross(helper, sunDir));
-    vec3 bitangent = cross(sunDir, tangent);
-
     float depth = 0.0;
 
     for (int i = 0; i < steps; i++)
     {
-        // The taps of the cone come from low-discrepancy sequences turned by the
-        // seed rather than from independent random numbers: a handful of steps then
-        // covers the cone evenly, and the error that is left is both smaller and
-        // finer than the clumps white noise would leave.
-        float r     = fract(seed + float(i) * CLOUD_SEQUENCE_CONE_R);
-        float angle = fract(seed * 1.618034 + float(i) * CLOUD_SEQUENCE_CONE_ANGLE) * 6.2831853;
-        float along = fract(seed * 2.4142135624 + float(i) * CLOUD_SEQUENCE_STEP);
-        float at = (float(i) + along) * dt;
-        float cone = CLOUD_LIGHT_CONE * at * r;
-        vec3 sp = p + sunDir * at + (cos(angle) * tangent + sin(angle) * bitangent) * cone;
-
-        depth += cloudDensity(layer, sp, false) * dt;
+        // The step is sampled in the middle of the stretch it stands for, so that a
+        // thin cloud is not lost to the base of the layer falling between two of them.
+        depth += cloudDensity(layer, cloudSunSample(p, sunDir, (float(i) + 0.5) * dt, dt), false) * dt;
     }
 
     return depth;
