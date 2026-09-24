@@ -919,19 +919,20 @@ static void QRE_EmitOutline (qmodel_t *model, msurface_t *surf, entity_t *ent, u
 			VectorCopy (p->verts[i], verts[i]);
 	}
 
-	// The face plane in world space: n_world = R * n (identity for the world).
+	// The face plane in world space: the rotation of a row-major RgTransform is
+	// applied the same way ApplyTransform (r_world.c) applies it.
 	for (j = 0; j < 3; j++)
-		n_world[j] = transform.matrix[0][j] * surf->plane->normal[0]
-		           + transform.matrix[1][j] * surf->plane->normal[1]
-		           + transform.matrix[2][j] * surf->plane->normal[2];
+		n_world[j] = transform.matrix[j][0] * surf->plane->normal[0]
+		           + transform.matrix[j][1] * surf->plane->normal[1]
+		           + transform.matrix[j][2] * surf->plane->normal[2];
 
 	// Nudge the outline off the face towards the viewer: the plane normal of a
 	// SURF_PLANEBACK face points away from its visible side, and pushing the
 	// line behind the wall would lose it to the traced surface.
 	for (j = 0; j < 3; j++)
-		first[j] = transform.matrix[0][j] * verts[0][0]
-		         + transform.matrix[1][j] * verts[0][1]
-		         + transform.matrix[2][j] * verts[0][2]
+		first[j] = transform.matrix[j][0] * verts[0][0]
+		         + transform.matrix[j][1] * verts[0][1]
+		         + transform.matrix[j][2] * verts[0][2]
 		         + transform.matrix[j][3];
 	VectorSubtract (r_origin, first, to_view);
 	if (DotProduct (to_view, n_world) < 0.0f)
@@ -942,9 +943,9 @@ static void QRE_EmitOutline (qmodel_t *model, msurface_t *surf, entity_t *ent, u
 	for (i = 0; i < n; i++)
 	{
 		for (j = 0; j < 3; j++)
-			rv[i].position[j] = transform.matrix[0][j] * verts[i][0]
-			                  + transform.matrix[1][j] * verts[i][1]
-			                  + transform.matrix[2][j] * verts[i][2]
+			rv[i].position[j] = transform.matrix[j][0] * verts[i][0]
+			                  + transform.matrix[j][1] * verts[i][1]
+			                  + transform.matrix[j][2] * verts[i][2]
 			                  + transform.matrix[j][3]
 			                  + nudge * n_world[j];
 		rv[i].packedColor = color;
@@ -1856,6 +1857,11 @@ static void QR_Editor_Stop_f (void)
 	QRE_StopEditor (true);
 }
 
+// Verbose reload diagnostics of the live material editor: logs every texture a
+// reload reads (with its file offset) and dumps the synthesized albedo/RME/normal
+// of the first reload of a material to <gamedir>/qre_dump.
+cvar_t qr_editor_debug = { "qr_editor_debug", "0", CVAR_NONE };
+
 void QR_Editor_Init (void)
 {
 	static qboolean qr_editor_registered = false;
@@ -1864,6 +1870,8 @@ void QR_Editor_Init (void)
 	if (qr_editor_registered)
 		return;
 	qr_editor_registered = true;
+
+	Cvar_RegisterVariable (&qr_editor_debug);
 
 	Cmd_AddCommand ("qr_light_editor_start", QR_Editor_Start_f);
 	Cmd_AddCommand ("qr_light_editor_stop", QR_Editor_Stop_f);

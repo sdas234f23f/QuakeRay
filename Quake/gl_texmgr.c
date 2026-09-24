@@ -1110,6 +1110,10 @@ static qboolean texmgr_dump_dir_checked = false;
 // reload, not for the map load (which applies every material anyway).
 static qboolean texmgr_dumping_reload = false;
 
+// Verbose reload diagnostics and the TGA dump of the synthesized textures
+// (registered by the qr light editor; off by default).
+extern cvar_t qr_editor_debug;
+
 static qboolean TexMgr_AlreadyDumped (const char *name)
 {
 	int i;
@@ -1494,7 +1498,7 @@ static qboolean TexMgr_ApplyMaterialFromMat (gltexture_t *glt, unsigned *albedoF
 		            glt->rtemissiveglowtex ? 1 : 0);
 	}
 
-	if (texmgr_dumping_reload && !TexMgr_AlreadyDumped (mat->name))
+	if (texmgr_dumping_reload && !TexMgr_AlreadyDumped (mat->name) && CVAR_TO_BOOL (qr_editor_debug))
 	{
 		Con_Printf ("qr editor dump: material '%s' tex '%s' %dx%d base='%s' emis='%s' gloss='%s' norm='%s' light=%d\n",
 		            mat->name, glt->name, tw, th,
@@ -2026,6 +2030,9 @@ static qboolean TexMgr_ReloadableSource (const gltexture_t *glt)
 
 static void TexMgr_LogReloaded (const gltexture_t *glt)
 {
+	if (!CVAR_TO_BOOL (qr_editor_debug))
+		return;
+
 	Con_Printf ("qr editor:   tex '%s' %ux%u fmt=%d off=%llu src='%s' flags=0x%x\n",
 	            glt->name, glt->width, glt->height, (int)glt->source_format,
 	            (unsigned long long)glt->source_offset, glt->source_file, glt->flags);
@@ -2049,7 +2056,8 @@ int TexMgr_ReloadImagesForMaterial (const char *materialName)
 	if (!materialName || !materialName[0])
 		return 0;
 
-	Con_Printf ("qr editor: reload material '%s'\n", materialName);
+	if (CVAR_TO_BOOL (qr_editor_debug))
+		Con_Printf ("qr editor: reload material '%s'\n", materialName);
 	texmgr_dumping_reload = true;
 
 	for (glt = active_gltextures; glt; glt = glt->next)
@@ -2091,7 +2099,8 @@ int TexMgr_ReloadImagesForTextureName (const char *texname)
 	if (!texname || !texname[0])
 		return 0;
 
-	Con_Printf ("qr editor: reload texture '%s'\n", texname);
+	if (CVAR_TO_BOOL (qr_editor_debug))
+		Con_Printf ("qr editor: reload texture '%s'\n", texname);
 	texmgr_dumping_reload = true;
 
 	for (glt = active_gltextures; glt; glt = glt->next)
