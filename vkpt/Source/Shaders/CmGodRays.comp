@@ -309,9 +309,13 @@ void main()
         // of the air asks about is the part of the cloud column that stands ABOVE it:
         // its height in the layer, 0 at its bottom (the world height of it rides in
         // sunColor.w) and 1 at its top (the layer's depth in sunDirection.w) -- a
-        // sample above the cloud deck is no longer shaded by it.
+        // sample above the cloud deck is no longer shaded by it. The column is read at
+        // the nearest texel the volume holds rather than dropped where the volume ends
+        // (cloudShadowTauNear): the shadow of a cloud does not stop on the line the
+        // map was laid out over, and a sample of the air out there stands under the
+        // same cloud as the texel next to it.
         float cloudHeight = clamp((currentPos.z - godRaysParams.sunColor.w) / max(godRaysParams.sunDirection.w, 1.0), 0.0, 1.0);
-        shadow *= cloudShadowTransmittance(cloudShadowMap, currentPos, godRaysParams.sunDirection.xyz, globalUniform.skyCubemapRotationTransform[3], cloudHeight);
+        shadow *= exp(-cloudShadowTauNear(cloudShadowMap, currentPos, godRaysParams.sunDirection.xyz, globalUniform.skyCubemapRotationTransform[3], cloudHeight));
 
         const vec3 differentialInscatter = (shadow * phase * stepLength * density) * through;
         inscatter += differentialInscatter;

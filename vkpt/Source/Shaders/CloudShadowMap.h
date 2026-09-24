@@ -133,6 +133,33 @@ float cloudShadowTau(sampler3D shadowVolume, vec3 worldPos, vec3 sunDir, vec4 ma
     return cloudShadowTauFromUV(shadowVolume, uv, height);
 }
 
+// The tau of the cloud between a point of the world and the sun, read from the
+// volume of the layer's shadow with the edge of the map standing for the whole
+// world: a point beyond the mapped area reads the column of the nearest texel
+// inside it rather than losing its shadow to the edge.
+//
+// This is what the shafts of the sun ask the volume with. Their samples walk out of
+// the mapped area -- a view ray into the sky leaves it a couple of thousand units
+// up -- and what the air out there needs is the cloud that stands over it, for which
+// the volume has no texel: the shadow it drops would end on the line the map was
+// laid out over, a square over the sky. The nearest column the volume holds is what
+// that cloud looks like at the edge of the map, and it is a shadow everywhere rather
+// than a shadow inside a window. A caller that can answer for the column itself --
+// the sky, which walks it (cloudSunDepth, CloudLayer.h) -- is better off with
+// cloudShadowTau and its blend.
+float cloudShadowTauNear(sampler3D shadowVolume, vec3 worldPos, vec3 sunDir, vec4 mapPlacement, float height)
+{
+    if (mapPlacement.x <= 0.5 || sunDir.z <= 1.0e-3)
+    {
+        return 0.0;
+    }
+
+    vec2 flatPos = worldPos.xy - sunDir.xy * (worldPos.z / sunDir.z);
+    vec2 mapped = (flatPos - mapPlacement.yz) / max(mapPlacement.w, 1.0);
+
+    return cloudShadowTauFromUV(shadowVolume, clamp(mapped, vec2(0.0), vec2(1.0)), height);
+}
+
 // How much of the sun gets past the clouds on the way down to a point of the world:
 // 1 with no cloud in the way, 0 with the sun fully behind them. Where the volume
 // does not reach the point the clouds are simply not covering the sun for it, so it
