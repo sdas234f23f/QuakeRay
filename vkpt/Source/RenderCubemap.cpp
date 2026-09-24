@@ -61,16 +61,21 @@ constexpr uint32_t CLOUDS_SIDE_SIZES[vkpt::RenderCubemap::QUALITY_LEVELS] = { 25
 // over the same CLOUD_SHADOW_EXTENT metres of ground -- four times the volume, and
 // four times the march filling it, which is the dearest pass the layer has -- from
 // a texel every thirty metres at the bottom of the ladder to one every eight at the
-// top, and four slices of two bytes per texel of memory.
+// top, and eight slices of two bytes per texel of memory.
 constexpr uint32_t CLOUD_SHADOW_SIZES[vkpt::RenderCubemap::QUALITY_LEVELS] = { 512, 1024, 1024, 2048, 2048 };
 
 // The slices the volume holds over the height of the layer, the base of the layer
 // in the first and the sky above it in the last (CmCloudShadow.comp fills as many,
 // CloudShadowMap.h reads them by the height of a point). They are the only reason
-// the shadow is a volume rather than a map, and a few of them are enough: what is
-// read between two of them is the light of a cloud, which is a gradient rather than
-// a step.
-constexpr uint32_t CLOUD_SHADOW_SLICES = 4;
+// the shadow is a volume rather than a map, and how many of them there are is what
+// the light of a cloud is quantized along its height with: a cloud is not a straight
+// line in that direction, so reading a height between two slices is reading a line
+// where the tau curves. Measured against a walk of the same column 256 steps deep,
+// four slices leave a tau of 0.22 at the heights between them and eight leave 0.06 --
+// which is the size of the slabs of brightness an eye can find in a cloud, a band
+// for every slice pair. Eight of them cost twice the memory of the volume and almost
+// nothing to fill: a slice is a sum over the walk of the steps already made.
+constexpr uint32_t CLOUD_SHADOW_SLICES = 8;
 
 // How much of the world's horizontal plane the volume is laid out over, in world
 // units: the same whatever the level, so that a level buys the sharpness of the
@@ -95,13 +100,14 @@ constexpr float    CLOUD_SHADOW_EXTENT = 16000.0f;
 // every texel of the way.
 constexpr uint32_t CLOUD_SHADOW_WINDOW_STEP = 8;
 
-// The map is redrawn when the eye has moved a texel over it, and at least this
-// often whatever the eye does: the clouds drift on their own, and a stale map
-// would hold the shadow still under them. The finer the map, the sooner it is
-// filled again -- the two lowest levels redraw it every 4 frames, and above them
-// every 2, and every frame from ultra on -- so a level buys the sharpness of the
-// edge and the freshness of the shadow together. What the freshness is seen in
-// is the shafts and the sunlight under a cloud, which are gated through this map.
+// The map is redrawn when the eye has moved a window step over it
+// (CLOUD_SHADOW_WINDOW_STEP), and at least this often whatever the eye does: the
+// clouds drift on their own, and a stale map would hold the shadow still under them.
+// The finer the map, the sooner it is filled again -- the two lowest levels redraw it
+// every 4 frames, and above them every 2, and every frame from ultra on -- so a level
+// buys the sharpness of the edge and the freshness of the shadow together. What the
+// freshness is seen in is the shafts and the sunlight under a cloud, which are gated
+// through this map.
 constexpr uint32_t CLOUD_SHADOW_REFRESH_FRAMES[vkpt::RenderCubemap::QUALITY_LEVELS] = { 4, 4, 2, 1, 1 };
 
 // Steps the sky pass marches a ray through the layer in, one entry per quality

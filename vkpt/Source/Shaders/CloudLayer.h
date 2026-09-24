@@ -78,14 +78,26 @@ const int CLOUD_SUN_STEPS_MAX = 64;
 // clouds as a square over the sky, so the count lives here rather than in a pass or
 // in the host.
 //
-// Eight of them, because this walk is the dearest thing the layer does: the sky pays
-// for it at every step of its own march that lands in a cloud, and the volume pays
-// for it at every texel of every slice it is filled with. A tap of this walk is
-// spread sideways around the sun by CLOUD_LIGHT_CONE over the distance it travelled
-// -- tens of world units near the base of the layer and a couple of hundred at its
-// top -- so a step of it is shorter than the blur it is under, and a finer walk than
-// this one is the same cloud walked twice.
-const int CLOUD_SHADOW_STEPS = 8;
+// Sixteen of them, and what the count is for is the structure the noise has along
+// the column: the shape octaves are 450, 225 and 112 world units long, and a step of
+// this walk is the layer's depth over the height of the sun over this count -- 87
+// world units at a sun forty degrees up, which is 2.6 samples per period of the 225
+// unit octave. Eight steps leave that octave at 1.3, under the two a period needs,
+// and what eight leaves behind is per texel of the volume: the light of a cloud then
+// carries the grain of the shadow it was read from, worst where the cloud has an
+// edge, and the same walk is what sets the height a slice of it is read at, so the
+// grain comes out as a slab of the cloud rather than a speck of it.
+//
+// The walk is the dearest thing the layer does -- the sky pays for it at every step
+// of its own march that lands in a cloud, the volume at every texel of every slice
+// it is filled with -- and what it costs to run sixteen steps over is set against
+// where each of them pays: the volume covers most of the sky now that it is laid out
+// over 16000 units of it (RenderCubemap.cpp), so what the sky walks for itself is
+// the horizon and the samples beyond the window. A tap of the walk is spread
+// sideways around the sun by CLOUD_LIGHT_CONE over the distance it travelled -- tens
+// of world units near the base of the layer and a couple of hundred at its top -- so
+// it is the place of the tap along the column that this count has to resolve.
+const int CLOUD_SHADOW_STEPS = 16;
 
 // The steps of the sequences the taps of a march are spread by, taken from the
 // golden ratio: successive taps land in different parts of the stretch they stand
