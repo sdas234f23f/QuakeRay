@@ -1179,15 +1179,28 @@ static qboolean TexMgr_ApplyMaterialFromMat (gltexture_t *glt, unsigned *albedoF
 	if (!mat)
 	{
 		// A material the editor dropped (Cancel/Exit of a texture that had none
-		// in yaml) must stop lighting at once: the reload is what notices it is
-		// gone, and the fields below are only ever set here.
-		glt->rtislight = false;
-		glt->rthaslightcolor = false;
+		// in yaml) must stop being one at once: the reload is what notices it is
+		// gone, and every field below is only ever set here. The same block a
+		// texture gets when it is loaded with no material.
 		glt->rtlightcolor[0] = glt->rtlightcolor[1] = glt->rtlightcolor[2] = 0.0f;
+		glt->rthaslightcolor = false;
+		glt->rtupoffset = 0.0f;
+		glt->rtmirror = false;
+		glt->rtexactnormals = false;
+		glt->rtforcerasterize = false;
 		glt->rtemissive = false;
 		glt->rtemissivecolor[0] = glt->rtemissivecolor[1] = glt->rtemissivecolor[2] = 0.0f;
 		glt->rtemissivemean = 0.0f;
+		glt->rtemissivemeanbase = 0.0f;
+		glt->rtemisuvmin[0] = glt->rtemisuvmin[1] = 0.0f;
+		glt->rtemisuvmax[0] = glt->rtemisuvmax[1] = 1.0f;
+		glt->rtemissiveglow = 0.0f;
+		glt->rtemisglowfrac = 1.0f;
+		glt->rtemissiveglowtex = false;
 		glt->rtemissivetex = false;
+		glt->rtislight = false;
+		glt->rtlightstyles = true;
+		glt->rthasmaterial = false;
 		return false;
 	}
 
@@ -1283,13 +1296,12 @@ static qboolean TexMgr_ApplyMaterialFromMat (gltexture_t *glt, unsigned *albedoF
 	if (has_luma_key && !emisBuf)
 		Con_Printf ("RT: material '%s': texture_emissive '%s' could not be loaded; using no emissive mask\n",
 		            mat->name, mat->filename_emissive);
-	const qboolean has_emis_mask = (emisBuf != NULL) || use_color_emissive;
 	/* light_brightness: the visible emission is an 8-bit channel, so it can only
 	   be dimmed there; the emitted light is a float and takes the full value (the
-	   colour gain below). A brush TAL samples this same mask, so below 1 the mask
-	   already dims the light once and the gain must not count it twice. */
-	const float    brightVis      = (mat->light_brightness < 1.0f) ? mat->light_brightness : 1.0f;
-	const qboolean maskFeedsLight = isBrush && has_emis_mask;
+	   colour gain below). A brush TAL samples the synthesized mask, so below 1 the
+	   mask already dims the light once and the gain must not count it twice. */
+	const float lightBright = CLAMP (0.0f, mat->light_brightness, 5.0f);
+	const float brightVis   = (lightBright < 1.0f) ? lightBright : 1.0f;
 	/* Per-material rt_emis_blend override, packed into the alpha of the
 	   roughness-metallic-emission texture: 0 = not authored, so the global
 	   cvar applies; otherwise the authored mode plus one. */
@@ -1460,14 +1472,15 @@ static qboolean TexMgr_ApplyMaterialFromMat (gltexture_t *glt, unsigned *albedoF
 			glt->rtemissivetex = true;
 	}
 
-	if (mat->light_brightness != 1.0f)
+	if (lightBright != 1.0f)
 	{
 		/* The float gain of the emitted light, outside the emission block: a
 		   material can light from light_color alone, with no emissive mask at
 		   all. Above 1 the gain is the only thing that can brighten (the
-		   emission channel saturates); below 1 a mask the TAL samples already
-		   dims the light once, so the gain is skipped there. */
-		const float gain = (maskFeedsLight && mat->light_brightness < 1.0f) ? 1.0f : mat->light_brightness;
+		   emission channel saturates); below 1 a mask the area light really
+		   samples (rtemissivetex, the flag its consumer reads) already dims the
+		   light once, so the gain is skipped there. */
+		const float gain = (isBrush && glt->rtemissivetex && lightBright < 1.0f) ? 1.0f : lightBright;
 
 		if (glt->rthaslightcolor)
 			VectorScale (glt->rtlightcolor, gain, glt->rtlightcolor);

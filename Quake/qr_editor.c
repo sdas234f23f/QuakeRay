@@ -536,9 +536,6 @@ static void QRE_SetFloat (int g, int param, float value)
 	QRE_EnsureLive (g);
 	rt_material_t *m = qre.group[g];
 
-	// the panel shows two decimals; keep the stored value on that grid
-	value = roundf (value * 100.0f) / 100.0f;
-
 	switch (param)
 	{
 	case PARAM_BUMP:     m->bump_scale = value; break;
@@ -675,6 +672,15 @@ static void QRE_ResolveGroup (const char *texname)
 	else if (qre.group_count > 1)
 	{
 		qsort (qre.group, (size_t)qre.group_count, sizeof (qre.group[0]), QRE_CompareMats);
+	}
+
+	// mirror forces roughness_override to 0, and the synthesis gives it the last
+	// word: a material loaded with both is shown (and saved) with the override
+	// the renderer ignores taken out of the way
+	for (i = 0; i < qre.group_count; i++)
+	{
+		if (qre.group[i]->mirror && qre.group[i]->roughness_override != 0.0f)
+			qre.group[i]->roughness_override = 0.0f;
 	}
 }
 
@@ -1150,6 +1156,16 @@ static void QRE_ResetParam (int g, int p, const rt_material_t *orig)
 		return;
 	}
 
+	if (p == PARAM_MIRROR)
+	{
+		// mirror forces roughness_override to 0 while it is on; un-mirroring
+		// brings the original override back with it
+		QRE_SetBool (g, p, QRE_GetBool (orig, p));
+		if (!QRE_GetBool (orig, p))
+			QRE_SetFloat (g, PARAM_ROUGH, QRE_GetFloat (orig, PARAM_ROUGH));
+		return;
+	}
+
 	switch (qre_params[p].type)
 	{
 	case QRE_T_FLOAT:
@@ -1170,13 +1186,12 @@ static void QRE_ResetParam (int g, int p, const rt_material_t *orig)
 		float    rgb[3];
 		int      c;
 
+		// the channels are restored even behind a disabled colour: enabling it
+		// again has to show the original tint, not the last one edited
 		QRE_GetColor (orig, p, &enabled, rgb);
+		for (c = 0; c < 3; c++)
+			QRE_SetColorChannel (g, p, c, rgb[c]);
 		QRE_SetColorEnabled (g, p, enabled);
-		if (enabled)
-		{
-			for (c = 0; c < 3; c++)
-				QRE_SetColorChannel (g, p, c, rgb[c]);
-		}
 		break;
 	}
 	default:
@@ -1214,12 +1229,15 @@ static void QRE_ParamWidgets (int g)
 
 			q_strlcpy (buf, QRE_GetText (m, p), sizeof (buf));
 			res = QR_GUI_TexturePath (label, buf, sizeof (buf), tip);
-			if ((res & 1) && strcmp (buf, QRE_GetText (m, p)))
+			if (res & 1)
 			{
-				// NONE typed by hand means "no texture", as an empty field does
+				// NONE typed by hand means "no texture", as an empty field does.
+				// Normalize before the compare: typing NONE into an empty field
+				// is not an edit, and it must not create the material.
 				if (!q_strcasecmp (buf, "NONE"))
 					buf[0] = '\0';
-				QRE_SetText (g, p, buf);
+				if (strcmp (buf, QRE_GetText (m, p)))
+					QRE_SetText (g, p, buf);
 			}
 			if (res & 2)
 			{
@@ -1232,7 +1250,12 @@ static void QRE_ParamWidgets (int g)
 		{
 			float value = QRE_GetFloat (m, p);
 			if (QR_GUI_SliderFloat (label, &value, qre_params[p].min, qre_params[p].max, tip))
-				QRE_SetFloat (g, p, value);
+			{
+				// the panel shows two decimals; a value out of the slider (or
+				// typed) is snapped to that grid. A reset does not pass through
+				// here, so it restores the snapshot exactly.
+				QRE_SetFloat (g, p, roundf (value * 100.0f) / 100.0f);
+			}
 			break;
 		}
 		case QRE_T_INT:
@@ -1320,6 +1343,11 @@ static void QRE_BuildPanelGUI (void)
 	int      panel_w = glwidth / 4; // a quarter of the screen wide, as asked
 	int      g;
 	qboolean exit_requested = false;
+
+	// Below this the fixed label column and the browse and reset buttons stop
+	// fitting: a quarter of a small window is not worth an unusable panel.
+	if (panel_w < 352)
+		panel_w = 352;
 
 	QR_GUI_BeginPanel ("qr_material_editor", glwidth - panel_w, 0, panel_w, glheight);
 
@@ -1625,7 +1653,9 @@ static void QRE_WriteMaterial (FILE *f, const rt_material_t *m)
 		fprintf (f, "    texture_gloss: %s\n", m->filename_gloss);
 	if (m->bump_scale != 1.0f)
 		fprintf (f, "    bump_scale: %.6g\n", m->bump_scale);
-	if (m->roughness_override != 0.0f)
+	// mirror forces roughness_override to 0; the synthesis gives it the last
+	// word, so the dead override is not perpetuated by a save
+	if (!m->mirror && m->roughness_override != 0.0f)
 		fprintf (f, "    roughness_override: %.6g\n", m->roughness_override);
 	if (m->has_metalness_factor)
 		fprintf (f, "    metalness_factor: %.6g\n", m->metalness_factor);

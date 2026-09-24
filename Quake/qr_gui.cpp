@@ -63,7 +63,9 @@ void ItemTooltip (const char *text)
 float RowWidth (float extra)
 {
 	const ImGuiStyle &style = ImGui::GetStyle ();
-	return ImGui::GetContentRegionAvail ().x - kResetButtonSize - style.ItemSpacing.x - extra;
+	const float       width = ImGui::GetContentRegionAvail ().x - kResetButtonSize - style.ItemSpacing.x - extra;
+
+	return width > 24.0f ? width : 24.0f;
 }
 
 void LabelColumn (const char *label, const char *tooltip)
@@ -493,14 +495,10 @@ int QR_GUI_Button (const char *label)
 
 int QR_GUI_Checkbox (const char *label, int *value, const char *tooltip)
 {
-	char id[192];
-	WidgetId (id, sizeof (id), label);
-
 	bool v = *value != 0;
 	bool changed;
 
-	LabelColumn (label, tooltip);
-	changed = ImGui::Checkbox (id, &v);
+	changed = ImGui::Checkbox (label, &v);
 	ItemTooltip (tooltip);
 	if (changed)
 		*value = v ? 1 : 0;
@@ -591,19 +589,27 @@ int QR_GUI_TexturePath (const char *label, char *buf, size_t capacity, const cha
 // holds its original value.
 int QR_GUI_ResetButton (const char *label, int enabled)
 {
+	// an ID of its own: the row widget already owns "##<label>", and two items
+	// under one ID hand the click to the first of them
 	char id[192];
-	WidgetId (id, sizeof (id), label);
+	snprintf (id, sizeof (id), "##reset_%s", label);
 
-	const float right = ImGui::GetWindowContentRegionMax ().x - kResetButtonSize;
-	const float after = ImGui::GetCursorPosX () + ImGui::GetStyle ().ItemSpacing.x;
+	// right-aligned, but never over the widget that was just drawn
+	const ImVec2 prev_max = ImGui::GetItemRectMax ();
+	const float  after    = (prev_max.x - ImGui::GetWindowPos ().x) + ImGui::GetStyle ().ItemSpacing.x;
+	const float  right    = ImGui::GetWindowContentRegionMax ().x - kResetButtonSize;
+	const float  x        = right > after ? right : after;
 
-	ImGui::SameLine (right > after ? right : after);
+	ImGui::SameLine (x);
+	// a square, centred on the row whose frame is a little taller
+	ImGui::SetCursorPosY (ImGui::GetCursorPosY () +
+	                      (ImGui::GetFrameHeight () - kResetButtonSize) * 0.5f);
 
 	if (!enabled)
 		ImGui::BeginDisabled ();
 
 	ImGui::PushStyleColor (ImGuiCol_Button, ImVec4 (0.16f, 0.17f, 0.21f, 0.85f));
-	const bool pressed = ImGui::Button (id, ImVec2 (kResetButtonSize, 0.0f));
+	const bool pressed = ImGui::Button (id, ImVec2 (kResetButtonSize, kResetButtonSize));
 	ImGui::PopStyleColor ();
 
 	// The circular arrow is drawn, not a glyph: the panel font has no U+21BA.
