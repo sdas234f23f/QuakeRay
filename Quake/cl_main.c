@@ -23,6 +23,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #include "quakedef.h"
 #include "bgmusic.h"
+#include "qr_editor.h"
 
 // we need to declare some mouse variables here, because the menu system
 // references them even when on a unix system.
@@ -1082,6 +1083,16 @@ void CL_SendCmd (void)
 
 	if (cls.state != ca_connected)
 		return;
+
+	// qr light editor: while the editor camera is flying, the player stands
+	// still -- no commands reach the server (the editor reads the movement keys
+	// and the mouse itself)
+	if (QR_Editor_Active ())
+	{
+		memset (&cl.pendingcmd, 0, sizeof (cl.pendingcmd));
+		cl.pendingcmd.servertime = cl.time;
+		return;
+	}
 
 	// get basic movement from keyboard
 	CL_BaseMove (&cmd);

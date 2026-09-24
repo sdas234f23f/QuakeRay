@@ -297,6 +297,7 @@ set(CORE_SOURCES
     Quake/r_world.c
     Quake/rt_material.c
     Quake/rt_pkz.c
+    Quake/qr_editor.c
     Quake/sbar.c
     Quake/snd_codec.c
     Quake/snd_dma.c

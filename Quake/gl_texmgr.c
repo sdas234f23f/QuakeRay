@@ -1846,6 +1846,58 @@ void TexMgr_ReloadAllImages (void)
 }
 
 /*
+================
+TexMgr_ReloadImagesForMaterial
+
+Like TexMgr_ReloadAllImages, but only for the textures whose material is the named
+one. Used by the live material editor to re-synthesize the affected textures after
+a parameter change; the two-pass glow/luma sidecar of each base texture is reloaded
+together with it, exactly as a full reload would.
+================
+*/
+int TexMgr_ReloadImagesForMaterial (const char *materialName)
+{
+	gltexture_t *glt, *fullbright;
+	int          count = 0;
+
+	if (!materialName || !materialName[0])
+		return 0;
+
+	for (glt = active_gltextures; glt; glt = glt->next)
+	{
+		rt_material_t *mat;
+
+		if (glt->flags & TEXPREF_RT_IS_EMISSIVE)
+			continue;
+		if (glt->source_format != SRC_INDEXED && glt->source_format != SRC_RGBA)
+			continue;
+		if (!glt->source_file[0] && !glt->source_offset)
+			continue;
+
+		mat = RT_MAT_Find (glt->name);
+		if (!mat || strcmp (mat->name, materialName))
+			continue;
+
+		fullbright = TexMgr_FindFullbrightTexture (glt);
+		if (!fullbright)
+		{
+			TexMgr_ReloadImage (glt, -1, -1);
+			count++;
+			continue;
+		}
+
+		TexMgr_RT_SpecialStart (CVAR_TO_FLOAT (rt_brush_rough), CVAR_TO_FLOAT (rt_brush_metal));
+		TexMgr_ReloadImage (glt, -1, -1);
+		if (rtspecial_target != NULL)
+			TexMgr_ReloadImage (fullbright, -1, -1);
+		TexMgr_RT_SpecialEnd ();
+		count++;
+	}
+
+	return count;
+}
+
+/*
 ================================================================================
 
     TEXTURE BINDING / TEXTURE UNIT SWITCHING

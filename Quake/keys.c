@@ -23,6 +23,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #include "quakedef.h"
 #include "arch_def.h"
+#include "qr_editor.h"
 
 /* key up events are sent even if in console mode */
 
@@ -975,7 +976,7 @@ void Key_Event (int key, qboolean down)
 	{
 		if (keydown[key])
 		{
-			if (key_dest == key_game && !con_forcedup)
+			if (key_dest == key_game && !con_forcedup && !QR_Editor_PanelOpen ())
 				return; // ignore autorepeats in game mode
 		}
 		else if (key >= 200 && !keybindings[key])
@@ -985,6 +986,11 @@ void Key_Event (int key, qboolean down)
 		return; // ignore stray key up events
 
 	keydown[key] = down;
+
+	// qr light editor: while the material panel is open it owns the keyboard and
+	// mouse; while flying, ESC exits the editor instead of opening the menu
+	if (QR_Editor_KeyEvent (key, down))
+		return;
 
 	if (key_inputgrab.active)
 	{
@@ -1108,6 +1114,10 @@ void Char_Event (int key)
 	if (keydown[K_CTRL])
 		return;
 
+	// qr light editor: typing into an editor text field
+	if (QR_Editor_CharEvent (key))
+		return;
+
 	if (key_inputgrab.active)
 	{
 		key_inputgrab.lastchar = key;
@@ -1141,6 +1151,9 @@ Key_TextEntry
 */
 qboolean Key_TextEntry (void)
 {
+	if (QR_Editor_TextEntryActive ())
+		return true;
+
 	if (key_inputgrab.active)
 		return true;
 

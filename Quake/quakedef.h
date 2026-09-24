@@ -42,7 +42,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #ifndef QUAKESPASM_VER_SUFFIX
 #define QUAKESPASM_VER_SUFFIX // optional version suffix string literal like "-beta1"
 #endif
-#define ENGINE_VERSION   0.13
+#define ENGINE_VERSION   0.14
 #define ENGINE_VER_PATCH 0 // helper to print a string like 0.92.1
 #ifndef ENGINE_VER_SUFFIX
 #define ENGINE_VER_SUFFIX "" // optional version suffix like -beta1
@@ -253,6 +253,7 @@ typedef enum
 	CANVAS_CSQC,
 	CANVAS_SBAR_MINIMAL_BOTTOMLEFT,
 	CANVAS_SBAR_MINIMAL_BOTTOMRIGHT,
+	CANVAS_EDITOR, // qr light editor panel: 640 units wide, full screen height
 	CANVAS_INVALID = -1
 } canvastype;
 

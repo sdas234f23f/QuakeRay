@@ -17,6 +17,7 @@ QuakeRay is Ray Tracing engine for Quake 1, with a Q2RTX-style partial path trac
 * per-BSP-cluster light lists.
 * Animated light entities (`rt_light_styles`) make their own fixture flicker, in accordance with the original light style, to preserve the original Quake 1 lighting design.
 * Full material system with per-brush and per-model metalness/roughness, normal map strength and texture-driven gloss maps, plus ray-traced water with animated wave normals and refraction.
+* In-game material editor (`qr_light_editor_start`): a free camera and a mouse-driven panel that edits the `materials.yaml` parameters of any face of the world — every animation frame of a medkit or a blinking button at once — with the changes visible the next frame and written back by `Apply`.
 
 ## Graphics
 
@@ -29,7 +30,6 @@ QuakeRay is Ray Tracing engine for Quake 1, with a Q2RTX-style partial path trac
 
 ## Roadmap
 
-* In-game light editor for emissive surfaces and dynamic lights.
 * Arcane Dimensions support (the original Quake 1 expansion pack)
 * Quake Remastered (2021) support (the official remaster of Quake 1)
 * Mixed rasterization and ray tracing for better performance on older GPUs (the current renderer is RT only, so it is limited to GPUs with ray tracing support).
@@ -38,6 +38,26 @@ QuakeRay is Ray Tracing engine for Quake 1, with a Q2RTX-style partial path trac
 ## Changelog
 
 See [changelog.md](changelog.md).
+
+## Material editor
+
+`qr_light_editor_start` turns the view over to a free camera; the player stands where he stood.
+Aim with the crosshair — a face under it is picked out by an outline — and fire to select it and
+open the material panel on the right edge of the screen. The panel edits the `materials.yaml`
+parameters of the picked texture, every animation frame of it at once (medkits, blinking buttons),
+and the change is on screen the next frame: geometry and emissive lights are re-derived each frame.
+
+* `WASD` + mouse: fly; `Shift`: faster; jump / movedown: up / down; `~`: console; `Esc`: exit.
+* `Apply` — writes all materials back to the `materials/*.yaml` files they were loaded from
+  (newly created materials go to `materials/materials.yaml`).
+* `Cancel` — reverts the live materials to the values the files hold.
+* `Exit` (or `qr_light_editor_stop`) — closes the editor, restores the player's view, discards
+  whatever was not applied.
+* The panel owns the mouse while open: sliders with editable values, checkboxes, hex colour
+  fields with an inline colour editor, texture path fields with a file dialog, and a scrollbar.
+* Written files win only over the loose files on disk: a `materials.yaml` packed into a mounted
+  `.pkz` is read in preference to the written one, so keep the runtime materials loose while
+  editing.
 
 ## Build
 

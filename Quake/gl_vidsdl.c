@@ -28,6 +28,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "bgmusic.h"
 #include "palette.h"
 #include "rt_material.h"
+#include "qr_editor.h"
 #include "SDL.h"
 #include "SDL_syswm.h"
 #include <time.h> // for the timestamp of the frame rt_stats_dump appends
@@ -1489,6 +1490,8 @@ static void GL_InitInstance (void)
 	RG_CHECK (r);
 
 	RT_MAT_Init ();
+
+	QR_Editor_Init (); // qr light editor console commands
 
 	Cmd_AddCommand ("rt_pfnreloadshaders", RT_ReloadShaders);
 	Cmd_AddCommand ("rt_water_color", RT_WaterColor);

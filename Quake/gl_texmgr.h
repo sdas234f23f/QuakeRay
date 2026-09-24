@@ -143,4 +143,10 @@ void TexMgr_ReloadAllImages (void);
 void TexMgr_RT_SpecialStart (float default_rough, float default_metallic);
 void TexMgr_RT_SpecialEnd (void);
 
+// RT: live material editor support. Reloads every texture whose material (as resolved
+// by RT_MAT_Find from glt->name) is the named one, re-running the full material
+// synthesis (base + glow/luma sidecar where present) so that edits to materials.yaml
+// data become visible without a map reload. Returns the number of reloaded textures.
+int TexMgr_ReloadImagesForMaterial (const char *materialName);
+
 #endif /* _GL_TEXMAN_H */

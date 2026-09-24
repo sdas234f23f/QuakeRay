@@ -27,6 +27,9 @@ enum {
 
 typedef struct rt_material_s {
     char name[MAX_QPATH];
+    /* The materials/*.yaml file this material was loaded from ("materials/materials.yaml",
+       "materials/<map>.yaml", ...). Empty for materials created by the editor at runtime. */
+    char source_file[MAX_QPATH];
     char filename_base[MAX_QPATH];
     char filename_normals[MAX_QPATH];
     char filename_emissive[MAX_QPATH];
@@ -69,6 +72,30 @@ void RT_MAT_ChangeMap(const char *mapname);
 void RT_MAT_Reload(void);
 
 rt_material_t *RT_MAT_Find(const char *name);
+
+/* Editor support: the live material lists and their provenance. */
+
+enum {
+    RT_MAT_LIST_GLOBAL = 0, /* every materials/*.yaml file (dir scan + pkz) */
+    RT_MAT_LIST_MAP    = 1, /* materials/<map>.yaml for the current map only */
+};
+
+/* Returns the live array of the requested list. The editor edits these structs in
+   place and snapshots them for Cancel. */
+rt_material_t *RT_MAT_GetList(int which, int *outCount);
+
+/* Normalizes a texture name the way RT_MAT_Find would ("maps/x.bsp:name" and bare
+   names become "textures/name", extension stripped, lowercased). */
+void RT_MAT_NormalizeName(const char *name, char *out, size_t outsize);
+
+/* Appends a copy of mat to the global list; returns its index or -1 when full. */
+int RT_MAT_AppendGlobal(const rt_material_t *mat);
+
+/* The current map name ("" when none), as loaded by RT_MAT_ChangeMap. */
+const char *RT_MAT_CurrentMap(void);
+
+/* Name of a kind value ("REGULAR", "CHROME", ...); NULL for unknown. */
+const char *RT_MAT_KindName(int kind);
 
 enum {
     RT_MAT_TEX_BASE,

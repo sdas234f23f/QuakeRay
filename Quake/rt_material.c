@@ -529,6 +529,7 @@ static int rt_mat_load_yaml_file(const char *file_name, rt_material_t *dest, int
 
                     if (have_name)
                     {
+                        q_strlcpy(dest->source_file, file_name, sizeof(dest->source_file));
                         dest++;
                         count++;
                     }
@@ -698,6 +699,11 @@ static void rt_mat_normalize_name(const char *name, char *out, size_t outsize)
     q_strlwr(out);
 }
 
+void RT_MAT_NormalizeName(const char *name, char *out, size_t outsize)
+{
+    rt_mat_normalize_name(name, out, outsize);
+}
+
 static rt_material_t *rt_mat_find_in(const char *name, rt_material_t *first, int count)
 {
     char n[MAX_QPATH];
@@ -749,6 +755,52 @@ rt_material_t *RT_MAT_Find(const char *name)
         return m;
     }
     return rt_mat_find_in(name, rt_global_materials, rt_global_count);
+}
+
+rt_material_t *RT_MAT_GetList(int which, int *outCount)
+{
+    if (which == RT_MAT_LIST_MAP)
+    {
+        if (outCount)
+            *outCount = rt_map_count;
+        return rt_map_materials;
+    }
+
+    if (outCount)
+        *outCount = rt_global_count;
+    return rt_global_materials;
+}
+
+int RT_MAT_AppendGlobal(const rt_material_t *mat)
+{
+    if (!rt_initialized || rt_global_count >= RT_MAT_MAX_GLOBAL)
+        return -1;
+
+    rt_global_materials[rt_global_count] = *mat;
+    return rt_global_count++;
+}
+
+const char *RT_MAT_CurrentMap(void)
+{
+    return rt_current_map;
+}
+
+const char *RT_MAT_KindName(int kind)
+{
+    switch (kind)
+    {
+        case RT_MAT_KIND_REGULAR:   return "REGULAR";
+        case RT_MAT_KIND_CHROME:    return "CHROME";
+        case RT_MAT_KIND_WATER:     return "WATER";
+        case RT_MAT_KIND_LAVA:      return "LAVA";
+        case RT_MAT_KIND_SLIME:     return "SLIME";
+        case RT_MAT_KIND_GLASS:     return "GLASS";
+        case RT_MAT_KIND_SKY:       return "SKY";
+        case RT_MAT_KIND_INVISIBLE: return "INVISIBLE";
+        case RT_MAT_KIND_SCREEN:    return "SCREEN";
+        case RT_MAT_KIND_CAMERA:    return "CAMERA";
+        default:                    return NULL;
+    }
 }
 
 qboolean RT_MAT_Enabled(void)
