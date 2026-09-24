@@ -50,15 +50,19 @@ constexpr uint32_t CLOUDS_SIDE_SIZES[vkpt::RenderCubemap::QUALITY_LEVELS] = { 25
 // that column standing above each height of the layer, so that the sky can ask what
 // the sun still crosses to reach a point inside it (CloudShadowMap.h). It is what
 // the volumetric sun shafts are gated through as well, so its texels are what the
-// edge of a cloud's shadow is drawn with. A level doubles the texels a side over
-// the same CLOUD_SHADOW_EXTENT metres of ground -- four times the volume, and four
-// times the march filling it -- from a texel every four metres at the bottom of the
-// ladder to one every metre at the top. The finest texels stop paying for
-// themselves where they are finer than the cone a cloud's light was walked through
-// (CLOUD_LIGHT_CONE), which is why the middle levels share a size and so do the two
-// above them: what a finer texel would buy there is drawn soft anyway, and every
-// texel costs four slices of two bytes.
-constexpr uint32_t CLOUD_SHADOW_SIZES[vkpt::RenderCubemap::QUALITY_LEVELS] = { 1024, 2048, 2048, 4096, 4096 };
+// edge of a cloud's shadow is drawn with.
+//
+// How fine a texel has to be is set by the cone a cloud's light is walked through
+// and not by the eye: every tap of the column is spread sideways around the sun by
+// CLOUD_LIGHT_CONE over the distance it has travelled, which is tens of world units
+// near the base of the layer and a couple of hundred at its top, so the tau the
+// volume holds has no detail finer than that and a texel of five or six units
+// already samples it tens of times per feature. A level doubles the texels a side
+// over the same CLOUD_SHADOW_EXTENT metres of ground -- four times the volume, and
+// four times the march filling it, which is the dearest pass the layer has -- from
+// a texel every eight metres at the bottom of the ladder to one every two metres at
+// the top, and four slices of two bytes per texel of memory.
+constexpr uint32_t CLOUD_SHADOW_SIZES[vkpt::RenderCubemap::QUALITY_LEVELS] = { 512, 1024, 1024, 2048, 2048 };
 
 // The slices the volume holds over the height of the layer, the base of the layer
 // in the first and the sky above it in the last (CmCloudShadow.comp fills as many,
@@ -68,6 +72,13 @@ constexpr uint32_t CLOUD_SHADOW_SIZES[vkpt::RenderCubemap::QUALITY_LEVELS] = { 1
 // a step.
 constexpr uint32_t CLOUD_SHADOW_SLICES = 4;
 constexpr float    CLOUD_SHADOW_EXTENT = 4000.0f;
+
+// How far the eye may walk over the volume's window before the map is filled again
+// for it, in texels of the map (UpdateCloudShadow). The window follows the eye, but
+// what the map holds is keyed to the world rather than to the eye, so it is worth
+// filling again when the eye has left a good part of a row of it behind, not on
+// every texel of the way.
+constexpr uint32_t CLOUD_SHADOW_WINDOW_STEP = 8;
 
 // The map is redrawn when the eye has moved a texel over it, and at least this
 // often whatever the eye does: the clouds drift on their own, and a stale map
@@ -1617,14 +1628,22 @@ void vkpt::RenderCubemap::UpdateCloudShadow(VkCommandBuffer cmd, const Procedura
     const float extent = CLOUD_SHADOW_EXTENT;
     const float texelSize = extent / float(cloudShadowSize);
 
-    // The map is laid out over the world's horizontal plane around the eye,
-    // snapped to whole texels: an eye that has not moved a texel over the map keeps
-    // the map it has, and when it has, the redrawn map still puts a texel where it
-    // was.
+    // The map is laid out over the world's horizontal plane around the eye. What a
+    // texel of it holds is the cloud over the spot it stands on, which does not
+    // change as the eye walks -- the map follows the eye only to keep its coverage
+    // around it -- so it is redrawn when the eye has left a row of texels of that
+    // coverage behind it rather than on every texel of the way. The window is still
+    // snapped to whole texels of its own grid, and that grid is the world's, so a
+    // texel of a redrawn map stands where it stood before and reads the same cloud.
+    // Every texel of that coverage is a texel the fill has to walk, so this is what
+    // the cost of the map is while the eye is walking: at thirty metres a second and
+    // a texel of two metres, one fill every eight texels of the way is a fill every
+    // half second where the map was filled again on every frame of it.
+    const float windowStep = texelSize * float(CLOUD_SHADOW_WINDOW_STEP);
     const float anchor[2] =
     {
-        floorf((cameraPos[0] - extent * 0.5f) / texelSize) * texelSize,
-        floorf((cameraPos[1] - extent * 0.5f) / texelSize) * texelSize,
+        floorf((cameraPos[0] - extent * 0.5f) / windowStep) * windowStep,
+        floorf((cameraPos[1] - extent * 0.5f) / windowStep) * windowStep,
     };
 
     const auto differs = [](float a, float b) { return fabsf(a - b) > 1.0e-4f; };

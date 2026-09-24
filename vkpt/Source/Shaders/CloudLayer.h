@@ -77,7 +77,15 @@ const int CLOUD_SUN_STEPS_MAX = 64;
 // number for the same column, or the edge of the volume stands in the light of the
 // clouds as a square over the sky, so the count lives here rather than in a pass or
 // in the host.
-const int CLOUD_SHADOW_STEPS = 16;
+//
+// Eight of them, because this walk is the dearest thing the layer does: the sky pays
+// for it at every step of its own march that lands in a cloud, and the volume pays
+// for it at every texel of every slice it is filled with. A tap of this walk is
+// spread sideways around the sun by CLOUD_LIGHT_CONE over the distance it travelled
+// -- tens of world units near the base of the layer and a couple of hundred at its
+// top -- so a step of it is shorter than the blur it is under, and a finer walk than
+// this one is the same cloud walked twice.
+const int CLOUD_SHADOW_STEPS = 8;
 
 // The steps of the sequences the taps of a march are spread by, taken from the
 // golden ratio: successive taps land in different parts of the stretch they stand

@@ -105,6 +105,17 @@ const float CLOUD_MAX_MARCH_SPAN = 12.0;
 const int CLOUD_UPDATE_QUARTERS = 2;
 const int CLOUD_UPDATE_FRAMES = CLOUD_UPDATE_QUARTERS * CLOUD_UPDATE_QUARTERS;
 
+// The quarter a frame marches is taken in square tiles of this many texels a side
+// rather than in a checkerboard of single texels. Both cover a quarter of the map
+// and both rotate through the four frames, but the two paths of this pass -- the
+// march and the copy -- diverge at the texel, and a warp of a checkerboard holds a
+// quarter of its lanes on the march and three quarters on the copy: it runs both
+// paths, so the march, which is what this pass costs, is paid for four times over.
+// A tile of one whole local group (16 texels) puts every warp of the dispatch on
+// one path or the other; what the copy reads around a marched tile is the same
+// kind of neighbourhood a checkerboard left it.
+const int CLOUD_UPDATE_TILE = 16;
+
 // Henyey-Greenstein, normalized so that isotropic scattering gives 1.
 float henyeyGreenstein(float mu, float g)
 {
@@ -198,8 +209,8 @@ void main()
     }
 
     const bool marched = wholeMap ||
-        ((ipos.x % CLOUD_UPDATE_QUARTERS) == (quarter % CLOUD_UPDATE_QUARTERS) &&
-         (ipos.y % CLOUD_UPDATE_QUARTERS) == (quarter / CLOUD_UPDATE_QUARTERS));
+        (((ipos.x / CLOUD_UPDATE_TILE) % CLOUD_UPDATE_QUARTERS) == (quarter % CLOUD_UPDATE_QUARTERS) &&
+         ((ipos.y / CLOUD_UPDATE_TILE) % CLOUD_UPDATE_QUARTERS) == (quarter / CLOUD_UPDATE_QUARTERS));
 
     int face = ipos.z;
     vec3 right   = params.faceBasis[face * 3 + 0].xyz;
