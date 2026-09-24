@@ -105,18 +105,9 @@ const float CLOUD_MAX_MARCH_SPAN = 12.0;
 const int CLOUD_UPDATE_QUARTERS = 2;
 const int CLOUD_UPDATE_FRAMES = CLOUD_UPDATE_QUARTERS * CLOUD_UPDATE_QUARTERS;
 
-// The quarter a frame marches is taken in pairs of rows of texels, a quarter of
-// them apart around the cycle, rather than in single texels. The two paths of this
-// pass -- the march and the copy of the frame before -- diverge at the texel, and a
-// warp of the dispatch is two rows of sixteen texels: taken in single texels a warp
-// holds a quarter of its lanes on each path and runs both, which is the march, the
-// dearest thing in the pass, run four times over, while a pair of rows is exactly
-// one warp and puts every warp of the dispatch on one path or the other. What a
-// pattern of the kind leaves behind is the age of a texel against its neighbour's,
-// and that is a dither of two rows here -- a pixel of the map at the top of the
-// ladder. A tile of the whole local group would leave a square of the age of one
-// frame against another's, which is the mark the eye picks out of a cloud.
-const int CLOUD_UPDATE_ROWS = 2;
+// How a frame's quarter of the map is handed out to the invocations of the dispatch:
+// as runs of them rather than by the texel's own place. See main(), where the run a
+// warp lands in decides whether it marches or copies.
 
 // Henyey-Greenstein, normalized so that isotropic scattering gives 1.
 float henyeyGreenstein(float mu, float g)
@@ -186,8 +177,8 @@ float cloudSunTauFromMap(CloudLayer layer, vec3 p, vec3 sunDir, out float blend)
 
 void main()
 {
-    ivec3 ipos = ivec3(gl_GlobalInvocationID);
-    ivec2 size = imageSize(cloudCubemapOut).xy;
+    const ivec3 gid = ivec3(gl_GlobalInvocationID);
+    const ivec2 size = imageSize(cloudCubemapOut).xy;
 
     // The whole map is dispatched every frame, and a quarter of it is marched: the
     // texels of the other three quarters are read back from the frame before and put
@@ -205,16 +196,40 @@ void main()
     const bool wholeMap = packedUpdate >= CLOUD_UPDATE_FRAMES;
     const int  quarter = wholeMap ? 0 : packedUpdate;
 
+    // Which texel this invocation is for, and which of the two things it does with it.
+    //
+    // The quarter a frame marches is a parity class of texels -- every other one along
+    // each axis, four classes for the four frames -- and the classes are handed out to
+    // the invocations in runs here rather than by the texel's own place: the first
+    // quarter of the invocations, one run after another, marches the class this frame
+    // is for, and the three quarters behind it copy the other three. What that is for
+    // is that a warp of the dispatch is thirty-two invocations in a row and the two
+    // paths of this pass, the march and the copy, diverge at the texel: handed out by
+    // texel, a warp would hold a quarter of its lanes on the march and three quarters
+    // on the copy and run both, which is the march, the dearest thing in the pass, run
+    // four times over. Handed out in runs, every warp is wholly on one path.
+    //
+    // What the pattern leaves behind the eye is the age of a texel against its
+    // neighbour's, and a parity class is the finest dither there is: one texel against
+    // one. A tile of the map leaves the same age in squares and a run of rows leaves it
+    // in stripes, both of which the eye finds in a cloud, the thicker the coarser the
+    // map is -- and the light a copy carries is the light of the cloud under the angle
+    // the eye had when it was marched, which is not the angle now.
+    const ivec2 clsSide  = size / 2;                // the side of one class of texels
+    const int   perClass = clsSide.x * clsSide.y;
+    const int   index    = gid.x + gid.y * size.x;  // this invocation's place in the dispatch
+    const int   cls      = index / perClass;        // 0 is the class this frame marches
+    const int   rem      = index - cls * perClass;  // this invocation's place in its class
+    const int   parity   = (quarter + cls) & 3;
+    const ivec2 local    = ivec2(rem % clsSide.x, rem / clsSide.x);
+    const ivec3 ipos     = ivec3(local * 2 + ivec2(parity & 1, parity >> 1), gid.z);
+
     if (ipos.x >= size.x || ipos.y >= size.y || ipos.z >= 6)
     {
         return;
     }
 
-    // The quarter this frame marches: the pairs of rows of texels whose index is
-    // this one modulo the four frames, and nothing along x, because a warp of the
-    // dispatch spans a whole row of sixteen texels (CLOUD_UPDATE_ROWS above).
-    const bool marched = wholeMap ||
-        (((ipos.y / CLOUD_UPDATE_ROWS) % CLOUD_UPDATE_FRAMES) == (quarter % CLOUD_UPDATE_FRAMES));
+    const bool marched = wholeMap || cls == 0;
 
     int face = ipos.z;
     vec3 right   = params.faceBasis[face * 3 + 0].xyz;
