@@ -94,11 +94,10 @@ static RgMaterialCreateFlags TexMgr_GetRtFlags (gltexture_t *glt)
 		fs |= RG_MATERIAL_CREATE_DYNAMIC_SAMPLER_FILTER_BIT;
 	}
 
-	// The editor re-synthesizes a material in place through
-	// rgUpdateMaterialContents (see texmgr_keep_material): the texture indices
-	// already baked into the uploaded static world must stay valid, because the
-	// world is uploaded once per map.
-	fs |= RG_MATERIAL_CREATE_UPDATEABLE_BIT;
+	if (glt->source_format == SRC_LIGHTMAP)
+	{
+		fs |= RG_MATERIAL_CREATE_UPDATEABLE_BIT;
+	}
 
 	return fs;
 }
@@ -119,13 +118,6 @@ static RgSamplerFilter TexMgr_GetFilterMode (gltexture_t *glt)
 }
 
 static SDL_mutex *rtspecial_mutex;
-
-/* Live material editing (qr light editor): while this is set, the load path
-   keeps the existing RgMaterial handle and re-synthesizes its textures in
-   place instead of destroying it and creating a new one. The texture indices
-   baked into the uploaded static world then stay valid — the world is uploaded
-   once per map, so a new handle would leave every surface of it untextured. */
-static qboolean texmgr_keep_material = false;
 
 static THREAD_LOCAL qboolean     rtspecial_started;
 static THREAD_LOCAL qboolean     rtspecial_foundfullbright = false;
@@ -1063,17 +1055,10 @@ static void TexMgr_LoadImage32 (gltexture_t *glt, unsigned *data)
 
 	if (!rtspecial_started)
 	{
-		if (texmgr_keep_material && glt->rtmaterial != RG_NO_MATERIAL)
-		{
-			/* the material is re-synthesized in place by TexMgr_ApplyMaterialFromMat */
-		}
-		else
-		{
-			SDL_LockMutex (rtspecial_mutex);
-			RgResult r = rgCreateMaterial (vulkan_globals.instance, &info, &glt->rtmaterial);
-			RG_CHECK (r);
-			SDL_UnlockMutex (rtspecial_mutex);
-		}
+		SDL_LockMutex (rtspecial_mutex);
+	    RgResult r = rgCreateMaterial (vulkan_globals.instance, &info, &glt->rtmaterial);
+	    RG_CHECK (r);
+		SDL_UnlockMutex (rtspecial_mutex);
 	}
 	else
 	{
@@ -1432,38 +1417,6 @@ static qboolean TexMgr_ApplyMaterialFromMat (gltexture_t *glt, unsigned *albedoF
 
 	RgMaterial oldMaterial = glt->rtmaterial;
 	RgMaterial newMaterial = RG_NULL_HANDLE;
-
-	/* Live editing (texmgr_keep_material): update the existing material in
-	   place. The handle then keeps its index, and the texture indices already
-	   baked into the uploaded static world stay valid. */
-	if (texmgr_keep_material && oldMaterial != RG_NO_MATERIAL)
-	{
-		RgMaterialUpdateInfo uinfo = {
-			.target = oldMaterial,
-			.textures =
-				{
-					.pDataAlbedoAlpha = albedo,
-					.pDataRoughnessMetallicEmission = rme,
-					.pDataNormal = normal,
-				},
-		};
-
-		SDL_LockMutex (rtspecial_mutex);
-		RgResult ur = rgUpdateMaterialContents (vulkan_globals.instance, &uinfo);
-		SDL_UnlockMutex (rtspecial_mutex);
-
-		if (ur == RG_SUCCESS)
-		{
-			Mem_Free (albedo);
-			Mem_Free (rme);
-			Mem_Free (normal);
-			return true;
-		}
-
-		/* fall back to the create/destroy swap below when the update is
-		   refused (an in-flight resource, an unexpected format) */
-	}
-
 	SDL_LockMutex (rtspecial_mutex);
 	RgResult r = rgCreateMaterial (vulkan_globals.instance, &info, &newMaterial);
 	SDL_UnlockMutex (rtspecial_mutex);
@@ -1906,14 +1859,9 @@ int TexMgr_ReloadImagesForMaterial (const char *materialName)
 {
 	gltexture_t *glt, *fullbright;
 	int          count = 0;
-	qboolean     prev_keep;
 
 	if (!materialName || !materialName[0])
 		return 0;
-
-	/* Re-synthesized in place: the uploaded static world holds the handles. */
-	prev_keep = texmgr_keep_material;
-	texmgr_keep_material = true;
 
 	for (glt = active_gltextures; glt; glt = glt->next)
 	{
@@ -1946,8 +1894,6 @@ int TexMgr_ReloadImagesForMaterial (const char *materialName)
 		count++;
 	}
 
-	texmgr_keep_material = prev_keep;
-
 	return count;
 }
 
@@ -1968,7 +1914,7 @@ static void GL_DeleteTexture (gltexture_t *texture)
 {
 	SDL_LockMutex (texmgr_mutex);
 
-	if (texture->rtmaterial != RG_NO_MATERIAL && !texmgr_keep_material)
+	if (texture->rtmaterial != RG_NO_MATERIAL)
 	{
 		RgResult r = rgDestroyMaterial (vulkan_globals.instance, texture->rtmaterial);
 		RG_CHECK (r);

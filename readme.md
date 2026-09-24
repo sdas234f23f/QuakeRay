@@ -45,10 +45,10 @@ See [changelog.md](changelog.md).
 Aim with the crosshair — a face under it is picked out by an outline — and fire to select it and
 open the material panel on the right edge of the screen. The panel edits the `materials.yaml`
 parameters of the picked texture, every animation frame of it at once (medkits, blinking buttons),
-and the change is on screen the next frame: the material's textures are re-synthesized in place, so
-the world keeps the texture indices it was uploaded with, and the world's emissive lights are
-re-collected from the new state. While the editor runs the game HUD is hidden; the hints, the
-crosshair and the panel are drawn by Dear ImGui.
+and the change is on screen the same frame: the material is re-synthesized and the traced world —
+which bakes a material's texture indices when it is uploaded — is asked to re-upload itself, lights
+included. While the editor runs the game HUD is hidden; the hints, the crosshair and the panel are
+drawn by Dear ImGui.
 
 * `WASD` + mouse: fly; `Shift`: faster; jump / movedown: up / down; `~`: console; `Esc`: exit.
 * `Apply` — writes all materials back to the `materials/*.yaml` files they were loaded from

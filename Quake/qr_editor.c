@@ -12,13 +12,13 @@
 // view to the player.
 //
 // Editing model: the editor mutates the live rt_material_t structs and
-// re-synthesizes the affected textures in place — TexMgr_ReloadImagesForMaterial
-// keeps the RgMaterial handle and updates its textures through
-// rgUpdateMaterialContents, because the uploaded static world holds that handle
-// and its texture indices (a new handle would leave every world surface
-// untextured). The world's emissive lights are then re-collected from the new
-// texture state. A full snapshot of both material lists is taken on start (and
-// re-taken after Apply) so Cancel/Exit can restore the yaml state.
+// re-synthesizes the affected textures (TexMgr_ReloadImagesForMaterial). That
+// replaces the material's RgMaterial, and the traced world bakes a material's
+// texture indices when it is uploaded, so after a batch of edits the world is
+// asked to re-upload itself — the rt_require_static_submit mechanism the light
+// style cvar already uses — which also re-collects its emissive lights. A full
+// snapshot of both material lists is taken on start (and re-taken after Apply)
+// so Cancel/Exit can restore the yaml state.
 
 #include "quakedef.h"
 #include "glquake.h"
@@ -33,6 +33,7 @@
 #include "mathlib.h"
 #include "input.h"
 #include "vid.h"
+#include "atomics.h"
 
 #include "SDL.h"
 
@@ -53,6 +54,7 @@
 extern vec3_t     vpn, vright, vup, r_origin; // gl_rmain.c
 extern qboolean   keydown[MAX_KEYS];          // keys.c
 extern kbutton_t  in_forward, in_back, in_moveleft, in_moveright, in_up, in_down; // cl_input.c
+extern atomic_uint32_t rt_require_static_submit; // gl_rmain.c
 
 // ---------------------------------------------------------------------------
 // Parameters
@@ -312,10 +314,10 @@ static void QRE_MarkDirty (rt_material_t *m)
 	}
 }
 
-// Re-synthesizes every dirty material. The materials are updated in place
-// (TexMgr_ReloadImagesForMaterial), so nothing needs re-uploading on the
-// renderer side; the world's emissive lights are re-collected from the new
-// gltexture state instead.
+// Re-synthesizes every dirty material and asks the renderer to re-upload the
+// static world: the material handles changed, and the world bakes their texture
+// indices at upload time. R_DrawWorldTask then re-uploads the world (and
+// re-collects its emissive lights) on the next frame.
 static void QRE_FlushDirty (void)
 {
 	static double last_flush = 0.0;
@@ -325,8 +327,9 @@ static void QRE_FlushDirty (void)
 	if (qre.dirty_count == 0)
 		return;
 
-	// While a widget is being dragged the re-synthesis runs per frame; throttle
-	// it then, and apply at once when the drag is over.
+	// While a widget is being dragged the re-synthesis (and the world upload
+	// behind it) runs per frame; throttle it then, and apply at once when the
+	// drag is over.
 	if (QR_GUI_Ready () && QR_GUI_AnyItemActive () && (now - last_flush) < 0.25)
 		return;
 
@@ -336,7 +339,7 @@ static void QRE_FlushDirty (void)
 		TexMgr_ReloadImagesForMaterial (qre.dirty[i]);
 	qre.dirty_count = 0;
 
-	RT_RecollectWorldEmissiveLights ();
+	Atomic_StoreUInt32 (&rt_require_static_submit, true);
 }
 
 static void QRE_ReapplyTouched (void)
@@ -350,7 +353,7 @@ static void QRE_ReapplyTouched (void)
 	}
 	qre.touched_count = 0;
 
-	RT_RecollectWorldEmissiveLights ();
+	Atomic_StoreUInt32 (&rt_require_static_submit, true);
 }
 
 // A material created by the editor becomes part of the live global list on the
@@ -1009,6 +1012,11 @@ void QR_Editor_UpdateView (void)
 
 	VectorCopy (qre.cam_origin, r_refdef.vieworg);
 	VectorCopy (cl.viewangles, r_refdef.viewangles);
+
+	// Before the frame renders: a re-synthesis replaces the material handles,
+	// and the world's static upload (R_DrawWorldTask) runs later in this frame,
+	// so the re-upload the flush asks for happens in the same frame.
+	QRE_FlushDirty ();
 }
 
 // ---------------------------------------------------------------------------
@@ -1219,6 +1227,8 @@ static void QRE_Frame (void)
 	if (!qre.panel_open)
 		QRE_DoPick (false);
 
+	// the normal path flushes before the render (QR_Editor_UpdateView); this
+	// covers the frames in which V_CalcRefdef does not run (paused, intermission)
 	QRE_FlushDirty ();
 }
 

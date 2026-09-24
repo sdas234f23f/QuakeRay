@@ -2383,26 +2383,6 @@ static void RT_CollectWorldEmissiveLights (void)
 	}
 }
 
-/*
-================
-RT_RecollectWorldEmissiveLights
-
-Rebuilds the world's emissive light list from the current gltexture state
-without re-uploading the world geometry (the qr light editor calls it after a
-material was re-synthesized in place, so edits of is_light / light_color /
-light_brightness / the emissive mask reach the lights of the next frame).
-================
-*/
-void RT_RecollectWorldEmissiveLights (void)
-{
-	rt_wldlights_emissive_count = 0;
-	/* The list is about to be collected again, so the cached reach answers for
-	   the old entries are void. */
-	rt_wldlights_style_accepted_dirty = true;
-
-	RT_CollectWorldEmissiveLights ();
-}
-
 #define RT_BRUSHCLUSTER_CACHE_SIZE 256
 
 typedef struct
