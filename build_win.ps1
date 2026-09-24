@@ -39,6 +39,24 @@ foreach ($line in $envLines) {
     }
 }
 
+# Git writes to stderr when a patch does not apply, and with $ErrorActionPreference = 'Stop' a native
+# command's stderr terminates the script before $LASTEXITCODE can be looked at - so the patch calls run
+# through this helper, which relaxes the preference for their duration and reports through the exit code.
+function Invoke-GitQuietly([string[]]$Arguments)
+{
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try
+    {
+        & git @Arguments *> $null
+        return $LASTEXITCODE
+    }
+    finally
+    {
+        $ErrorActionPreference = $previous
+    }
+}
+
 # The NVRHI pin needs one local change - the binding-layout limit raised to 16 for the ray-tracing
 # pipeline - which the repository carries as third_party/nvrhi-max-binding-layouts.patch. The patch is
 # applied for the duration of this build and removed again before the script ends, so the checked-out
@@ -50,15 +68,16 @@ $nvrhiPatchedHere = $false
 
 if ((Test-Path $nvrhiPatch) -and (Test-Path (Join-Path $nvrhiDir "include\nvrhi\nvrhi.h")))
 {
-    & git -C $nvrhiDir apply --check --reverse $nvrhiPatch 2>$null
-    if ($LASTEXITCODE -eq 0)
+    if ((Invoke-GitQuietly @("-C", $nvrhiDir, "apply", "--check", "--reverse", $nvrhiPatch)) -eq 0)
     {
         Write-Host "NVRHI patch is already applied, leaving it in place" -ForegroundColor Yellow
     }
     else
     {
-        & git -C $nvrhiDir apply $nvrhiPatch
-        if ($LASTEXITCODE -ne 0) { throw "Failed to apply $nvrhiPatch to third_party/nvrhi." }
+        if ((Invoke-GitQuietly @("-C", $nvrhiDir, "apply", $nvrhiPatch)) -ne 0)
+        {
+            throw "Failed to apply $nvrhiPatch to third_party/nvrhi."
+        }
         $nvrhiPatchedHere = $true
         Write-Host "Applied the NVRHI patch for this build" -ForegroundColor Yellow
     }
@@ -81,8 +100,10 @@ if ($exitCode -ne 0)
 {
     if ($nvrhiPatchedHere)
     {
-        & git -C $nvrhiDir apply --reverse $nvrhiPatch
-        if ($LASTEXITCODE -eq 0) { Write-Host "Reverted the NVRHI patch" -ForegroundColor Yellow }
+        if ((Invoke-GitQuietly @("-C", $nvrhiDir, "apply", "--reverse", $nvrhiPatch)) -eq 0)
+        {
+            Write-Host "Reverted the NVRHI patch" -ForegroundColor Yellow
+        }
     }
     exit $exitCode
 }
@@ -119,8 +140,10 @@ if ($LASTEXITCODE -ne 0) { $exitCode = $LASTEXITCODE }
 
 if ($nvrhiPatchedHere)
 {
-    & git -C $nvrhiDir apply --reverse $nvrhiPatch
-    if ($LASTEXITCODE -ne 0) { throw "Could not revert $nvrhiPatch; third_party/nvrhi is left patched." }
+    if ((Invoke-GitQuietly @("-C", $nvrhiDir, "apply", "--reverse", $nvrhiPatch)) -ne 0)
+    {
+        throw "Could not revert $nvrhiPatch; third_party/nvrhi is left patched."
+    }
     Write-Host "Reverted the NVRHI patch, third_party/nvrhi is clean again" -ForegroundColor Yellow
 }
 
