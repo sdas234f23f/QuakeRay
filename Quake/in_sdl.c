@@ -120,6 +120,25 @@ void IN_Deactivate (qboolean free_cursor)
 	IN_BeginIgnoringMouseEvents ();
 }
 
+// qr light editor: the ImGui panel needs the cursor free AND the motion events
+// (its backend takes the mouse position from SDL_MOUSEMOTION), so the
+// "ignore mouse events" filter of IN_Deactivate must not be armed.
+void IN_FreeCursorForGui (void)
+{
+	if (no_mouse)
+		return;
+
+	if (SDL_SetRelativeMouseMode (SDL_FALSE) != 0)
+	{
+		Con_Printf ("WARNING: SDL_SetRelativeMouseMode(SDL_FALSE) failed.\n");
+	}
+
+	IN_EndIgnoringMouseEvents ();
+
+	total_dx = 0;
+	total_dy = 0;
+}
+
 void IN_StartupJoystick (void)
 {
 	int                 i;

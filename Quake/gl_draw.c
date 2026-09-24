@@ -952,68 +952,6 @@ void Draw_Fill (cb_context_t *cbx, int x, int y, int w, int h, int c, float alph
 
 /*
 ================
-Draw_FillRGBA
-
-Fills a box with an arbitrary RGBA color (0..1 per channel), unlike Draw_Fill
-which is limited to the Quake palette. Used by the qr light editor panel.
-================
-*/
-void Draw_FillRGBA (cb_context_t *cbx, int x, int y, int w, int h, const float rgba[4])
-{
-	RgVertex vertices[6];
-	{
-		RgVertex corner_verts[4] = {0};
-
-		corner_verts[0].position[0] = x;
-		corner_verts[0].position[1] = y;
-		corner_verts[0].packedColor = RT_PACKED_COLOR_WHITE;
-
-		corner_verts[1].position[0] = x + w;
-		corner_verts[1].position[1] = y;
-		corner_verts[1].packedColor = RT_PACKED_COLOR_WHITE;
-
-		corner_verts[2].position[0] = x + w;
-		corner_verts[2].position[1] = y + h;
-		corner_verts[2].packedColor = RT_PACKED_COLOR_WHITE;
-
-		corner_verts[3].position[0] = x;
-		corner_verts[3].position[1] = y + h;
-		corner_verts[3].packedColor = RT_PACKED_COLOR_WHITE;
-
-		vertices[0] = corner_verts[0];
-		vertices[1] = corner_verts[1];
-		vertices[2] = corner_verts[2];
-		vertices[3] = corner_verts[2];
-		vertices[4] = corner_verts[3];
-		vertices[5] = corner_verts[0];
-	}
-
-	RgRasterizedGeometryUploadInfo info = {
-		.renderType = RG_RASTERIZED_GEOMETRY_RENDER_TYPE_SWAPCHAIN,
-		.vertexCount = countof (vertices),
-		.pVertices = vertices,
-		.indexCount = 0,
-		.pIndices = NULL,
-		.transform = RT_TRANSFORM_IDENTITY,
-		.color =
-			{
-				rgba[0],
-				rgba[1],
-				rgba[2],
-				rgba[3],
-			},
-		.material = RG_NO_MATERIAL,
-		.pipelineState = RG_RASTERIZED_GEOMETRY_STATE_BLEND_ENABLE,
-		.blendFuncSrc = RG_BLEND_FACTOR_SRC_ALPHA,
-		.blendFuncDst = RG_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
-	};
-
-	RgResult r = rgUploadRasterizedGeometry (vulkan_globals.instance, &info, cbx->cur_viewprojection, &cbx->cur_viewport);
-	RG_CHECK (r);
-}
-
-/*
-================
 Draw_FadeScreen
 ================
 */
@@ -1155,12 +1093,6 @@ void GL_SetCanvas (cb_context_t *cbx, canvastype newcanvas)
 		s = CLAMP (1.0, scr_menuscale.value, s);
 		GL_OrthoMatrix (cbx, 0, 640, 200, 0, -99999, 99999);
 		GL_Viewport (cbx, glx + (glwidth - 320 * s) / 2, gly + (glheight - 200 * s) / 2, 640 * s, 200 * s, 0.0f, 1.0f);
-		break;
-	case CANVAS_EDITOR:
-		// Same scale as CANVAS_MENU but the full screen: 640 units across,
-		// so the panel columns and the 8x8 glyphs keep their menu size.
-		GL_OrthoMatrix (cbx, 0, 640, (float)glheight * 640.0f / (float)glwidth, 0, -99999, 99999);
-		GL_Viewport (cbx, glx, gly, glwidth, glheight, 0.0f, 1.0f);
 		break;
 	case CANVAS_CSQC:
 		s = CLAMP (1.0, scr_sbarscale.value, (float)glwidth / 320.0);

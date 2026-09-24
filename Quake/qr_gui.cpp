@@ -553,3 +553,49 @@ int QR_GUI_Section (const char *label, int default_open)
 
 	return ImGui::CollapsingHeader (label, flags) ? 1 : 0;
 }
+
+void QR_GUI_DrawCrosshair (void)
+{
+	ImDrawList  *dl = ImGui::GetForegroundDrawList ();
+	const ImVec2 c (ImGui::GetIO ().DisplaySize.x * 0.5f, ImGui::GetIO ().DisplaySize.y * 0.5f);
+
+	const float  gap = 4.0f;
+	const float  len = 7.0f;
+	const float  th  = 1.6f;
+	const ImU32  shadow = IM_COL32 (0, 0, 0, 130);
+	const ImU32  col = IM_COL32 (255, 255, 255, 225);
+
+	const ImVec2 a0 (c.x - gap - len, c.y), a1 (c.x - gap, c.y);
+	const ImVec2 b0 (c.x + gap, c.y), b1 (c.x + gap + len, c.y);
+	const ImVec2 c0 (c.x, c.y - gap - len), c1 (c.x, c.y - gap);
+	const ImVec2 d0 (c.x, c.y + gap), d1 (c.x, c.y + gap + len);
+
+	dl->AddLine (a0, a1, shadow, th + 2.0f);
+	dl->AddLine (b0, b1, shadow, th + 2.0f);
+	dl->AddLine (c0, c1, shadow, th + 2.0f);
+	dl->AddLine (d0, d1, shadow, th + 2.0f);
+
+	dl->AddLine (a0, a1, col, th);
+	dl->AddLine (b0, b1, col, th);
+	dl->AddLine (c0, c1, col, th);
+	dl->AddLine (d0, d1, col, th);
+}
+
+void QR_GUI_DrawHint (const char *const *lines, int count)
+{
+	ImDrawList *dl = ImGui::GetForegroundDrawList ();
+
+	const float pad = 14.0f;
+	const float line_height = ImGui::GetTextLineHeight () + 3.0f;
+	ImVec2      pos (pad, ImGui::GetIO ().DisplaySize.y - pad - line_height * (float)count);
+
+	for (int i = 0; i < count; i++)
+	{
+		const ImU32 col = (i == 0) ? IM_COL32 (140, 205, 255, 235) : IM_COL32 (228, 234, 244, 220);
+
+		dl->AddText (ImVec2 (pos.x + 1.0f, pos.y + 1.0f), IM_COL32 (0, 0, 0, 160), lines[i]);
+		dl->AddText (pos, col, lines[i]);
+
+		pos.y += line_height;
+	}
+}

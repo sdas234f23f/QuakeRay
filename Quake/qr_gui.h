@@ -75,6 +75,13 @@ int  QR_GUI_ColorHex (const char *label, float rgb[3], int *enabled);
 // Returns nonzero while the section is open.
 int  QR_GUI_Section (const char *label, int default_open);
 
+// ----- the flying-mode overlay -----
+
+// A small modern crosshair in the centre of the display.
+void QR_GUI_DrawCrosshair (void);
+// Hint lines in the bottom-left corner, drawn with a soft shadow.
+void QR_GUI_DrawHint (const char *const *lines, int count);
+
 #ifdef __cplusplus
 }
 #endif

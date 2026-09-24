@@ -24,7 +24,6 @@
 #include "gl_heap.h"
 #include "rt_material.h"
 #include "keys.h"
-#include "draw.h"
 #include "client.h"
 #include "world.h"
 #include "console.h"
@@ -183,22 +182,6 @@ static qboolean QRE_BrowseTexture (char *out, size_t outsize);
 // ---------------------------------------------------------------------------
 // Small helpers
 // ---------------------------------------------------------------------------
-
-static float QRE_CanvasHeight (void)
-{
-	return 640.0f * (float)glheight / (float)glwidth;
-}
-
-static RgFloat4D QRE_Rgba (float r, float g, float b, float a)
-{
-	RgFloat4D c;
-
-	c.data[0] = r;
-	c.data[1] = g;
-	c.data[2] = b;
-	c.data[3] = a;
-	return c;
-}
 
 // "textures/+3_med25" -> 3, "textures/_med25" -> -1 (not an animation frame)
 static int QRE_FrameDigit (const char *name)
@@ -765,8 +748,9 @@ static void QRE_DoPick (qboolean select)
 
 	qre.panel_open = true;
 
-	// the panel owns the mouse: free the cursor, freeze the camera
-	IN_Deactivate (true);
+	// the panel owns the mouse: free the cursor (keeping its motion events
+	// for ImGui), freeze the camera
+	IN_FreeCursorForGui ();
 	SDL_ShowCursor (SDL_DISABLE);
 	QR_GUI_SetMouseCursor (1);
 }
@@ -777,15 +761,14 @@ static void QRE_DoPick (qboolean select)
 
 static void QRE_EmitOutline (qmodel_t *model, msurface_t *surf, uint32_t color)
 {
-	const float nudge = 0.35f;
 	vec3_t    *verts = NULL;
 	int        n = 0;
 	int        i, vi, ii;
 	RgVertex  *rv;
 	uint32_t  *ri;
 
-	// the face outline from the BSP edge list, or the polygon when the face
-	// has no edges (should not happen for regular faces)
+	// The face outline from the BSP edge list, or the polygon when the face
+	// has no edges (should not happen for regular faces).
 	if (surf->numedges > 0)
 	{
 		n = surf->numedges;
@@ -815,22 +798,38 @@ static void QRE_EmitOutline (qmodel_t *model, msurface_t *surf, uint32_t color)
 	rv = (RgVertex *)RT_AllocScratchMemoryNulled ((size_t)n * sizeof (RgVertex));
 	ri = (uint32_t *)RT_AllocScratchMemoryNulled ((size_t)n * 2 * sizeof (uint32_t));
 
-	vi = 0;
-	ii = 0;
-	for (i = 0; i < n; i++)
+	// Nudge the outline off the face towards the viewer: the plane normal of a
+	// SURF_PLANEBACK face points away from its visible side, and pushing the
+	// line behind the wall would lose it to the depth of the traced surface.
 	{
-		VectorMA (verts[i], nudge, surf->plane->normal, rv[vi].position);
-		rv[vi].packedColor = color;
-		vi++;
+		vec3_t to_view;
+		float  nudge = 0.35f;
+
+		VectorSubtract (r_origin, verts[0], to_view);
+		if (DotProduct (to_view, surf->plane->normal) < 0.0f)
+			nudge = -nudge;
+
+		for (i = 0; i < n; i++)
+		{
+			VectorMA (verts[i], nudge, surf->plane->normal, rv[i].position);
+			rv[i].packedColor = color;
+		}
 	}
+
+	vi = n;
+	ii = 0;
 	for (i = 0; i < n; i++)
 	{
 		ri[ii++] = (uint32_t)i;
 		ri[ii++] = (uint32_t)((i + 1) % n);
 	}
 
+	// The swapchain render type is the overlay path the engine's own 2D and the
+	// ImGui panel use: the lines go over the finished frame, projected with the
+	// frame's camera matrices (NULL view projection), and there is no depth
+	// buffer to lose them to.
 	RgRasterizedGeometryUploadInfo info = {
-		.renderType = RG_RASTERIZED_GEOMETRY_RENDER_TYPE_DEFAULT,
+		.renderType = RG_RASTERIZED_GEOMETRY_RENDER_TYPE_SWAPCHAIN,
 		.vertexCount = (uint32_t)vi,
 		.pVertices = rv,
 		.indexCount = (uint32_t)ii,
@@ -838,7 +837,7 @@ static void QRE_EmitOutline (qmodel_t *model, msurface_t *surf, uint32_t color)
 		.transform = RT_TRANSFORM_IDENTITY,
 		.color = RT_COLOR_WHITE,
 		.material = RG_NO_MATERIAL,
-		.pipelineState = RG_RASTERIZED_GEOMETRY_STATE_FORCE_LINE_LIST | RG_RASTERIZED_GEOMETRY_STATE_DEPTH_TEST,
+		.pipelineState = RG_RASTERIZED_GEOMETRY_STATE_FORCE_LINE_LIST,
 		.blendFuncSrc = 0,
 		.blendFuncDst = 0,
 	};
@@ -1054,16 +1053,17 @@ static void QRE_BuildPanelGUI (void)
 		QRE_StopEditor (true);
 }
 
-static void QRE_DrawFlyingHint (cb_context_t *cbx)
+static void QRE_BuildFlyingOverlay (void)
 {
-	const RgFloat4D c = QRE_Rgba (0.8f, 0.85f, 0.9f, 0.9f);
-	const float H = QRE_CanvasHeight ();
+	static const char *const lines[] = {
+		"QR LIGHT EDITOR",
+		"LMB - select the face under the crosshair",
+		"WASD + mouse - fly    Shift - faster    jump/movedown - up/down",
+		"Esc - exit the editor    ~ - console",
+	};
 
-	GL_SetCanvas (cbx, CANVAS_EDITOR);
-	Draw_StringScaled (cbx, 8, (int)(H - 46), "qr light editor", 1.0f, &c);
-	Draw_StringScaled (cbx, 8, (int)(H - 36), "LMB: select face under crosshair", 1.0f, &c);
-	Draw_StringScaled (cbx, 8, (int)(H - 26), "WASD + mouse: fly    Shift: faster    jump/movedown: up/down", 1.0f, &c);
-	Draw_StringScaled (cbx, 8, (int)(H - 16), "ESC: exit editor    ~: console", 1.0f, &c);
+	QR_GUI_DrawHint (lines, (int)countof (lines));
+	QR_GUI_DrawCrosshair ();
 }
 
 // ---------------------------------------------------------------------------
@@ -1088,22 +1088,22 @@ static void QRE_Frame (void)
 
 void QR_Editor_DrawPanel (cb_context_t *cbx)
 {
+	(void)cbx;
+
 	if (!qre.active)
 		return;
 
 	QRE_Frame ();
 
-	if (!qre.panel_open)
-	{
-		QRE_DrawFlyingHint (cbx);
-		return;
-	}
-
-	// SCR_UpdateScreen can run more than once per host frame
+	// The whole editor interface is ImGui: the panel, the crosshair and the
+	// hints. SCR_UpdateScreen can run more than once per host frame.
 	if (!QR_GUI_BeginFrame ((unsigned int)host_framecount, (float)host_frametime, glx, gly, glwidth, glheight, vid.height))
 		return;
 
-	QRE_BuildPanelGUI ();
+	if (qre.panel_open)
+		QRE_BuildPanelGUI ();
+	else
+		QRE_BuildFlyingOverlay ();
 
 	QR_GUI_EndFrame ();
 }

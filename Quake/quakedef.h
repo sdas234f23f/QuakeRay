@@ -253,7 +253,6 @@ typedef enum
 	CANVAS_CSQC,
 	CANVAS_SBAR_MINIMAL_BOTTOMLEFT,
 	CANVAS_SBAR_MINIMAL_BOTTOMRIGHT,
-	CANVAS_EDITOR, // qr light editor panel: 640 units wide, full screen height
 	CANVAS_INVALID = -1
 } canvastype;
 

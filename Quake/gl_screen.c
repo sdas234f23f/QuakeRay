@@ -1249,20 +1249,30 @@ static void SCR_DrawGUI (void *unused)
 	}
 	else
 	{
-		SCR_DrawCrosshair (cbx); // johnfitz
-		SCR_DrawNet (cbx);
-		SCR_DrawTurtle (cbx);
-		SCR_DrawPause (cbx);
-		SCR_CheckDrawCenterString (cbx);
-		Sbar_Draw (cbx);
-		SCR_DrawDevStats (cbx); // johnfitz
-		SCR_DrawFPS (cbx);      // johnfitz
-		const int stats_y = SCR_DrawRTStats (cbx);
-		SCR_DrawRTProf (cbx, 8, stats_y);
-		SCR_DrawClock (cbx);    // johnfitz
-		SCR_DrawConsole (cbx);
-		M_Draw (cbx);
-		QR_Editor_DrawPanel (cbx); // qr light editor
+		// qr light editor: while it is active the whole interface belongs to it
+		// (ImGui draws the panel, the hints and the crosshair); only the console
+		// stays, being the way the editor is driven as well.
+		if (QR_Editor_Active ())
+		{
+			SCR_DrawConsole (cbx);
+			QR_Editor_DrawPanel (cbx);
+		}
+		else
+		{
+			SCR_DrawCrosshair (cbx); // johnfitz
+			SCR_DrawNet (cbx);
+			SCR_DrawTurtle (cbx);
+			SCR_DrawPause (cbx);
+			SCR_CheckDrawCenterString (cbx);
+			Sbar_Draw (cbx);
+			SCR_DrawDevStats (cbx); // johnfitz
+			SCR_DrawFPS (cbx);      // johnfitz
+			const int stats_y = SCR_DrawRTStats (cbx);
+			SCR_DrawRTProf (cbx, 8, stats_y);
+			SCR_DrawClock (cbx);    // johnfitz
+			SCR_DrawConsole (cbx);
+			M_Draw (cbx);
+		}
 	}
 	R_EndDebugUtilsLabel (cbx);
 }
