@@ -1386,7 +1386,10 @@ static const char *qre_yaml_header =
 	"#     exponentially to black towards the threshold, so the glow fades out\n"
 	"#     softly instead of ending in a hard edge. `emissive_factor` scales the\n"
 	"#     result. Combine with `is_light: true` to also cast light (otherwise the\n"
-	"#     surface only glows).\n"
+	"#     surface only glows):\n"
+	"#     e.g.  - name: textures/foo\n"
+	"#             color_emissive: ff0000\n"
+	"#             is_light: true\n"
 	"# Precedence: an authored `texture_emissive` always wins -- while the key is\n"
 	"# present in an entry, `color_emissive` in that same entry is ignored\n"
 	"# entirely (even if the luma file fails to load, which is reported at\n"
@@ -1405,7 +1408,10 @@ static const char *qre_yaml_header =
 	"#   5 - divide (emission acts as a darkener)\n"
 	"# Intended for emissive *mirrored* surfaces (stained glass, lit windows):\n"
 	"# they read as washed out in the default mode, while the additive mode keeps\n"
-	"# them bright and saturated.\n";
+	"# them bright and saturated.\n"
+	"#     e.g.  - name: textures/window01_1\n"
+	"#             mirror: true\n"
+	"#             emissive_blend: 2\n";
 
 static void QRE_WriteColor (FILE *f, const char *key, const vec3_t rgb)
 {
@@ -1643,7 +1649,7 @@ static qboolean QRE_BrowseTexture (char *out, size_t outsize)
 	memset (&ofn, 0, sizeof (ofn));
 	result[0] = '\0';
 	ofn.lStructSize = sizeof (ofn);
-	ofn.lpstrFilter = "Images (*.png;*.tga;*.jpg;*.jpeg;*.ktx2)\0*.png;*.tga;*.jpg;*.jpeg;*.ktx2\0All files (*.*)\0*.*\0";
+	ofn.lpstrFilter = "Images (*.png;*.tga;*.jpg;*.jpeg)\0*.png;*.tga;*.jpg;*.jpeg\0All files (*.*)\0*.*\0";
 	ofn.lpstrFile = result;
 	ofn.nMaxFile = sizeof (result);
 	ofn.lpstrInitialDir = initdir;
@@ -1652,18 +1658,26 @@ static qboolean QRE_BrowseTexture (char *out, size_t outsize)
 	if (!GetOpenFileNameA (&ofn))
 		return false;
 
-	// relativize against the gamedir and normalize the separators
-	glen = strlen (com_gamedir);
-	if (!q_strncasecmp (result, com_gamedir, glen) && (result[glen] == '/' || result[glen] == '\\'))
-		q_strlcpy (out, result + glen + 1, outsize);
-	else
-		q_strlcpy (out, result, outsize);
-
-	for (i = 0; out[i]; i++)
+	// The dialog returns backslashes while com_gamedir may carry forward
+	// slashes: normalize before comparing, and store forward slashes.
+	for (i = 0; result[i]; i++)
 	{
-		if (out[i] == '\\')
-			out[i] = '/';
+		if (result[i] == '\\')
+			result[i] = '/';
 	}
+
+	glen = strlen (com_gamedir);
+	if (!q_strncasecmp (result, com_gamedir, glen) && result[glen] == '/')
+	{
+		q_strlcpy (out, result + glen + 1, outsize);
+	}
+	else
+	{
+		// outside the gamedir the material loader cannot find the file
+		QRE_Notify ("the texture must be inside %s", com_gamedir);
+		q_strlcpy (out, result, outsize);
+	}
+
 	return true;
 }
 #else
