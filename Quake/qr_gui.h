@@ -75,6 +75,18 @@ int  QR_GUI_ColorHex (const char *label, float rgb[3], int *enabled);
 // Returns nonzero while the section is open.
 int  QR_GUI_Section (const char *label, int default_open);
 
+// ID scope for the widgets of one material (animation frames share the same
+// parameter names, so their widgets would collide without it).
+void QR_GUI_PushID (const char *id);
+void QR_GUI_PopID (void);
+
+// 1 while any ImGui item is being dragged or edited.
+int  QR_GUI_AnyItemActive (void);
+
+// A short message shown in the corner of the editor interface (Apply/Cancel
+// confirmations, errors). Fades out on its own.
+void QR_GUI_Notify (const char *text);
+
 // ----- the flying-mode overlay -----
 
 // A small modern crosshair in the centre of the display.

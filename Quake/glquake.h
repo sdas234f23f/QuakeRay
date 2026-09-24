@@ -614,7 +614,9 @@ int RT_GetEntityUniqueId (const entity_t *ent);
 
 RgTransform RT_GetModelTransform (const float model_matrix[16]);
 RgTransform RT_GetBrushModelMatrix (entity_t *e);
-
+// Rebuilds the world's emissive light list from the current gltexture state,
+// without re-uploading the world geometry (used by the qr light editor).
+void      RT_RecollectWorldEmissiveLights (void);
 RgFloat3D RT_AnglesToDir (/* const */ vec3_t angles);
 float     RT_Luminance (const vec3_t color);
 

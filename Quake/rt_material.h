@@ -11,6 +11,13 @@
 
 #define RT_MAT_EMIS_BLEND_MAX 5
 
+/* Capacities of the live material lists: RT_MAT_GetList returns arrays of
+   these sizes, and a snapshot of the lists must be allocated for them. */
+enum {
+    RT_MAT_CAP_GLOBAL = 4096,
+    RT_MAT_CAP_MAP    = 1024,
+};
+
 enum {
     RT_MAT_KIND_INVALID    = 0,
     RT_MAT_KIND_REGULAR    = 1,
@@ -90,6 +97,10 @@ void RT_MAT_NormalizeName(const char *name, char *out, size_t outsize);
 
 /* Appends a copy of mat to the global list; returns its index or -1 when full. */
 int RT_MAT_AppendGlobal(const rt_material_t *mat);
+
+/* Restores the list lengths (the editor truncates what it appended before
+   Cancel/Exit). Counts are clamped to the array capacities. */
+void RT_MAT_SetListCounts(int globalCount, int mapCount);
 
 /* The current map name ("" when none), as loaded by RT_MAT_ChangeMap. */
 const char *RT_MAT_CurrentMap(void);

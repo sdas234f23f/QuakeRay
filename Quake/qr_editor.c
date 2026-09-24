@@ -12,10 +12,13 @@
 // view to the player.
 //
 // Editing model: the editor mutates the live rt_material_t structs and
-// re-synthesizes the affected textures (TexMgr_ReloadImagesForMaterial); world
-// geometry and emissive lights are re-uploaded every frame, so the change is
-// visible immediately. A full snapshot of both material lists is taken on
-// start (and re-taken after Apply) so Cancel/Exit can restore the yaml state.
+// re-synthesizes the affected textures in place — TexMgr_ReloadImagesForMaterial
+// keeps the RgMaterial handle and updates its textures through
+// rgUpdateMaterialContents, because the uploaded static world holds that handle
+// and its texture indices (a new handle would leave every world surface
+// untextured). The world's emissive lights are then re-collected from the new
+// texture state. A full snapshot of both material lists is taken on start (and
+// re-taken after Apply) so Cancel/Exit can restore the yaml state.
 
 #include "quakedef.h"
 #include "glquake.h"
@@ -45,6 +48,7 @@
 
 #include <ctype.h>
 #include <math.h>
+#include <stdarg.h>
 
 extern vec3_t     vpn, vright, vup, r_origin; // gl_rmain.c
 extern qboolean   keydown[MAX_KEYS];          // keys.c
@@ -133,8 +137,8 @@ static const struct qre_param_s
 // ---------------------------------------------------------------------------
 
 #define QRE_GROUP_MAX    12
-#define QRE_DIRTY_MAX    16
-#define QRE_TOUCHED_MAX  128
+#define QRE_DIRTY_MAX    64
+#define QRE_TOUCHED_MAX  512
 
 static struct
 {
@@ -144,11 +148,14 @@ static struct
 	vec3_t cam_origin;
 	vec3_t player_viewangles;
 
-	// the picked / hovered face (hover is updated while flying)
+	// the picked / hovered face (hover is updated while flying); ent is NULL
+	// for a world face and the brush entity for a model face
 	qmodel_t   *pick_model;
 	msurface_t *pick_surf;
+	entity_t   *pick_ent;
 	qmodel_t   *hover_model;
 	msurface_t *hover_surf;
+	entity_t   *hover_ent;
 
 	// the material group (animation frames) shown by the panel
 	rt_material_t *group[QRE_GROUP_MAX];
@@ -210,6 +217,20 @@ static qboolean QRE_NameInGroup (const char *matname, const char *groupbase)
 	return !strcmp (base, groupbase);
 }
 
+// Editor feedback goes to the ImGui notification line and to the console log.
+static void QRE_Notify (const char *fmt, ...)
+{
+	char    buf[256];
+	va_list ap;
+
+	va_start (ap, fmt);
+	vsnprintf (buf, sizeof (buf), fmt, ap);
+	va_end (ap);
+
+	QR_GUI_Notify (buf);
+	Con_Printf ("qr editor: %s\n", buf);
+}
+
 // ---------------------------------------------------------------------------
 // Material snapshot (for Cancel/Exit)
 // ---------------------------------------------------------------------------
@@ -221,13 +242,13 @@ static void QRE_TakeSnapshot (void)
 	RT_MAT_GetList (RT_MAT_LIST_GLOBAL, &count);
 	qre.snap_global_count = count;
 	if (!qre.snap_global)
-		qre.snap_global = (rt_material_t *)Mem_Alloc (4096 * sizeof (rt_material_t));
+		qre.snap_global = (rt_material_t *)Mem_Alloc (RT_MAT_CAP_GLOBAL * sizeof (rt_material_t));
 	memcpy (qre.snap_global, RT_MAT_GetList (RT_MAT_LIST_GLOBAL, NULL), (size_t)count * sizeof (rt_material_t));
 
 	RT_MAT_GetList (RT_MAT_LIST_MAP, &count);
 	qre.snap_map_count = count;
 	if (!qre.snap_map)
-		qre.snap_map = (rt_material_t *)Mem_Alloc (1024 * sizeof (rt_material_t));
+		qre.snap_map = (rt_material_t *)Mem_Alloc (RT_MAT_CAP_MAP * sizeof (rt_material_t));
 	memcpy (qre.snap_map, RT_MAT_GetList (RT_MAT_LIST_MAP, NULL), (size_t)count * sizeof (rt_material_t));
 }
 
@@ -235,6 +256,10 @@ static void QRE_RestoreSnapshot (void)
 {
 	memcpy (RT_MAT_GetList (RT_MAT_LIST_GLOBAL, NULL), qre.snap_global, (size_t)qre.snap_global_count * sizeof (rt_material_t));
 	memcpy (RT_MAT_GetList (RT_MAT_LIST_MAP, NULL), qre.snap_map, (size_t)qre.snap_map_count * sizeof (rt_material_t));
+
+	// The lists may have grown since the snapshot (a material the editor
+	// created); the lengths are part of what a snapshot restores.
+	RT_MAT_SetListCounts (qre.snap_global_count, qre.snap_map_count);
 }
 
 static void QRE_FreeSnapshot (void)
@@ -265,28 +290,53 @@ static qboolean QRE_NameInList (const char (*list)[MAX_QPATH], int count, const 
 
 static void QRE_MarkDirty (rt_material_t *m)
 {
+	static qboolean warned = false;
+
 	if (!m || !m->name[0])
 		return;
 
-	if (!QRE_NameInList (qre.touched, qre.touched_count, m->name) && qre.touched_count < QRE_TOUCHED_MAX)
-		q_strlcpy (qre.touched[qre.touched_count++], m->name, MAX_QPATH);
+	if (!QRE_NameInList (qre.touched, qre.touched_count, m->name))
+	{
+		if (qre.touched_count < QRE_TOUCHED_MAX)
+			q_strlcpy (qre.touched[qre.touched_count++], m->name, MAX_QPATH);
+		else if (!warned)
+			QRE_Notify ("too many materials edited at once; some will not be re-applied");
+	}
 
-	if (!QRE_NameInList (qre.dirty, qre.dirty_count, m->name) && qre.dirty_count < QRE_DIRTY_MAX)
-		q_strlcpy (qre.dirty[qre.dirty_count++], m->name, MAX_QPATH);
+	if (!QRE_NameInList (qre.dirty, qre.dirty_count, m->name))
+	{
+		if (qre.dirty_count < QRE_DIRTY_MAX)
+			q_strlcpy (qre.dirty[qre.dirty_count++], m->name, MAX_QPATH);
+		else
+			warned = true;
+	}
 }
 
+// Re-synthesizes every dirty material. The materials are updated in place
+// (TexMgr_ReloadImagesForMaterial), so nothing needs re-uploading on the
+// renderer side; the world's emissive lights are re-collected from the new
+// gltexture state instead.
 static void QRE_FlushDirty (void)
 {
-	int flushed = 0;
+	static double last_flush = 0.0;
+	double        now = Sys_DoubleTime ();
+	int           i;
 
-	while (qre.dirty_count > 0 && flushed < 2)
-	{
-		char name[MAX_QPATH];
+	if (qre.dirty_count == 0)
+		return;
 
-		q_strlcpy (name, qre.dirty[--qre.dirty_count], sizeof (name));
-		TexMgr_ReloadImagesForMaterial (name);
-		flushed++;
-	}
+	// While a widget is being dragged the re-synthesis runs per frame; throttle
+	// it then, and apply at once when the drag is over.
+	if (QR_GUI_Ready () && QR_GUI_AnyItemActive () && (now - last_flush) < 0.25)
+		return;
+
+	last_flush = now;
+
+	for (i = 0; i < qre.dirty_count; i++)
+		TexMgr_ReloadImagesForMaterial (qre.dirty[i]);
+	qre.dirty_count = 0;
+
+	RT_RecollectWorldEmissiveLights ();
 }
 
 static void QRE_ReapplyTouched (void)
@@ -299,6 +349,8 @@ static void QRE_ReapplyTouched (void)
 		TexMgr_ReloadImagesForMaterial (qre.touched[i]);
 	}
 	qre.touched_count = 0;
+
+	RT_RecollectWorldEmissiveLights ();
 }
 
 // A material created by the editor becomes part of the live global list on the
@@ -605,13 +657,32 @@ static qboolean QRE_PointInPolygon (const glpoly_t *poly, const vec3_t p, const 
 	return inside != 0;
 }
 
+// World -> model space for a rigid brush transform (rotation R, translation t):
+// local = R^T * (world - t).
+static void QRE_WorldToModel (const RgTransform *transform, const vec3_t world, vec3_t out)
+{
+	vec3_t d;
+	int    i;
+
+	for (i = 0; i < 3; i++)
+		d[i] = world[i] - transform->matrix[i][3];
+
+	for (i = 0; i < 3; i++)
+		out[i] = transform->matrix[0][i] * d[0] + transform->matrix[1][i] * d[1] + transform->matrix[2][i] * d[2];
+}
+
 // Finds the surface of a model whose face contains the impact point. Coplanar
 // faces are told apart by a polygon test; the nearest plane is the fallback.
-static msurface_t *QRE_FindSurface (qmodel_t *model, const vec3_t impact)
+// The impact is world space, while a brush entity's planes and polygons are in
+// its model space, so the point is transformed first (identity for the world).
+static msurface_t *QRE_FindSurface (qmodel_t *model, const vec3_t impact, const RgTransform *transform)
 {
+	vec3_t      local;
 	int         i;
 	msurface_t *best = NULL;
 	float       bestd = 1.0f;
+
+	QRE_WorldToModel (transform, impact, local);
 
 	for (i = 0; i < model->nummodelsurfaces; i++)
 	{
@@ -624,13 +695,13 @@ static msurface_t *QRE_FindSurface (qmodel_t *model, const vec3_t impact)
 		if (s->flags & (SURF_DRAWSKY | SURF_NOTEXTURE))
 			continue;
 
-		d = DotProduct (s->plane->normal, impact) - s->plane->dist;
+		d = DotProduct (s->plane->normal, local) - s->plane->dist;
 		if (fabsf (d) > 1.0f)
 			continue;
 
 		for (p = s->polys; p; p = p->next)
 		{
-			if (QRE_PointInPolygon (p, impact, s->plane))
+			if (QRE_PointInPolygon (p, local, s->plane))
 				return s;
 		}
 
@@ -644,12 +715,13 @@ static msurface_t *QRE_FindSurface (qmodel_t *model, const vec3_t impact)
 	return best;
 }
 
-static qboolean QRE_TracePick (qmodel_t **out_model, msurface_t **out_surf, gltexture_t **out_glt)
+static qboolean QRE_TracePick (qmodel_t **out_model, msurface_t **out_surf, entity_t **out_ent, gltexture_t **out_glt)
 {
 	vec3_t    start, end;
 	trace_t   tr;
 	float     best = 1.0f;
 	qmodel_t *bestmodel = NULL;
+	entity_t *bestent = NULL;
 	vec3_t    bestimpact = { 0, 0, 0 };
 
 	if (!cl.worldmodel)
@@ -673,16 +745,19 @@ static qboolean QRE_TracePick (qmodel_t **out_model, msurface_t **out_surf, glte
 		VectorCopy (tr.endpos, bestimpact);
 	}
 
-	// brush entities (health boxes, buttons, doors, ...)
+	// brush entities (health boxes, buttons, doors, ...); their traces are in
+	// world space, their model data is not (RT_GetBrushModelMatrix below)
 	{
 		vec3_t eimpact, enorm;
 		int    entnum;
 		float  f = CL_TraceLine (start, end, eimpact, enorm, &entnum);
 
-		if (f < best && entnum >= 0 && entnum < MAX_EDICTS && cl.entities[entnum].model)
+		if (f < best && entnum >= 0 && entnum < MAX_EDICTS &&
+		    cl.entities[entnum].model && cl.entities[entnum].model != cl.worldmodel)
 		{
 			best = f;
-			bestmodel = cl.entities[entnum].model;
+			bestent = &cl.entities[entnum];
+			bestmodel = bestent->model;
 			VectorCopy (eimpact, bestimpact);
 		}
 	}
@@ -690,11 +765,17 @@ static qboolean QRE_TracePick (qmodel_t **out_model, msurface_t **out_surf, glte
 	if (!bestmodel)
 		return false;
 
-	*out_surf = QRE_FindSurface (bestmodel, bestimpact);
+	{
+		RgTransform transform = RT_GetBrushModelMatrix (bestent);
+
+		*out_surf = QRE_FindSurface (bestmodel, bestimpact, &transform);
+	}
 	if (!*out_surf)
 		return false;
 
 	*out_model = bestmodel;
+	if (out_ent)
+		*out_ent = bestent;
 	if (out_glt)
 		*out_glt = (*out_surf)->texinfo->texture->gltexture;
 	return true;
@@ -705,12 +786,14 @@ static void QRE_DoPick (qboolean select)
 {
 	qmodel_t    *model;
 	msurface_t  *surf;
+	entity_t    *ent;
 	gltexture_t *glt;
 
-	if (!QRE_TracePick (&model, &surf, &glt))
+	if (!QRE_TracePick (&model, &surf, &ent, &glt))
 	{
 		qre.hover_model = NULL;
 		qre.hover_surf = NULL;
+		qre.hover_ent = NULL;
 		return;
 	}
 
@@ -718,6 +801,7 @@ static void QRE_DoPick (qboolean select)
 	{
 		qre.hover_model = model;
 		qre.hover_surf = surf;
+		qre.hover_ent = ent;
 		return;
 	}
 
@@ -725,14 +809,16 @@ static void QRE_DoPick (qboolean select)
 		return;
 	if (!QR_GUI_Ready ())
 	{
-		Con_Printf ("qr editor: the ImGui panel is not available\n");
+		QRE_Notify ("the ImGui panel is not available");
 		return;
 	}
 
 	qre.pick_model = model;
 	qre.pick_surf = surf;
+	qre.pick_ent = ent;
 	qre.hover_model = NULL;
 	qre.hover_surf = NULL;
+	qre.hover_ent = NULL;
 
 	{
 		char texname[MAX_QPATH];
@@ -759,20 +845,43 @@ static void QRE_DoPick (qboolean select)
 // Selection outline
 // ---------------------------------------------------------------------------
 
-static void QRE_EmitOutline (qmodel_t *model, msurface_t *surf, uint32_t color)
+static void QRE_EmitOutline (qmodel_t *model, msurface_t *surf, entity_t *ent, uint32_t color)
 {
-	vec3_t    *verts = NULL;
-	int        n = 0;
-	int        i, vi, ii;
-	RgVertex  *rv;
-	uint32_t  *ri;
+	RgTransform transform = RT_GetBrushModelMatrix (ent);
+	vec3_t     *verts;
+	RgVertex   *rv;
+	uint32_t   *ri;
+	byte       *block;
+	size_t      verts_bytes, rv_bytes, ri_bytes;
+	int         n = 0;
+	int         i, j;
+	vec3_t      n_world, to_view, first;
+	float       nudge = 0.35f;
 
 	// The face outline from the BSP edge list, or the polygon when the face
 	// has no edges (should not happen for regular faces).
 	if (surf->numedges > 0)
-	{
 		n = surf->numedges;
-		verts = (vec3_t *)RT_AllocScratchMemoryNulled ((size_t)n * sizeof (vec3_t));
+	else if (surf->polys && surf->polys->numverts > 0)
+		n = surf->polys->numverts;
+
+	if (n < 3)
+		return;
+
+	// One scratch allocation for all three arrays: the allocator hands out a
+	// single shared buffer, so overlapping allocations would zero or free each
+	// other's memory.
+	verts_bytes = (size_t)n * sizeof (vec3_t);
+	rv_bytes    = (size_t)n * sizeof (RgVertex);
+	ri_bytes    = (size_t)n * 2 * sizeof (uint32_t);
+
+	block = (byte *)RT_AllocScratchMemoryNulled (verts_bytes + rv_bytes + ri_bytes);
+	verts = (vec3_t *)block;
+	rv    = (RgVertex *)(block + verts_bytes);
+	ri    = (uint32_t *)(block + verts_bytes + rv_bytes);
+
+	if (surf->numedges > 0)
+	{
 		for (i = 0; i < n; i++)
 		{
 			int e = model->surfedges[surf->firstedge + i];
@@ -782,46 +891,49 @@ static void QRE_EmitOutline (qmodel_t *model, msurface_t *surf, uint32_t color)
 				VectorCopy (model->vertexes[model->edges[-e].v[1]].position, verts[i]);
 		}
 	}
-	else if (surf->polys && surf->polys->numverts > 0)
+	else
 	{
 		glpoly_t *p = surf->polys;
 
-		n = p->numverts;
-		verts = (vec3_t *)RT_AllocScratchMemoryNulled ((size_t)n * sizeof (vec3_t));
 		for (i = 0; i < n; i++)
 			VectorCopy (p->verts[i], verts[i]);
 	}
 
-	if (!verts || n < 3)
-		return;
-
-	rv = (RgVertex *)RT_AllocScratchMemoryNulled ((size_t)n * sizeof (RgVertex));
-	ri = (uint32_t *)RT_AllocScratchMemoryNulled ((size_t)n * 2 * sizeof (uint32_t));
+	// The face plane in world space: n_world = R * n (identity for the world).
+	for (j = 0; j < 3; j++)
+		n_world[j] = transform.matrix[0][j] * surf->plane->normal[0]
+		           + transform.matrix[1][j] * surf->plane->normal[1]
+		           + transform.matrix[2][j] * surf->plane->normal[2];
 
 	// Nudge the outline off the face towards the viewer: the plane normal of a
 	// SURF_PLANEBACK face points away from its visible side, and pushing the
-	// line behind the wall would lose it to the depth of the traced surface.
-	{
-		vec3_t to_view;
-		float  nudge = 0.35f;
+	// line behind the wall would lose it to the traced surface.
+	for (j = 0; j < 3; j++)
+		first[j] = transform.matrix[0][j] * verts[0][0]
+		         + transform.matrix[1][j] * verts[0][1]
+		         + transform.matrix[2][j] * verts[0][2]
+		         + transform.matrix[j][3];
+	VectorSubtract (r_origin, first, to_view);
+	if (DotProduct (to_view, n_world) < 0.0f)
+		nudge = -nudge;
 
-		VectorSubtract (r_origin, verts[0], to_view);
-		if (DotProduct (to_view, surf->plane->normal) < 0.0f)
-			nudge = -nudge;
-
-		for (i = 0; i < n; i++)
-		{
-			VectorMA (verts[i], nudge, surf->plane->normal, rv[i].position);
-			rv[i].packedColor = color;
-		}
-	}
-
-	vi = n;
-	ii = 0;
+	// Model -> world (a brush entity carries its own transform), then off the
+	// face; the vertices are uploaded in world space.
 	for (i = 0; i < n; i++)
 	{
-		ri[ii++] = (uint32_t)i;
-		ri[ii++] = (uint32_t)((i + 1) % n);
+		for (j = 0; j < 3; j++)
+			rv[i].position[j] = transform.matrix[0][j] * verts[i][0]
+			                  + transform.matrix[1][j] * verts[i][1]
+			                  + transform.matrix[2][j] * verts[i][2]
+			                  + transform.matrix[j][3]
+			                  + nudge * n_world[j];
+		rv[i].packedColor = color;
+	}
+
+	for (i = 0; i < n; i++)
+	{
+		ri[i * 2 + 0] = (uint32_t)i;
+		ri[i * 2 + 1] = (uint32_t)((i + 1) % n);
 	}
 
 	// The swapchain render type is the overlay path the engine's own 2D and the
@@ -830,9 +942,9 @@ static void QRE_EmitOutline (qmodel_t *model, msurface_t *surf, uint32_t color)
 	// buffer to lose them to.
 	RgRasterizedGeometryUploadInfo info = {
 		.renderType = RG_RASTERIZED_GEOMETRY_RENDER_TYPE_SWAPCHAIN,
-		.vertexCount = (uint32_t)vi,
+		.vertexCount = (uint32_t)n,
 		.pVertices = rv,
-		.indexCount = (uint32_t)ii,
+		.indexCount = (uint32_t)(n * 2),
 		.pIndices = ri,
 		.transform = RT_TRANSFORM_IDENTITY,
 		.color = RT_COLOR_WHITE,
@@ -855,11 +967,11 @@ void QR_Editor_DrawSelection (cb_context_t *cbx)
 
 	if (qre.panel_open && qre.pick_surf)
 	{
-		QRE_EmitOutline (qre.pick_model, qre.pick_surf, RT_PackColorToUint32 (255, 255, 255, 255));
+		QRE_EmitOutline (qre.pick_model, qre.pick_surf, qre.pick_ent, RT_PackColorToUint32 (255, 255, 255, 255));
 	}
 	else if (!qre.panel_open && qre.hover_surf)
 	{
-		QRE_EmitOutline (qre.hover_model, qre.hover_surf, RT_PackColorToUint32 (255, 214, 64, 255));
+		QRE_EmitOutline (qre.hover_model, qre.hover_surf, qre.hover_ent, RT_PackColorToUint32 (255, 214, 64, 255));
 	}
 }
 
@@ -905,12 +1017,14 @@ void QR_Editor_UpdateView (void)
 
 static void QRE_ParamWidgets (int g)
 {
-	rt_material_t *m = qre.group[g];
-	int            p;
+	int p;
 
 	for (p = 0; p < PARAM_COUNT; p++)
 	{
-		const char *label = qre_params[p].label;
+		const char   *label = qre_params[p].label;
+		// re-read every iteration: the first change of a material that has no
+		// yaml entry moves qre.group[g] into the live list (QRE_EnsureLive)
+		rt_material_t *m = qre.group[g];
 
 		switch (qre_params[p].type)
 		{
@@ -947,8 +1061,12 @@ static void QRE_ParamWidgets (int g)
 				static const char *const kinds[] = {
 					"REGULAR", "CHROME", "WATER", "LAVA", "SLIME", "GLASS", "SKY", "INVISIBLE", "SCREEN", "CAMERA"
 				};
-				if (QR_GUI_Combo (label, &value, kinds, (int)countof (kinds)))
-					QRE_SetInt (g, p, value);
+				// RT_MAT_KIND_REGULAR is 1, so the combo index is kind - 1
+				int index = value - 1;
+				if (index < 0 || index >= (int)countof (kinds))
+					index = 0;
+				if (QR_GUI_Combo (label, &index, kinds, (int)countof (kinds)))
+					QRE_SetInt (g, p, index + 1);
 			}
 			else if (p == PARAM_EBLEND)
 			{
@@ -997,6 +1115,9 @@ static void QRE_ParamWidgets (int g)
 							QRE_SetColorChannel (g, p, c, rgb[c]);
 				}
 			}
+
+			if (p == PARAM_CEMIS && m->filename_emissive[0])
+				QR_GUI_Tooltip ("color_emissive is ignored while texture_emissive is set");
 			break;
 		}
 		default:
@@ -1007,14 +1128,14 @@ static void QRE_ParamWidgets (int g)
 
 static void QRE_BuildPanelGUI (void)
 {
-	int      panel_w = glwidth * 2 / 5;
+	int      panel_w = glwidth * 11 / 25; // two fifths, plus a tenth
 	int      g;
 	qboolean exit_requested = false;
 
-	if (panel_w > 460)
-		panel_w = 460;
-	if (panel_w < 320)
-		panel_w = 320;
+	if (panel_w > 506)
+		panel_w = 506;
+	if (panel_w < 352)
+		panel_w = 352;
 
 	QR_GUI_BeginPanel ("qr_material_editor", glwidth - panel_w, 0, panel_w, glheight);
 
@@ -1042,8 +1163,12 @@ static void QRE_BuildPanelGUI (void)
 
 	for (g = 0; g < qre.group_count; g++)
 	{
+		// the animation frames share their parameter names, so every section
+		// needs its own ID scope, or their widgets collide
+		QR_GUI_PushID (qre.group[g]->name);
 		if (QR_GUI_Section (qre.group[g]->name, 1))
 			QRE_ParamWidgets (g);
+		QR_GUI_PopID ();
 	}
 
 	QR_GUI_EndScroll ();
@@ -1072,6 +1197,8 @@ static void QRE_BuildFlyingOverlay (void)
 
 static void QRE_Frame (void)
 {
+	static keydest_t prev_key_dest = key_game;
+
 	// the level went away under the editor: drop it (the material snapshot may
 	// be stale relative to a freshly loaded map list, so nothing is restored)
 	if (cls.state != ca_connected || !cl.worldmodel)
@@ -1079,6 +1206,15 @@ static void QRE_Frame (void)
 		QRE_StopEditor (false);
 		return;
 	}
+
+	// While the console is up it owns the input; coming back, the panel needs
+	// its free cursor again (the console re-activated the relative mouse mode).
+	if (qre.panel_open && prev_key_dest != key_game && key_dest == key_game)
+	{
+		IN_FreeCursorForGui ();
+		SDL_ShowCursor (SDL_DISABLE);
+	}
+	prev_key_dest = key_dest;
 
 	if (!qre.panel_open)
 		QRE_DoPick (false);
@@ -1094,6 +1230,10 @@ void QR_Editor_DrawPanel (cb_context_t *cbx)
 		return;
 
 	QRE_Frame ();
+
+	// while the console is up it owns the screen; the editor state is kept
+	if (key_dest != key_game)
+		return;
 
 	// The whole editor interface is ImGui: the panel, the crosshair and the
 	// hints. SCR_UpdateScreen can run more than once per host frame.
@@ -1139,6 +1279,16 @@ qboolean QR_Editor_GuiProcessEvent (const void *sdl_event)
 	if (!qre.active || !qre.panel_open)
 		return false;
 
+	// while the console is up the engine owns the input
+	if (key_dest != key_game)
+		return false;
+
+	// the console toggle key stays available unless an ImGui text field is
+	// editing: the console is the way the editor is driven too
+	if ((e->type == SDL_KEYDOWN || e->type == SDL_KEYUP) &&
+	    e->key.keysym.scancode == SDL_SCANCODE_GRAVE && !QR_GUI_WantsKeyboard ())
+		return false;
+
 	// ESC closes the panel, unless an ImGui text field is editing
 	if (e->type == SDL_KEYDOWN && e->key.keysym.sym == SDLK_ESCAPE && !QR_GUI_WantsKeyboard ())
 	{
@@ -1167,6 +1317,7 @@ static void QRE_ClosePanel (void)
 	qre.panel_open = false;
 	qre.pick_model = NULL;
 	qre.pick_surf = NULL;
+	qre.pick_ent = NULL;
 
 	IN_Activate ();
 	SDL_ShowCursor (SDL_ENABLE);
@@ -1178,7 +1329,7 @@ static void QRE_Apply (void)
 	QRE_SaveMaterials ();
 	QRE_TakeSnapshot (); // Cancel now reverts to the state just saved
 	qre.touched_count = 0;
-	Con_Printf ("qr editor: materials written to %s/materials/\n", com_gamedir);
+	QRE_Notify ("materials written to materials/");
 }
 
 static void QRE_Cancel (void)
@@ -1208,7 +1359,7 @@ static void QRE_Cancel (void)
 		}
 	}
 
-	Con_Printf ("qr editor: materials reverted to the values from materials.yaml\n");
+	QRE_Notify ("materials reverted to the values from materials.yaml");
 }
 
 // ---------------------------------------------------------------------------
@@ -1328,96 +1479,151 @@ static void QRE_WriteMaterial (FILE *f, const rt_material_t *m)
 		fprintf (f, "    force_rasterize: true\n");
 }
 
-#define QRE_SAVE_FILES_MAX   8
-#define QRE_SAVE_MATS_MAX    600
+#define QRE_SAVE_FILES_MAX   32
 
-typedef struct qre_save_group_s
+static const char *QRE_MaterialFile (const rt_material_t *m)
 {
-	char                file[MAX_QPATH];
-	const rt_material_t *mats[QRE_SAVE_MATS_MAX];
-	int                 count;
-} qre_save_group_t;
+	return m->source_file[0] ? m->source_file : "materials/materials.yaml";
+}
 
-// Adds a material to its source-file group, deduplicating (file, name) pairs
-// (the map list and the global list both carry materials/<map>.yaml entries).
-static void QRE_SaveAdd (qre_save_group_t *groups, int *ngroups, const rt_material_t *m)
+static qboolean QRE_SameFile (const char *a, const char *b)
 {
-	const char       *file = m->source_file[0] ? m->source_file : "materials/materials.yaml";
-	qre_save_group_t *g = NULL;
-	int              i;
+	// the directory scan and the map name can differ in case on a
+	// case-insensitive filesystem; both name the same file
+	return !q_strcasecmp (a, b);
+}
 
-	for (i = 0; i < *ngroups; i++)
-	{
-		if (!strcmp (groups[i].file, file))
-		{
-			g = &groups[i];
-			break;
-		}
-	}
-	if (!g)
-	{
-		if (*ngroups >= QRE_SAVE_FILES_MAX)
-			return;
-		g = &groups[(*ngroups)++];
-		q_strlcpy (g->file, file, sizeof (g->file));
-		g->count = 0;
-	}
+static qboolean QRE_FileListed (char files[][MAX_QPATH], int nfiles, const char *file)
+{
+	int i;
 
-	for (i = 0; i < g->count; i++)
+	for (i = 0; i < nfiles; i++)
 	{
-		if (!strcmp (g->mats[i]->name, m->name))
-			return; // duplicate (map list wins: it was added first)
+		if (QRE_SameFile (files[i], file))
+			return true;
 	}
+	return false;
+}
 
-	if (g->count < QRE_SAVE_MATS_MAX)
-		g->mats[g->count++] = m;
+// A material of the file that the global list does not carry (its map copy is
+// then the only one that holds the edit).
+static qboolean QRE_NameInGlobalFile (const rt_material_t *list, int count, const char *file, const char *name)
+{
+	int i;
+
+	for (i = 0; i < count; i++)
+	{
+		if (list[i].valid && !strcmp (list[i].name, name) && QRE_SameFile (QRE_MaterialFile (&list[i]), file))
+			return true;
+	}
+	return false;
 }
 
 static void QRE_SaveMaterials (void)
 {
-	qre_save_group_t groups[QRE_SAVE_FILES_MAX];
-	int              ngroups = 0;
-	int              count, i, k;
+	char           files[QRE_SAVE_FILES_MAX][MAX_QPATH];
+	int            nfiles = 0;
+	rt_material_t *maplist, *glist;
+	int            mapcount, gcount;
+	int            i, k, f;
+	int            written_total = 0;
 
-	// map materials first so they win the duplicate check against the same
-	// entries that the global list also carries
+	maplist = RT_MAT_GetList (RT_MAT_LIST_MAP, &mapcount);
+	glist = RT_MAT_GetList (RT_MAT_LIST_GLOBAL, &gcount);
+
+	/* The map materials also live in the global list (the directory scan reads
+	   materials/<map>.yaml as a global file), and RT_MAT_Find returns the map
+	   copy first, so an edit may sit in the map copy: sync it back. */
+	for (i = 0; i < mapcount; i++)
+	{
+		if (!maplist[i].valid)
+			continue;
+		for (k = 0; k < gcount; k++)
+		{
+			if (glist[k].valid && !strcmp (glist[k].name, maplist[i].name) &&
+			    QRE_SameFile (QRE_MaterialFile (&glist[k]), QRE_MaterialFile (&maplist[i])))
+			{
+				glist[k] = maplist[i];
+				break;
+			}
+		}
+	}
+
+	/* every distinct source file, of both lists */
 	for (k = 0; k < 2; k++)
 	{
-		rt_material_t *list = RT_MAT_GetList (k == 0 ? RT_MAT_LIST_MAP : RT_MAT_LIST_GLOBAL, &count);
+		rt_material_t *list = (k == 0) ? glist : maplist;
+		int            count = (k == 0) ? gcount : mapcount;
 
 		for (i = 0; i < count; i++)
 		{
-			if (list[i].valid)
-				QRE_SaveAdd (groups, &ngroups, &list[i]);
+			const char *file;
+
+			if (!list[i].valid)
+				continue;
+			file = QRE_MaterialFile (&list[i]);
+			if (QRE_FileListed (files, nfiles, file))
+				continue;
+			if (nfiles >= QRE_SAVE_FILES_MAX)
+			{
+				/* refusing beats writing a file with entries dropped */
+				QRE_Notify ("too many materials/*.yaml files; nothing written");
+				return;
+			}
+			q_strlcpy (files[nfiles++], file, MAX_QPATH);
 		}
 	}
 
-	for (k = 0; k < ngroups; k++)
+	for (f = 0; f < nfiles; f++)
 	{
-		char path[MAX_OSPATH];
-		FILE *f;
+		char  path[MAX_OSPATH];
+		FILE *file;
+		int   written = 0;
 
-		q_snprintf (path, sizeof (path), "%s/%s", com_gamedir, groups[k].file);
+		q_snprintf (path, sizeof (path), "%s/%s", com_gamedir, files[f]);
 
-		f = fopen (path, "w");
-		if (!f)
+		file = fopen (path, "w");
+		if (!file)
 		{
-			Con_Printf ("qr editor: cannot write %s\n", path);
+			QRE_Notify ("cannot write %s", files[f]);
 			continue;
 		}
 
-		if (strstr (groups[k].file, "materials.yaml"))
-			fprintf (f, "%s", qre_yaml_header);
+		if (QRE_SameFile (files[f], "materials/materials.yaml"))
+			fprintf (file, "%s", qre_yaml_header);
 
-		fprintf (f, "materials:\n");
-		for (i = 0; i < groups[k].count; i++)
+		fprintf (file, "materials:\n");
+
+		/* the global list first; entries of a map file that it does not carry
+		   (should not happen, but the editor must not lose data) follow */
+		for (i = 0; i < gcount; i++)
 		{
-			QRE_WriteMaterial (f, groups[k].mats[i]);
+			if (glist[i].valid && QRE_SameFile (QRE_MaterialFile (&glist[i]), files[f]))
+			{
+				QRE_WriteMaterial (file, &glist[i]);
+				written++;
+			}
+		}
+		for (i = 0; i < mapcount; i++)
+		{
+			if (maplist[i].valid && QRE_SameFile (QRE_MaterialFile (&maplist[i]), files[f]) &&
+			    !QRE_NameInGlobalFile (glist, gcount, files[f], maplist[i].name))
+			{
+				QRE_WriteMaterial (file, &maplist[i]);
+				written++;
+			}
 		}
 
-		fclose (f);
-		Con_Printf ("qr editor: wrote %d materials to %s\n", groups[k].count, path);
+		if (ferror (file) || fflush (file) != 0)
+		{
+			QRE_Notify ("write error in %s", files[f]);
+		}
+		fclose (file);
+
+		written_total += written;
 	}
+
+	Con_Printf ("qr editor: wrote %d materials to %d file(s)\n", written_total, nfiles);
 }
 
 // ---------------------------------------------------------------------------
@@ -1489,8 +1695,10 @@ static void QRE_StopEditor (qboolean restore)
 	qre.panel_open = false;
 	qre.pick_model = NULL;
 	qre.pick_surf = NULL;
+	qre.pick_ent = NULL;
 	qre.hover_model = NULL;
 	qre.hover_surf = NULL;
+	qre.hover_ent = NULL;
 
 	VectorCopy (qre.player_viewangles, cl.viewangles);
 
@@ -1500,7 +1708,7 @@ static void QRE_StopEditor (qboolean restore)
 	SDL_ShowCursor (SDL_ENABLE);
 	QR_GUI_SetMouseCursor (0);
 
-	Con_Printf ("qr light editor: off\n");
+	QRE_Notify ("editor closed");
 }
 
 static void QR_Editor_Start_f (void)

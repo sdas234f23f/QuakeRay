@@ -31,6 +31,9 @@ unsigned int g_last_frame_id = 0xFFFFFFFFu;
 
 int          g_fb_x = 0, g_fb_y = 0, g_fb_w = 0, g_fb_h = 0, g_drawable_h = 0;
 
+char   g_notify[256] = "";
+double g_notify_time = -1000.0;
+
 std::vector<RgVertex> g_verts;
 std::vector<uint32_t> g_indices;
 
@@ -216,6 +219,24 @@ void UploadDrawData (void)
 	}
 }
 
+void DrawNotification (void)
+{
+	const double age = ImGui::GetTime () - g_notify_time;
+
+	if (g_notify[0] == '\0' || age > 6.0)
+		return;
+
+	float alpha = 1.0f;
+	if (age > 5.0)
+		alpha = (float)(6.0 - age); // fade out over the last second
+
+	ImDrawList  *dl = ImGui::GetForegroundDrawList ();
+	const ImVec2 pos (14.0f, 14.0f);
+
+	dl->AddText (ImVec2 (pos.x + 1.0f, pos.y + 1.0f), IM_COL32 (0, 0, 0, (int)(170.0f * alpha)), g_notify);
+	dl->AddText (pos, IM_COL32 (255, 226, 138, (int)(235.0f * alpha)), g_notify);
+}
+
 } // namespace
 
 void QR_GUI_Init (void *sdl_window, void *rg_instance, const char *font_path)
@@ -323,6 +344,8 @@ void QR_GUI_EndFrame (void)
 {
 	if (!g_frame_open)
 		return;
+
+	DrawNotification ();
 
 	ImGui::Render ();
 	g_frame_open = false;
@@ -534,11 +557,18 @@ int QR_GUI_ColorHex (const char *label, float rgb[3], int *enabled)
 
 	ImGui::SameLine ();
 
-	ImGui::BeginDisabled (!en);
+	// The item needs an explicit width: with the default one its swatch lands
+	// past the right edge of the panel and can never be clicked, which is what
+	// made the picker unreachable.
+	ImGui::SetNextItemWidth (-FLT_MIN);
 	if (ImGui::ColorEdit3 ("##color", rgb, ImGuiColorEditFlags_DisplayHex))
+	{
+		// editing the colour is what enables it; the checkbox above only shows
+		// the state and can turn it off again
+		*enabled = 1;
 		result = 1;
-	ImGui::SetItemTooltip ("Click a swatch to pick, type the hex value");
-	ImGui::EndDisabled ();
+	}
+	ImGui::SetItemTooltip ("Click the swatch to pick, type the hex value");
 
 	ImGui::PopID ();
 
@@ -552,6 +582,27 @@ int QR_GUI_Section (const char *label, int default_open)
 		flags |= ImGuiTreeNodeFlags_DefaultOpen;
 
 	return ImGui::CollapsingHeader (label, flags) ? 1 : 0;
+}
+
+void QR_GUI_PushID (const char *id)
+{
+	ImGui::PushID (id);
+}
+
+void QR_GUI_PopID (void)
+{
+	ImGui::PopID ();
+}
+
+int QR_GUI_AnyItemActive (void)
+{
+	return ImGui::IsAnyItemActive () ? 1 : 0;
+}
+
+void QR_GUI_Notify (const char *text)
+{
+	snprintf (g_notify, sizeof (g_notify), "%s", text ? text : "");
+	g_notify_time = ImGui::GetTime ();
 }
 
 void QR_GUI_DrawCrosshair (void)

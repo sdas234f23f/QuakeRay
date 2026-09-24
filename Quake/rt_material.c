@@ -32,8 +32,8 @@
 #endif
 
 #define RT_MAT_MAX_MATERIALS 2048
-#define RT_MAT_MAX_GLOBAL   4096
-#define RT_MAT_MAX_MAP      1024
+#define RT_MAT_MAX_GLOBAL   RT_MAT_CAP_GLOBAL
+#define RT_MAT_MAX_MAP      RT_MAT_CAP_MAP
 
 static rt_material_t rt_global_materials[RT_MAT_MAX_GLOBAL];
 static int rt_global_count = 0;
@@ -778,6 +778,27 @@ int RT_MAT_AppendGlobal(const rt_material_t *mat)
 
     rt_global_materials[rt_global_count] = *mat;
     return rt_global_count++;
+}
+
+void RT_MAT_SetListCounts(int globalCount, int mapCount)
+{
+    if (globalCount < 0)
+        globalCount = 0;
+    if (mapCount < 0)
+        mapCount = 0;
+    if (globalCount > RT_MAT_MAX_GLOBAL)
+        globalCount = RT_MAT_MAX_GLOBAL;
+    if (mapCount > RT_MAT_MAX_MAP)
+        mapCount = RT_MAT_MAX_MAP;
+
+    /* dropped entries must not stay findable through a stale valid flag */
+    for (int i = globalCount; i < rt_global_count; i++)
+        rt_global_materials[i].valid = false;
+    for (int i = mapCount; i < rt_map_count; i++)
+        rt_map_materials[i].valid = false;
+
+    rt_global_count = globalCount;
+    rt_map_count = mapCount;
 }
 
 const char *RT_MAT_CurrentMap(void)
