@@ -412,7 +412,22 @@ void main()
     // what it marched, a copied one what it read.
     if (!marched)
     {
-        imageStore(cloudCubemapOut, ipos, texture(cloudCubemapHistory, historyDir));
+        // The light of the frame before, put where the cloud it holds has moved to
+        // (historyDir). What a value like that carries is the light of the cloud under
+        // the angle the eye had when its texel was marched, and the phase of the sun is
+        // a function of that angle: the sun's share of it is scaled to the angle this
+        // frame's texel has. That difference is the one part of the difference between a
+        // copy and a march that no dither of the ages can hide -- at the top of the
+        // ladder a texel is a pixel -- and it is what the eye reads as a checkerboard
+        // over the clouds; the rest of it, the parallax of a path that walked a few
+        // units between the two frames and the multiple scattering of the cloud, whose
+        // lobes are broad where the phase is sharp, is left as it is.
+        vec3 sunDir = normalize(params.sunDirection.xyz);
+        vec4 was = texture(cloudCubemapHistory, historyDir);
+        float wasPhase = cloudPhase(dot(historyDir, sunDir), phaseG);
+        float nowPhase = cloudPhase(dot(dir, sunDir), phaseG);
+        was.rgb *= nowPhase / max(wasPhase, 1.0e-4);
+        imageStore(cloudCubemapOut, ipos, was);
     }
     else
     {
