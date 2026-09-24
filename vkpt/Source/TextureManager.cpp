@@ -22,12 +22,14 @@
 
 #include <numeric>
 #include <algorithm>
+#include <cmath>
 
 #include "Const.h"
 #include "Utils.h"
 #include "TextureOverrides.h"
 #include "Generated/ShaderCommonC.h"
 #include "RgException.h"
+#include "RHI/RhiTextureTable.h"
 
 
 using namespace vkpt;
@@ -161,6 +163,29 @@ namespace
         }
 
         return maxEntries;
+    }
+
+    // Mirror of TextureUploader::GetMipmapCount (TextureUploader.cpp:74-90) for the image that
+    // UploadImage is about to create. The uploader's rule is protected and UploadResult carries no
+    // mip count, but the RHI table needs the real level count of the created image. The uploader
+    // computes it from the UploadInfo that PrepareTexture builds, in which
+    // pregeneratedLevelCount = isPregenerated ? levelCount : 0.
+    uint32_t GetUploadedMipLevelCount(const ImageLoader::ResultInfo &imageInfo, bool useMipmaps)
+    {
+        if (!useMipmaps)
+        {
+            return 1;
+        }
+
+        if (imageInfo.isPregenerated)
+        {
+            return std::min(imageInfo.levelCount, MAX_PREGENERATED_MIPMAP_LEVELS);
+        }
+
+        const auto widthCount = static_cast<uint32_t>(std::log2(imageInfo.baseSize.width));
+        const auto heightCount = static_cast<uint32_t>(std::log2(imageInfo.baseSize.height));
+
+        return std::min(widthCount, heightCount) + 1;
     }
 }
 
@@ -431,6 +456,17 @@ void TextureManager::SubmitDescriptors(uint32_t frameIndex,
         if (textures[i].image != VK_NULL_HANDLE)
         {
             textureDesc->UpdateTextureDesc(frameIndex, i, textures[i].view, textures[i].samplerHandle);
+
+            // RHI dual write (RHI/RhiTextureTable.h): the same moment the legacy descriptor is
+            // written. Slots without an image are left to ResetSlot in DestroyMaterialTextures.
+            // GetIndex() runs after SetIfHasDynamicSamplerFilter above, so the slot's sampler is the
+            // engine index the dynamic filter left behind.
+            if (rhiTextureTable != nullptr)
+            {
+                rhiTextureTable->SetSlot(i, textures[i].image, textures[i].format,
+                                         textures[i].baseSize.width, textures[i].baseSize.height,
+                                         textures[i].mipLevels, textures[i].samplerHandle.GetIndex());
+            }
         }
         else
         {
@@ -658,7 +694,15 @@ uint32_t TextureManager::PrepareTexture(
         return EMPTY_TEXTURE_INDEX;
     }
 
-    const uint32_t textureIndex = InsertTexture( frameIndex, image, view, samplerHandle );
+    const uint32_t mipLevels = GetUploadedMipLevelCount( imageInfo, useMipmaps );
+
+    const uint32_t textureIndex = InsertTexture( frameIndex,
+                                                 image,
+                                                 view,
+                                                 samplerHandle,
+                                                 imageInfo.format,
+                                                 VkExtent2D{ imageInfo.baseSize.width, imageInfo.baseSize.height },
+                                                 mipLevels );
 
     talCdfSources[ textureIndex ] = TalCdfSource{ .baseSize = imageInfo.baseSize,
                                                   .format = imageInfo.format,
@@ -871,6 +915,16 @@ void TextureManager::DestroyMaterialTextures(uint32_t frameIndex, const Material
 
             AddToBeDestroyed(frameIndex, texture);
 
+            // Slot t is freed right here: its fields are nulled below and MarkDescDirty makes
+            // SubmitDescriptors reset the legacy descriptor to the empty texture. The delayed
+            // destroy list only holds a copy that DestroyTexture frees a frame later, so resetting
+            // the RHI slot there could clobber a slot that InsertTexture has already reused. The
+            // fallback stays in the slot until the next SetSlot from SubmitDescriptors.
+            if (rhiTextureTable != nullptr)
+            {
+                rhiTextureTable->ResetSlot(t);
+            }
+
             // null data
             texture.image = VK_NULL_HANDLE;
             texture.view = VK_NULL_HANDLE;
@@ -941,7 +995,9 @@ void TextureManager::CheckForHotReload(VkCommandBuffer cmd, uint32_t frameIndex)
     }
 }
 
-uint32_t TextureManager::InsertTexture(uint32_t frameIndex, VkImage image, VkImageView view, SamplerManager::Handle samplerHandle)
+uint32_t TextureManager::InsertTexture(uint32_t frameIndex, VkImage image, VkImageView view,
+                                       SamplerManager::Handle samplerHandle, VkFormat format,
+                                       VkExtent2D baseSize, uint32_t mipLevels)
 {
     auto texture = std::find_if(textures.begin(), textures.end(), [] (const Texture &t)
     {
@@ -966,6 +1022,9 @@ uint32_t TextureManager::InsertTexture(uint32_t frameIndex, VkImage image, VkIma
     texture->image = image;
     texture->view = view;
     texture->samplerHandle = samplerHandle;
+    texture->format = format;
+    texture->baseSize = baseSize;
+    texture->mipLevels = mipLevels;
 
     const uint32_t textureIndex = (uint32_t)std::distance(textures.begin(), texture);
 
@@ -1055,4 +1114,22 @@ void TextureManager::Unsubscribe(const IMaterialDependency *subscriber)
 uint32_t TextureManager::GetWaterNormalTextureIndex() const
 {
     return waterNormalTextureIndex;
+}
+
+void TextureManager::SetRhiTextureTable(rhi::RhiTextureTable *pTable)
+{
+    if (rhiTextureTable == pTable)
+    {
+        return;
+    }
+
+    rhiTextureTable = pTable;
+
+    // A table attached after the first frame has seen no slot yet: every live texture must reach it
+    // through the same all-dirty path the constructor's initial fill and the dynamic-filter changes
+    // use (MarkAllDescDirty), so the next SubmitDescriptors writes the whole table into it.
+    if (rhiTextureTable != nullptr)
+    {
+        MarkAllDescDirty();
+    }
 }

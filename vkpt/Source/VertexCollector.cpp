@@ -820,6 +820,46 @@ VkBuffer VertexCollector::GetIndexBuffer() const
     return indexBuffer->GetBuffer();
 }
 
+VkDeviceAddress VertexCollector::GetVertexBufferAddress() const
+{
+    return vertBuffer->GetAddress();
+}
+
+VkDeviceAddress VertexCollector::GetIndexBufferAddress() const
+{
+    return indexBuffer->GetAddress();
+}
+
+VkDeviceAddress VertexCollector::GetTransformsBufferAddress() const
+{
+    return transformsBuffer->GetAddress();
+}
+
+VkDeviceSize VertexCollector::GetVertexBufferSize() const
+{
+    return vertBuffer->GetSize();
+}
+
+VkDeviceSize VertexCollector::GetIndexBufferSize() const
+{
+    return indexBuffer->GetSize();
+}
+
+const VkTransformMatrixKHR *VertexCollector::GetTransformsStaging() const
+{
+    return mappedTransformData;
+}
+
+VkBuffer VertexCollector::GetStagingVertexBuffer() const
+{
+    return stagingVertBuffer.GetBuffer();
+}
+
+VkBuffer VertexCollector::GetStagingIndexBuffer() const
+{
+    return stagingIndexBuffer.GetBuffer();
+}
+
 std::vector<VertexCollector::GeometryDrawInfo> VertexCollector::GetGeometryDrawInfos() const
 {
     std::vector<GeometryDrawInfo> result;

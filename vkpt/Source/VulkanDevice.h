@@ -71,7 +71,15 @@ namespace vkpt
 
 class NvrhiContext;
 class NvrhiFrameSkeleton;
+class RhiDebugTracePass;
 struct NvrhiRequirements;
+
+namespace rhi
+{
+class RhiAccelStructs;
+class RhiFrameContext;
+class RhiTextureTable;
+}
 
 class VulkanDevice
 {
@@ -160,8 +168,9 @@ private:
     void Render(VkCommandBuffer cmd, const RgDrawFrameInfo &drawInfo);
     // Draws the current frame through the RHI layer and submits it, together with
     // the command buffer of the frame. Returns false if the frame has to be drawn
-    // by the renderer instead.
-    bool RenderThroughRhi();
+    // by the renderer instead. 'drawInfo' is the same struct Render receives; only
+    // the sky params of it are read (the sky viewer position).
+    bool RenderThroughRhi(const RgDrawFrameInfo &drawInfo);
     void EndFrame(VkCommandBuffer cmd);
 
 private:
@@ -230,6 +239,17 @@ private:
     std::shared_ptr<TextureManager>         textureManager;
     std::shared_ptr<CubemapManager>         cubemapManager;
 
+    // The RHI frame model (RHI/RhiFrameContext.h): one command list per engine frame slot plus the
+    // retire queue that keeps a resource alive until the queue finished the submission that used it.
+    // Created next to the NVRHI device, before the texture table (which retires through it) and the
+    // frame skeleton; null if it could not be created.
+    std::shared_ptr<rhi::RhiFrameContext>   rhiFrameContext;
+
+    // The RHI copy of the engine's texture table (RHI/RhiTextureTable.h): created next to the NVRHI
+    // device, shared with the sampler managers and the frame skeleton. Null if it could not be
+    // created; the legacy renderer stays functional then.
+    std::shared_ptr<rhi::RhiTextureTable>   rhiTextureTable;
+
     // World tables of the current map (clusters, PVS, emissive faces), built by the host.
     std::shared_ptr<WorldLights>            worldLights;
     // Per-cluster light lists, composed out of the registered sources and the tables above.
@@ -247,6 +267,16 @@ private:
 
     // RHI device (NVIDIA NVRHI) created over the Vulkan device above.
     std::unique_ptr<NvrhiContext>           nvrhi;
+    // The RHI acceleration structures (RHI/RhiAccelStructs.h): the NVRHI copy of the engine's
+    // static BLAS plus one TLAS per frame slot, built from the engine's ASManager. Created next to
+    // the skeleton and referenced by it; a null one makes the skeleton unavailable. Null when
+    // 'rhiframe' is off.
+    std::shared_ptr<rhi::RhiAccelStructs>   rhiAccelStructs;
+    // The RHI debug ray-tracing pass (RHI/RhiDebugTracePass.h): the first traced image of the RHI
+    // path, created next to the skeleton only when 'rhitrace' is on and referenced by it. Null when
+    // the flag is off or the creation failed; with the flag on and no pass the skeleton stays
+    // unavailable and the legacy renderer is kept.
+    std::shared_ptr<RhiDebugTracePass>      rhiDebugTracePass;
     // The RHI frame skeleton: the first frame pass that is recorded through the
     // RHI layer. Null unless 'rhiframe' is set in vkpt.txt.
     std::shared_ptr<NvrhiFrameSkeleton>     nvrhiFrameSkeleton;
@@ -258,6 +288,10 @@ private:
     bool                                    rayCullBackFacingTriangles;
     bool                                    allowGeometryWithSkyFlag;
     bool                                    lensFlareVerticesInScreenSpace;
+
+    // The instance-wide applyVertexColorGamma of the rasterized geometry (RgInstanceCreateInfo), the
+    // vertex spec constant the RHI sky pipelines bake into their key (RhiSkyPass::Render).
+    bool                                    rasterizedVertexColorGamma;
 
     RenderResolutionHelper                  renderResolution;
 

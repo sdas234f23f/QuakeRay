@@ -45,6 +45,14 @@ public:
     ShGlobalUniform *GetData();
     const ShGlobalUniform *GetData() const;
 
+    // The device-local VkBuffer that Upload copies GetData() into. The RHI layer wraps it with
+    // createHandleForNativeBuffer; under `rhiframe` that wrap is also the only way the buffer
+    // gets refreshed, because Upload's single caller (Scene::SubmitForFrame, Scene.cpp:112) does
+    // not run there. What the rasterized world shader reads from this buffer is renderWidth
+    // (member 11, Offset 644 in RsWorld.frag.spv) - the checkerboard remap of the fragment
+    // position is built from it.
+    VkBuffer GetBuffer() const;
+
     VkDescriptorSet GetDescSet(uint32_t frameIndex) const;
     VkDescriptorSetLayout GetDescSetLayout() const;
 

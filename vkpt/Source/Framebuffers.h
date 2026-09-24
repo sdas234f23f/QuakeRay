@@ -88,6 +88,18 @@ public:
     std::tuple<VkImage, VkImageView, VkFormat> GetImageHandles(FramebufferImageIndex fbImageIndex, uint32_t frameIndex) const;
     std::tuple<VkImage, VkImageView, VkFormat, VkExtent2D> GetImageHandles(FramebufferImageIndex fbImageIndex, uint32_t frameIndex, const ResolutionState &resolutionState) const;
 
+    // The engine handles of the two images the RHI rasterized world pass needs besides its colour
+    // target. Both follow GetImageHandles (frame-slot swap resolution inside) and both are
+    // recreated by PrepareForSize, so a caller that wrapped them has to re-wrap on size change
+    // (the RhiSkyPass::ReleaseTargets contract).
+    //  - SCREEN_EMISSION (FB_IMAGE_INDEX_SCREEN_EMISSION, 62): the world pass's second colour
+    //    attachment (RasterPass.cpp:53, :118), full render size, B10G11R11_UFLOAT_PACK32.
+    //  - PRIMARY_TO_REFL_REFR (FB_IMAGE_INDEX_PRIMARY_TO_REFL_REFR, 25): the image the shader
+    //    reads and writes through set 4 binding 25 (`framebufPrimaryToReflRefr`, rgba32ui,
+    //    ShaderCommonHLSL.hlsli:598), full render size, R32G32B32A32_UINT.
+    std::tuple<VkImage, VkImageView, VkFormat> GetScreenEmissionHandles(uint32_t frameIndex) const;
+    std::tuple<VkImage, VkImageView, VkFormat> GetPrimaryToReflRefrHandles(uint32_t frameIndex) const;
+
     // Subscribe to framebuffers' size change event.
     // shared_ptr will be transformed to weak_ptr
     void Subscribe(std::shared_ptr<IFramebuffersDependency> subscriber);

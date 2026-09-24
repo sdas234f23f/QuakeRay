@@ -34,6 +34,9 @@ namespace vkpt::LibraryConfig
         // Draws the frame through the RHI layer instead of the renderer.
         // Only for the bring-up of the RHI frame skeleton.
         bool rhiFrameSkeleton = false;
+        // Draws the frame through the RHI debug ray-tracing pass (A3) instead of the rasterized RHI
+        // chain. Only for the bring-up of the acceleration structures and the first traced image.
+        bool rhiDebugTrace = false;
     };
 
     namespace detail
@@ -59,6 +62,10 @@ namespace vkpt::LibraryConfig
             else if (entry == "rhiframe")
             {
                 dst.rhiFrameSkeleton = true;
+            }
+            else if (entry == "rhitrace")
+            {
+                dst.rhiDebugTrace = true;
             }
         }
     }

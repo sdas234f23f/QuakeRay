@@ -36,7 +36,14 @@ GlobalUniform::GlobalUniform(VkDevice _device, std::shared_ptr<MemoryAllocator> 
     uniformData = std::make_shared<ShGlobalUniform>();
 
     uniformBuffer = std::make_shared<AutoBuffer>(_device, _allocator);
-    uniformBuffer->Create(sizeof(ShGlobalUniform), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, "Uniform buffer");
+    // The RHI layer wraps this buffer through a native handle, and NVRHI queries the buffer device
+    // address on every wrap - vulkan-buffer.cpp:215-220 - so the usage bit is mandatory there. The
+    // memory is address-capable regardless: Buffer::Init always allocates through
+    // AllocType::WITH_ADDRESS_QUERY (Buffer.cpp:67, MemoryAllocator.cpp:269-277). Same reason the
+    // collector's geometry buffers carry it (RasterizedDataCollector.cpp:72-81).
+    uniformBuffer->Create(sizeof(ShGlobalUniform),
+                          VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                          "Uniform buffer");
 
     CreateDescriptors();
 }
@@ -127,6 +134,11 @@ ShGlobalUniform *GlobalUniform::GetData()
 const ShGlobalUniform *GlobalUniform::GetData() const
 {
     return uniformData.get();
+}
+
+VkBuffer GlobalUniform::GetBuffer() const
+{
+    return uniformBuffer->GetDeviceLocal();
 }
 
 VkDescriptorSet GlobalUniform::GetDescSet(uint32_t frameIndex) const

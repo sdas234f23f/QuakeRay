@@ -33,6 +33,12 @@ struct Texture
     VkImage                 image = VK_NULL_HANDLE;
     VkImageView             view = VK_NULL_HANDLE;
     SamplerManager::Handle  samplerHandle = SamplerManager::Handle();
+
+    // Info the RHI texture table (RHI/RhiTextureTable.h) needs to wrap this slot. Filled by
+    // TextureManager::InsertTexture; the defaults keep value-initialised records valid.
+    VkFormat                format = VK_FORMAT_UNDEFINED;
+    VkExtent2D              baseSize = {};
+    uint32_t                mipLevels = 1;
 };
 
 

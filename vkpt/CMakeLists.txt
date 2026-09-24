@@ -86,6 +86,15 @@ set(vkpt_SOURCES
     Source/RHI/NvrhiContext.cpp
     Source/RHI/NvrhiFrameSkeleton.cpp
     Source/RHI/NvrhiRequirements.cpp
+    Source/RHI/RhiAccelStructs.cpp
+    Source/RHI/RhiDebugTracePass.cpp
+    Source/RHI/RhiDescriptors.cpp
+    Source/RHI/RhiFrameContext.cpp
+    Source/RHI/RhiPipeline.cpp
+    Source/RHI/RhiSkyPass.cpp
+    Source/RHI/RhiResources.cpp
+    Source/RHI/RhiTextureSource.cpp
+    Source/RHI/RhiTextureTable.cpp
     Source/WorldLights.cpp
 )
 

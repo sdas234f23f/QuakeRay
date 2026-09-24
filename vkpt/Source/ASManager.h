@@ -114,6 +114,33 @@ public:
     const std::shared_ptr<VertexCollector> &GetStaticCollector() const;
     const std::shared_ptr<VertexCollector> &GetDynamicCollector(uint32_t frameIndex) const;
 
+    // Read-only views for the RHI layer's acceleration structures (RHI/RhiAccelStructs.cpp); no
+    // behaviour change, the manager keeps owning everything below.
+    // The static BLAS components, one per static filter: the RHI layer mirrors this set, creating
+    // one rt::IAccelStruct per non-empty component.
+    const std::vector<std::unique_ptr<BLASComponent>> &GetStaticBlasComponents() const;
+    // The engine's TLAS instance buffer (device-local, MAX_TOP_LEVEL_INSTANCE_COUNT records) and
+    // its byte size: the RHI layer wraps the buffer and builds its own per-slot TLAS from it.
+    VkBuffer GetInstanceBuffer() const;
+    VkDeviceSize GetInstanceBufferSize() const;
+
+    // Fills every attribute of the TLAS instance that 'filter' contributes, with exactly the rules
+    // the engine's own TLAS build applies: the mask against 'rayCullMaskWorld' (a missing world bit
+    // drops the instance and zeroes it), the first-person/viewer/sky custom-index bits, the refract
+    // mask rewrite, the alpha-tested SBT offset and the instance flags.
+    // The acceleration structure reference is deliberately not touched: SetupTLASInstanceFromBLAS
+    // stamps the engine's BLAS address there and the RHI layer overwrites it with its own. A bare
+    // filter carries no BLAS, so the "no AS / empty component" check stays with the caller as well.
+    static bool GetTLASInstanceForFilter(VertexCollectorFilterTypeFlags filter,
+                                         uint32_t rayCullMaskWorld,
+                                         bool allowGeometryWithSkyFlag,
+                                         VkAccelerationStructureInstanceKHR &instance);
+
+    // Incremented by SubmitStaticGeometry at every (re)submission, including the submission of an
+    // empty static set. The RHI layer samples it to detect a level change, as the static BLAS
+    // handles and addresses are recreated on every submission.
+    uint32_t GetStaticGeneration() const;
+
 private:
     // amount of possible VertexCollectorFilterTypeFlags_GetID values
     static constexpr uint32_t MAX_FILTER_TYPE_COUNT =
@@ -164,6 +191,9 @@ private:
 
     std::vector<std::unique_ptr<BLASComponent>> allStaticBlas;
     std::vector<std::unique_ptr<BLASComponent>> allDynamicBlas[MAX_FRAMES_IN_FLIGHT];
+
+    // A new value means a new static set, even if that set is empty (see GetStaticGeneration).
+    uint32_t staticGeneration = 0;
 
     // A dynamic BLAS is rebuilt only if the input that it was built from changed. The
     // state is per frame slot: the AS that a slot reuses is the one that was built for

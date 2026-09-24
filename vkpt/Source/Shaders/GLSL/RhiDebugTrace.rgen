@@ -1,0 +1,96 @@
+/*
+* Copyright (c) 2026 Sultim Tsyrendashiev
+*
+* Permission is hereby granted, free of charge, to any person obtaining a copy
+* of this software and associated documentation files (the "Software"), to deal
+* in the Software without restriction, including without limitation the rights
+* to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+* copies of the Software, and to permit persons to whom the Software is
+* furnished to do so, subject to the following conditions:
+*
+* The above copyright notice and this permission notice shall be included in all
+* copies or substantial portions of the Software.
+*
+* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+* IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+* FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+* AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+* LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+* OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+* SOFTWARE.
+*/
+
+#version 460
+#extension GL_EXT_ray_tracing : require
+
+// The debug pair of the RHI path: the first traced image of the A4 work. It is not a port of a
+// renderer pass and it owns no shared header, so it is exactly three stages that must be read
+// together:
+//   * RhiDebugTrace.rgen  -- one primary ray per output pixel, stores the payload colour,
+//   * RhiDebugTrace.rmiss -- writes the fixed dark background colour,
+//   * RhiDebugTrace.rchit -- writes the debug surface colour of the hit.
+// The payload struct below is therefore repeated in all three files and must stay identical in
+// them; it is the only interface the pair has.
+//
+// The descriptor sets are frozen to the mapping the RHI pipeline is built for:
+//   set 0, binding 0 -- the top-level acceleration structure,
+//   set 1, binding 0 -- the engine's global uniform (ShGlobalUniform),
+//   set 2, binding 0 -- the output image, the engine's ALBEDO framebuffer (R11G11B10_FLOAT).
+// No other sets, no push constants, no texture table. The engine's ALBEDO declaration lives in
+// the generated framebuffer block behind DESC_SET_FRAMEBUFFERS, so that macro is given the
+// value 2 and the image keeps the engine's own spelling and binding 0.
+#define DESC_SET_TLAS 0
+#define DESC_SET_GLOBAL_UNIFORM 1
+#define DESC_SET_FRAMEBUFFERS 2
+
+#include "ShaderCommonGLSLFunc.h"
+
+struct RhiDebugPayload
+{
+    vec3 color;
+};
+
+layout(set = DESC_SET_TLAS, binding = BINDING_ACCELERATION_STRUCTURE_MAIN) uniform accelerationStructureEXT topLevelAS;
+
+layout(location = PAYLOAD_INDEX_DEFAULT) rayPayloadEXT RhiDebugPayload payload;
+
+void main()
+{
+    // Every pixel is traced, checkerboarded or not, so the launch index is the output pixel. The
+    // ray itself is reconstructed exactly as RaygenPrimary.inl does it - the jittered pixel UV,
+    // the direction through the inverse projection and the inverse view, the origin from the
+    // uniform - so the debug image can be compared against the engine's own primary pass pixel
+    // for pixel.
+    const ivec2 pix = ivec2(gl_LaunchIDEXT.xy);
+    const vec2 inUV = getPixelUVWithJitter(pix);
+
+    const vec3 cameraOrigin = globalUniform.cameraPosition.xyz;
+    const vec3 cameraRayDir = getRayDir(inUV);
+
+    // The engine's primary ray: the visibility mask of getPrimaryVisibilityCullMask() and the
+    // backface rule of getAdditionalRayFlags() (both in RaygenCommon.h), inlined because
+    // RaygenCommon.h needs the vertex-data, texture, random and light-source sets, which this
+    // pass does not have.
+    const uint cullMask = globalUniform.rayCullMaskWorld | INSTANCE_MASK_REFRACT | INSTANCE_MASK_FIRST_PERSON;
+    const uint rayFlags = globalUniform.rayCullBackFaces != 0 ? gl_RayFlagsCullFrontFacingTrianglesEXT : gl_RayFlagsNoneEXT;
+
+    payload.color = vec3(0.0);
+
+    // missIndex 0: the debug SBT is the pass's own table, with RhiDebugTrace.rmiss as the first
+    // miss entry. sbtRecordOffset and sbtRecordStride are 0, so the hit group is the TLAS
+    // instance's own contribution (0 for fully opaque geometry, 1 for alpha-tested).
+    traceRayEXT(topLevelAS, rayFlags, cullMask,
+        0, 0,   // sbtRecordOffset, sbtRecordStride
+        0,      // missIndex
+        cameraOrigin, globalUniform.primaryRayMinDist, cameraRayDir, globalUniform.rayLength,
+        PAYLOAD_INDEX_DEFAULT);
+
+    // Both the hit and the miss write the payload, so the store cannot read uninitialized data.
+    //
+    // The row is flipped: the dispatch grid's row 0 is the view's top row (the engine's pixel-to-UV
+    // convention, which the ray above must keep), while the present samples ALBEDO through NVRHI's
+    // raster convention, which maps ALBEDO's last row to the screen's top. Storing grid row y at row
+    // height-1-y makes the two conventions cancel; without the flip the traced frame is mirrored
+    // vertically on screen.
+    imageStore(framebufAlbedo, ivec2(pix.x, int(globalUniform.renderHeight) - 1 - pix.y), vec4(payload.color, 0.0));
+}

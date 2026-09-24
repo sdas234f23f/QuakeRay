@@ -53,6 +53,24 @@ public:
 
     VkDescriptorSetLayout GetDescSetLayout() const;
     VkDescriptorSet GetDescSet(uint32_t frameIndex) const;
+
+    // The host-visible VkBuffer of 'frameIndex' (one buffer per frame in flight, see
+    // CreateTonemappingBuffer). The RHI layer wraps it as the world shader's set 2 binding 0,
+    // which the shader declares as StructuredBuffer<ShTonemapping>; pass GetElementSize() as the
+    // wrap's structStride.
+    VkBuffer GetBuffer(uint32_t frameIndex) const;
+
+    // sizeof(ShTonemapping): the distance between frame slots and the structStride the shader's
+    // StructuredBuffer declares (SPIR-V ArrayStride 1620 in RsWorld.frag.spv).
+    uint32_t GetElementSize() const;
+
+    // Writes the value the world shader reads as avgLuminance (member 23 of ShTonemapping,
+    // Offset 1616 in RsWorld.frag.spv) for 'frameIndex'. On the legacy path the GPU owns the
+    // field: CmLuminanceAvg stores adapted_luminance into it while CalculateExposure dispatches
+    // the histogram and average pipelines. The RHI path has no exposure chain, so the host has
+    // to supply a stand-in - decoding it through Exposure.h:33-51, a value of 1 gives the world
+    // colour the constant factor 1/9.6, and a non-positive value outputs black.
+    void SetAvgLuminance(uint32_t frameIndex, float avgLuminance);
     
     void OnShaderReload(const ShaderManager *shaderManager) override;
 

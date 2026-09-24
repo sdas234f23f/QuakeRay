@@ -691,6 +691,9 @@ void ASManager::SubmitStaticGeometry()
     // skip if all static geometries are empty
     if (collectorStatic->AreGeometriesEmpty(staticFlags))
     {
+        // the empty state is a new static generation too: the RHI layer must retire
+        // the static set that it has built for the previous one
+        staticGeneration++;
         return;
     }
 
@@ -720,6 +723,8 @@ void ASManager::SubmitStaticGeometry()
     // submit and wait
     cmdManager->Submit(cmd, staticCopyFence);
     Utils::WaitAndResetFence(device, staticCopyFence);
+
+    staticGeneration++;
 }
 
 void ASManager::BeginDynamicGeometry(VkCommandBuffer cmd, uint32_t frameIndex)
@@ -869,18 +874,9 @@ void ASManager::ResubmitStaticMovable(VkCommandBuffer cmd)
     asBuilder->BuildBottomLevel(cmd);
 }
 
-bool ASManager::SetupTLASInstanceFromBLAS(const BLASComponent &blas, uint32_t rayCullMaskWorld, bool allowGeometryWithSkyFlag, VkAccelerationStructureInstanceKHR &instance)
+bool ASManager::GetTLASInstanceForFilter(VertexCollectorFilterTypeFlags filter, uint32_t rayCullMaskWorld, bool allowGeometryWithSkyFlag, VkAccelerationStructureInstanceKHR &instance)
 {
     typedef VertexCollectorFilterTypeFlagBits FT;
-
-    if (blas.GetAS() == VK_NULL_HANDLE || blas.IsEmpty())
-    {
-        return false;
-    }
-
-    auto filter = blas.GetFilter();
-
-    instance.accelerationStructureReference = blas.GetASAddress();
 
     instance.transform = 
     {
@@ -994,6 +990,25 @@ bool ASManager::SetupTLASInstanceFromBLAS(const BLASComponent &blas, uint32_t ra
             VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR*/;
     }
 
+
+    return true;
+}
+
+bool ASManager::SetupTLASInstanceFromBLAS(const BLASComponent &blas, uint32_t rayCullMaskWorld, bool allowGeometryWithSkyFlag, VkAccelerationStructureInstanceKHR &instance)
+{
+    if (blas.GetAS() == VK_NULL_HANDLE || blas.IsEmpty())
+    {
+        return false;
+    }
+
+    // the attribute rules live in GetTLASInstanceForFilter, so that the engine and the RHI
+    // layer apply the same ones; this wrapper only binds them to the engine's BLAS
+    if (!GetTLASInstanceForFilter(blas.GetFilter(), rayCullMaskWorld, allowGeometryWithSkyFlag, instance))
+    {
+        return false;
+    }
+
+    instance.accelerationStructureReference = blas.GetASAddress();
 
     return true;
 }
@@ -1238,4 +1253,24 @@ const std::shared_ptr<VertexCollector> &ASManager::GetStaticCollector() const
 const std::shared_ptr<VertexCollector> &ASManager::GetDynamicCollector(uint32_t frameIndex) const
 {
     return collectorDynamic[frameIndex];
+}
+
+const std::vector<std::unique_ptr<BLASComponent>> &ASManager::GetStaticBlasComponents() const
+{
+    return allStaticBlas;
+}
+
+VkBuffer ASManager::GetInstanceBuffer() const
+{
+    return instanceBuffer->GetDeviceLocal();
+}
+
+VkDeviceSize ASManager::GetInstanceBufferSize() const
+{
+    return instanceBuffer->GetSize();
+}
+
+uint32_t ASManager::GetStaticGeneration() const
+{
+    return staticGeneration;
 }

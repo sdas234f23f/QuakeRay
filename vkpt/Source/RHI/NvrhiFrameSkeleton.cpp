@@ -22,17 +22,51 @@
 
 #include "NvrhiFrameSkeleton.h"
 
+#include "RhiAccelStructs.h"
+#include "RhiDebugTracePass.h"
+#include "RhiDescriptors.h"
+#include "RhiFrameContext.h"
+#include "RhiPipeline.h"
+#include "RhiResources.h"
+#include "RhiSkyPass.h"
+#include "RhiTextureTable.h"
+
 #include <fstream>
 
+#include "../Const.h"
+#include "../Framebuffers.h"
+#include "../Generated/ShaderCommonC.h"
+#include "../GlobalUniform.h"
 #include "../Swapchain.h"
+#include "../Tonemapping.h"
 
 using namespace vkpt;
 
 namespace
 {
 
+// The fullscreen triangle keeps its blob name and its source; only the fragment half changes from
+// the A1 checkerboard (RhiSkeleton.frag) to the present of the rasterized sky (RhiPresent.frag).
 const char *const VERTEX_SHADER_FILE_NAME = "RhiSkeleton.vert.spv";
-const char *const PIXEL_SHADER_FILE_NAME = "RhiSkeleton.frag.spv";
+const char *const PIXEL_SHADER_FILE_NAME = "RhiPresent.frag.spv";
+
+// The present's constant buffer: exposure.x scales the linear ALBEDO sample before the shader's
+// x / (1 + x) curve (RhiPresent.frag.hlsl:50-73). The engine's own exposure control (Tonemapping)
+// is not on the RHI path yet, so this first cut writes a fixed 1.0; the members stay a float4 to
+// keep the shader's block shape (RhiPresent.frag.hlsl:50-55).
+struct RhiPresentParams
+{
+    float exposure[4];
+};
+
+const RhiPresentParams PRESENT_PARAMS =
+{
+    { 1.0f, 0.0f, 0.0f, 0.0f },
+};
+
+// The constant buffer is written every frame, and up to two frames (the engine's pacing) plus the
+// swapchain's images can be in flight, so NVRHI keeps this many versions of it.
+const uint32_t PRESENT_PARAMS_VERSIONS = 4;
 
 }
 
@@ -40,10 +74,20 @@ const char *const PIXEL_SHADER_FILE_NAME = "RhiSkeleton.frag.spv";
 NvrhiFrameSkeleton::NvrhiFrameSkeleton(nvrhi::IDevice *pDevice,
                                        const Swapchain *pSwapchain,
                                        const char *pShaderFolderPath,
+                                       rhi::RhiTextureTable *pTextureTable,
+                                       rhi::RhiFrameContext *pFrameContext,
+                                       rhi::RhiAccelStructs *pAccelStructs,
+                                       RhiDebugTracePass *pDebugTracePass,
+                                       bool useDebugTrace,
                                        PrintFunction pfnPrint)
     : device(dynamic_cast<nvrhi::vulkan::IDevice *>(pDevice))
     , print(std::move(pfnPrint))
     , shaderFolderPath(pShaderFolderPath != nullptr ? pShaderFolderPath : "")
+    , accelStructs(pAccelStructs)
+    , debugTracePass(pDebugTracePass)
+    , debugTraceEnabled(useDebugTrace)
+    , textureTable(pTextureTable)
+    , frameContext(pFrameContext)
     , unavailable(false)
 {
     assert(device != nullptr);
@@ -56,16 +100,60 @@ NvrhiFrameSkeleton::NvrhiFrameSkeleton(nvrhi::IDevice *pDevice,
         return;
     }
 
-    commandList = device->createCommandList();
-    if (commandList == nullptr)
+    if (textureTable == nullptr)
     {
-        print("Warning: RHI: failed to create the command list of the frame skeleton");
+        print("Warning: RHI: the frame skeleton needs the shared texture table of the RHI layer");
+        unavailable = true;
+        return;
+    }
+
+    if (frameContext == nullptr)
+    {
+        print("Warning: RHI: the frame skeleton needs the frame context of the RHI layer");
+        unavailable = true;
+        return;
+    }
+
+    // The acceleration-structure stream is recorded every frame, in both modes, so it is a hard
+    // dependency of the skeleton: a frame that cannot build its structures falls back to the legacy
+    // renderer instead of recording a half-wired one.
+    if (accelStructs == nullptr || !accelStructs->IsCreated())
+    {
+        print("Warning: RHI: the frame skeleton needs the acceleration structures of the RHI layer");
+        unavailable = true;
+        return;
+    }
+
+    // The debug pass is a hard dependency only of the traced mode; when 'rhitrace' is off it is not
+    // created by the host at all.
+    if (debugTraceEnabled && (debugTracePass == nullptr || !debugTracePass->IsCreated()))
+    {
+        print("Warning: RHI: the traced frame needs the debug ray-tracing pass of the RHI layer");
         unavailable = true;
         return;
     }
 
     if (!LoadShader(VERTEX_SHADER_FILE_NAME, nvrhi::ShaderType::Vertex, vertexShader) ||
         !LoadShader(PIXEL_SHADER_FILE_NAME, nvrhi::ShaderType::Pixel, pixelShader))
+    {
+        unavailable = true;
+        return;
+    }
+
+    // The rasterized sky pass: the engine's first real pass on the RHI path. It is created here
+    // because this class already owns every input its Create needs (the device, the table, the
+    // frame context and the shader folder). A failure is not fatal for the engine: it makes this
+    // skeleton unavailable, RenderThroughRhi returns false and the legacy renderer keeps the frame.
+    skyPass = std::make_unique<RhiSkyPass>();
+    if (!skyPass->Create(device, textureTable, frameContext, shaderFolderPath.c_str(), print))
+    {
+        skyPass.reset();
+        print("Warning: RHI: the rasterized sky pass is unavailable, the legacy renderer is kept");
+        unavailable = true;
+        return;
+    }
+
+    if (!CreatePassResources())
     {
         unavailable = true;
         return;
@@ -84,10 +172,17 @@ NvrhiFrameSkeleton::~NvrhiFrameSkeleton()
 
     DestroySwapchainResources();
 
+    // The pass wraps engine images and owns the pipelines and the target of the sky; it goes after
+    // the swapchain resources that dropped its presented wraps above.
+    skyPass.reset();
+
     pipeline = nullptr;
     vertexShader = nullptr;
     pixelShader = nullptr;
-    commandList = nullptr;
+
+    bindingLayout = nullptr;
+    presentParamsBuffer = nullptr;
+    presentSampler = nullptr;
 }
 
 void NvrhiFrameSkeleton::OnSwapchainCreate(const Swapchain *pSwapchain)
@@ -138,7 +233,8 @@ bool NvrhiFrameSkeleton::IsUnavailable() const
     return unavailable;
 }
 
-bool NvrhiFrameSkeleton::Render(const Swapchain *pSwapchain, VkSemaphore semaphoreToWait, VkSemaphore semaphoreToSignal)
+bool NvrhiFrameSkeleton::Render(const Swapchain *pSwapchain, uint32_t frameIndex, const SkyFrameInputs &sky,
+                                VkSemaphore semaphoreToWait, VkSemaphore semaphoreToSignal)
 {
     if (unavailable)
     {
@@ -161,35 +257,288 @@ bool NvrhiFrameSkeleton::Render(const Swapchain *pSwapchain, VkSemaphore semapho
     nvrhi::ITexture *backBuffer = swapchainTextures[imageIndex];
     nvrhi::IFramebuffer *framebuffer = swapchainFramebuffers[imageIndex];
 
-    commandList->open();
+    // The frame context owns the frame model: BeginSlot waits for the slot's previous submission,
+    // drains the slot's retire queue and opens its list, so no long-lived list is opened here.
+    frameContext->BeginSlot(frameIndex);
 
-    // The swapchain hands the image over in the present layout and expects it
-    // back in the same layout, so the pass is wrapped into two transitions.
-    commandList->beginTrackingTextureState(backBuffer, nvrhi::AllSubresources, nvrhi::ResourceStates::Present);
-    commandList->setTextureState(backBuffer, nvrhi::AllSubresources, nvrhi::ResourceStates::RenderTarget);
+    nvrhi::ICommandList *commandList = frameContext->GetCommandList(frameIndex);
+    assert(commandList != nullptr);
 
-    nvrhi::GraphicsState state;
-    state.pipeline = pipeline;
-    state.framebuffer = framebuffer;
-    state.viewport.addViewportAndScissorRect(nvrhi::Viewport(
-        float(backBuffer->getDesc().width), float(backBuffer->getDesc().height)));
+    // Newly wrapped engine textures are foreign to NVRHI and need their first-use state declared in
+    // the first command list that samples them (RhiTextureSource.h); the shared table hands over
+    // what was wrapped since the last frame.
+    textureTable->TrackPendingTextures(commandList);
 
-    commandList->setGraphicsState(state);
+    // The sky pass's Prepare runs in both modes: it selects the slot's ALBEDO target, wraps it and
+    // announces the state the engine leaves it in (UnorderedAccess, i.e. GENERAL) - the wrap the
+    // present samples below and, in the traced mode, the announcement the debug pass's UAV write
+    // relies on (the trace is then the image's first use of the list, so no transition precedes it).
+    if (skyPass != nullptr && sky.framebuffers != nullptr)
+    {
+        skyPass->Prepare(commandList, frameIndex, *sky.framebuffers, sky.width, sky.height);
+    }
 
-    nvrhi::DrawArguments args;
-    args.vertexCount = 3;
-    commandList->draw(args);
+    // The engine's GlobalUniform::Upload runs only from Scene::SubmitForFrame (Scene.cpp:112), which
+    // the RHI path does not call, so the device-local uniform would hold stale or zero data. Both
+    // modes read it - the world shader takes renderWidth from it (member 11, byte 644) for its
+    // checkerboard remap, and the debug trace's raygen takes the camera, the jitter, the ray limits
+    // and the cull masks - so this write is a common step of the frame. It is a static wrap of the
+    // engine's buffer, and under `rhiframe` nothing else touches that buffer.
+    // The world's wrap of the engine uniform is what the write below targets, and the traced mode
+    // never runs PrepareWorld, so the wrap is created here, lazily, for both modes. The wrap's desc
+    // mirrors the one PrepareWorld uses: isConstantBuffer (the validation device refuses a
+    // ConstantBuffer binding on a desc without it, validation-device.cpp:1717-1723), not volatile,
+    // resting in the state the engine buffer really is in.
+    if (worldUniformBuffer == nullptr && sky.uniform != nullptr)
+    {
+        nvrhi::BufferDesc uniformDesc;
+        uniformDesc.byteSize = sizeof(ShGlobalUniform);
+        uniformDesc.isConstantBuffer = true;
+        uniformDesc.initialState = nvrhi::ResourceStates::ConstantBuffer;
+        uniformDesc.keepInitialState = true;
+        uniformDesc.debugName = "RHI world uniform (GlobalUniform wrap)";
 
-    commandList->setTextureState(backBuffer, nvrhi::AllSubresources, nvrhi::ResourceStates::Present);
-    commandList->close();
+        worldUniformBuffer = device->createHandleForNativeBuffer(
+            nvrhi::ObjectTypes::VK_Buffer,
+            nvrhi::Object(static_cast<uint64_t>(reinterpret_cast<uintptr_t>(sky.uniform->GetBuffer()))),
+            uniformDesc);
+    }
 
-    // The image is not available until the acquire semaphore is signalled, and
-    // the presentation engine cannot start before the pass is done.
-    device->queueWaitForSemaphore(nvrhi::CommandQueue::Graphics, semaphoreToWait, 0);
-    device->queueSignalSemaphore(nvrhi::CommandQueue::Graphics, semaphoreToSignal, 0);
+    if (sky.uniform != nullptr && worldUniformBuffer != nullptr)
+    {
+        rhi::writeBuffer(commandList, worldUniformBuffer, sky.uniform->GetData(), sizeof(ShGlobalUniform));
+    }
 
-    device->executeCommandList(commandList, nvrhi::CommandQueue::Graphics);
-    device->runGarbageCollection();
+    // The acceleration-structure stream of the frame, recorded in both modes and before anything
+    // reads it: BuildStatic keeps the static BLAS in sync with the engine's components (it rebuilds
+    // them when the engine's static generation changes) and BuildTopLevel records the slot's TLAS -
+    // the module synthesises the instance list itself, from the engine's components and filters with
+    // our own BLAS handles, so nothing here depends on the engine's instance buffer any more.
+    if (accelStructs != nullptr)
+    {
+        accelStructs->BuildStatic(commandList);
+
+        if (debugTraceEnabled)
+        {
+            accelStructs->BuildTopLevel(commandList, frameIndex, sky.rayCullMaskWorld,
+                                        sky.allowGeometryWithSkyFlag, sky.disableRayTracedGeometry);
+        }
+    }
+
+    if (!debugTraceEnabled)
+    {
+        // The engine's rasterized sky, exactly the calls the pass's contract requires, on the one
+        // open list: Prepare above selected the slot's ALBEDO target, SetSkyCamera carries the same
+        // values the legacy DrawSkyToAlbedo call receives (VulkanDevice.cpp:748-756), and Render
+        // records the frame's sky list.
+        if (skyPass != nullptr && sky.framebuffers != nullptr)
+        {
+            skyPass->SetSkyCamera(sky.view, sky.projection, sky.jitter, sky.skyViewerPos);
+            skyPass->Render(commandList, sky.draws, sky.drawCount, sky.applyVertexColorGamma);
+        }
+
+        // The rasterized world sub-pass on top of the sky, into the same ALBEDO and depth. The world
+        // is created here, on the first frame that can have it, and not in the constructor: its
+        // engine image handles come from the Framebuffers accessors, and those answer from the image
+        // vector only Framebuffers::PrepareForSize fills - which the host calls per frame, before this
+        // Render, so the sky's Prepare above is the earliest point at which the handles are valid.
+        // When the world was not created (the frame carried no engine inputs yet, or PrepareWorld hit
+        // a permanent failure and logged it), the world's per-frame steps below - the exposure
+        // stand-in, the uniform write and RenderWorld - are all skipped, and the frame is exactly what
+        // the sky above and the present below made of it.
+        if (skyPass != nullptr && !skyPass->IsWorldCreated() && !worldCreationFailed)
+        {
+            PrepareWorld(frameIndex, sky);
+        }
+
+        if (skyPass != nullptr && skyPass->IsWorldCreated() &&
+            sky.uniform != nullptr && sky.tonemapping != nullptr)
+        {
+            // The exposure chain (Tonemapping::CalculateExposure) runs only from the legacy Render
+            // (VulkanDevice.cpp:1061), which the RHI path takes over, so nothing computes the engine
+            // buffer's avgLuminance under `rhiframe`. The world shader multiplies every output by a
+            // factor derived from it (Exposure.h:33-51):
+            //   factor = 1 / (1.2 * exp2(log2(avg * 100 / 12.5))) = 1 / (9.6 * avg).
+            // The buffer is constructed zeroed, which would make the factor zero and the whole rasterized
+            // world black; the neutral stand-in is the value that gives factor 1,
+            // 1 / 9.6 = 0.10417, which is also close to a dim map's real average. DEV STAND-IN until the
+            // exposure chain is ported.
+            sky.tonemapping->SetAvgLuminance(frameIndex, 1.0f / 9.6f);
+
+            // The world draws, exactly the sequence the sky got above: the pass owns the target, the
+            // binding sets, the state changes and the depth - it does not clear the depth a second
+            // time, so the world depth-tests against the sky's.
+            skyPass->RenderWorld(commandList, sky.worldDraws, sky.worldDrawCount, sky.applyVertexColorGamma);
+        }
+    }
+    else if (debugTracePass != nullptr && sky.framebuffers != nullptr)
+    {
+        // The traced frame: one primary ray per pixel over the TLAS the stream above just built,
+        // into the slot's ALBEDO image. The handles are the same ones the sky pass resolves for its
+        // own target (Framebuffers resolves the slot's swap permutation inside), and the debug pass
+        // wraps them itself; the raster sky/world sub-passes are deliberately not recorded in this
+        // mode, so the trace is ALBEDO's first user of the list. A null TLAS (the stream has not
+        // built one yet) leaves the image untouched and the present shows the previous frame's
+        // content; the pass warns once about it.
+        const auto [albedoImage, albedoView, albedoFormat] =
+            sky.framebuffers->GetImageHandles(FB_IMAGE_INDEX_ALBEDO, frameIndex);
+
+        debugTracePass->Render(
+            commandList, frameIndex,
+            accelStructs != nullptr ? accelStructs->GetTopLevel(frameIndex) : nullptr,
+            sky.width, sky.height,
+            static_cast<uint64_t>(reinterpret_cast<uintptr_t>(albedoImage)),
+            static_cast<uint64_t>(reinterpret_cast<uintptr_t>(albedoView)),
+            albedoFormat);
+    }
+
+    // The present samples the ALBEDO wrap of this slot. The pass is the only owner of the wrap, so
+    // the handle is borrowed and only valid until the pass re-wraps the slot.
+    nvrhi::ITexture *albedo = skyPass != nullptr ? skyPass->GetAlbedoTexture(frameIndex) : nullptr;
+
+    if (albedo == nullptr)
+    {
+        // No target means Prepare did not succeed for this slot (no framebuffers yet, or a failed
+        // wrap). The frame is still submitted and presented; the swapchain image keeps its previous
+        // content.
+        if (!warnedMissingAlbedo)
+        {
+            warnedMissingAlbedo = true;
+            print("Warning: RHI: the present has no ALBEDO target, the swapchain image is left untouched");
+        }
+    }
+    else if (PreparePresentBindingSet(frameIndex, albedo))
+    {
+        // The exposure of the present: the write takes the next version of the volatile buffer and,
+        // as every volatile-buffer write, has to follow the list's open(), which BeginSlot did.
+        rhi::writeBuffer(commandList, presentParamsBuffer, &PRESENT_PARAMS, sizeof(PRESENT_PARAMS));
+
+        // The swapchain hands the image over in the present layout and expects it
+        // back in the same layout, so the pass is wrapped into two transitions.
+        commandList->beginTrackingTextureState(backBuffer, nvrhi::AllSubresources, nvrhi::ResourceStates::Present);
+        commandList->setTextureState(backBuffer, nvrhi::AllSubresources, nvrhi::ResourceStates::RenderTarget);
+
+        nvrhi::GraphicsState state;
+        state.pipeline = pipeline;
+        state.framebuffer = framebuffer;
+        state.viewport.addViewportAndScissorRect(nvrhi::Viewport(
+            float(backBuffer->getDesc().width), float(backBuffer->getDesc().height)));
+        state.addBindingSet(presentBindingSets[frameIndex]);
+
+        commandList->setGraphicsState(state);
+
+        nvrhi::DrawArguments args;
+        args.vertexCount = 3;
+        commandList->draw(args);
+
+        // Sampling moved the ALBEDO wrap to the shader-resource state, and the engine's framebuffer
+        // images rest in GENERAL - the layout its own framebuffer descriptors declare
+        // (Framebuffers.cpp:786, :794) and the state the sky pass announces at the start of every
+        // list. The barrier is committed when the list closes (vulkan-commandlist.cpp:74-80).
+        commandList->setTextureState(albedo, nvrhi::AllSubresources, nvrhi::ResourceStates::UnorderedAccess);
+
+        commandList->setTextureState(backBuffer, nvrhi::AllSubresources, nvrhi::ResourceStates::Present);
+    }
+
+    // The context closes the slot's list and submits it: the image is not available until the
+    // acquire semaphore is signalled, and the presentation engine cannot start before the pass is
+    // done, so EndSlot waits on 'semaphoreToWait' and signals 'semaphoreToSignal' where the manual
+    // queue state and the execute used to be.
+    frameContext->EndSlot(frameIndex, semaphoreToWait, semaphoreToSignal);
+
+    // The fidelity gap (unwrappable formats or swizzles fall back to the white texture) is reported
+    // once, after the engine has had a few frames to fill the table; the counter then stops.
+    if (framesUntilFallbackLog > 0 && --framesUntilFallbackLog == 0)
+    {
+        print(("RHI: the texture table holds " + std::to_string(textureTable->GetFallbackSlotCount()) +
+               " fallback slot(s) (unwrapable format/swizzle)").c_str());
+    }
+
+    return true;
+}
+
+bool NvrhiFrameSkeleton::PrepareWorld(uint32_t frameIndex, const SkyFrameInputs &sky)
+{
+    // A frame without the engine objects, or a frame whose framebuffers are not there yet, is not
+    // a failure: the world simply waits for a later frame to bring them.
+    if (skyPass == nullptr || sky.framebuffers == nullptr ||
+        sky.uniform == nullptr || sky.tonemapping == nullptr)
+    {
+        return false;
+    }
+
+    if (!worldBuffersWrapped)
+    {
+        // What the two wraps have to declare, measured in the pinned NVRHI:
+        //  - the world shader's set 1 is a BindingLayoutItem::ConstantBuffer, and the validation
+        //    device refuses such a binding on a buffer whose desc lacks isConstantBuffer
+        //    (validation-device.cpp:1717-1723) and on a volatile one (:1725-1730); a volatile wrap
+        //    would also become a dynamic-offset binding (nvrhi.h:2311-2318), which the static
+        //    layout item cannot take;
+        //  - set 2 is a StructuredBuffer_SRV, and the same validation refuses a wrap with
+        //    structStride == 0 (:1693-1699); the backend asserts the same condition when the
+        //    binding set is created (vulkan-resource-bindings.cpp:535-536).
+        // Both descs declare the state the engine buffer really rests in, so the automatic-barrier
+        // pass neither reports an unknown prior state on the first use (state-tracking.cpp:290-297)
+        // nor emits a transition on a plain bind: the uniform is read as a uniform buffer, the
+        // tonemapping buffer as a storage buffer. keepInitialState makes the claim stand for every
+        // command list.
+        nvrhi::BufferDesc uniformDesc;
+        uniformDesc.byteSize = sizeof(ShGlobalUniform);
+        uniformDesc.isConstantBuffer = true;
+        uniformDesc.initialState = nvrhi::ResourceStates::ConstantBuffer;
+        uniformDesc.keepInitialState = true;
+        uniformDesc.debugName = "RHI world uniform (GlobalUniform wrap)";
+
+        worldUniformBuffer = device->createHandleForNativeBuffer(
+            nvrhi::ObjectTypes::VK_Buffer,
+            nvrhi::Object(static_cast<uint64_t>(reinterpret_cast<uintptr_t>(sky.uniform->GetBuffer()))),
+            uniformDesc);
+
+        for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+        {
+            nvrhi::BufferDesc tonemappingDesc;
+            tonemappingDesc.byteSize = sky.tonemapping->GetElementSize();
+            tonemappingDesc.structStride = sky.tonemapping->GetElementSize();
+            tonemappingDesc.initialState = nvrhi::ResourceStates::ShaderResource;
+            tonemappingDesc.keepInitialState = true;
+            tonemappingDesc.debugName = "RHI world tonemapping wrap " + std::to_string(i);
+
+            worldTonemappingBuffers[i] = device->createHandleForNativeBuffer(
+                nvrhi::ObjectTypes::VK_Buffer,
+                nvrhi::Object(static_cast<uint64_t>(reinterpret_cast<uintptr_t>(sky.tonemapping->GetBuffer(i)))),
+                tonemappingDesc);
+        }
+
+        if (worldUniformBuffer == nullptr ||
+            worldTonemappingBuffers[0] == nullptr || worldTonemappingBuffers[1] == nullptr)
+        {
+            print("Warning: RHI: failed to wrap the world uniform/tonemapping buffers, the rasterized world is skipped");
+            worldCreationFailed = true;
+            return false;
+        }
+
+        worldBuffersWrapped = true;
+    }
+
+    // The engine handles of this frame are only the seeds: the pass re-reads the same accessors in
+    // every Prepare, so a later engine framebuffer re-create is picked up without a second
+    // CreateWorld. The raw pointers the pass's array parameter needs are built from the handles
+    // above, which stay the owners.
+    nvrhi::IBuffer *tonemappingBuffers[MAX_FRAMES_IN_FLIGHT];
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+    {
+        tonemappingBuffers[i] = worldTonemappingBuffers[i].Get();
+    }
+
+    if (!skyPass->CreateWorld(worldUniformBuffer.Get(), tonemappingBuffers,
+                              sky.framebuffers->GetScreenEmissionHandles(frameIndex),
+                              sky.framebuffers->GetPrimaryToReflRefrHandles(frameIndex)))
+    {
+        // CreateWorld logged the reason; every failure it reports is permanent.
+        worldCreationFailed = true;
+        return false;
+    }
 
     return true;
 }
@@ -211,34 +560,119 @@ bool NvrhiFrameSkeleton::LoadShader(const char *pFileName, nvrhi::ShaderType typ
 {
     const std::string path = shaderFolderPath + pFileName;
 
-    std::ifstream file(path, std::ios::binary | std::ios::ate);
-    if (!file.is_open())
-    {
-        print(("Warning: RHI: cannot open the frame skeleton shader \"" + path + "\"").c_str());
-        return false;
-    }
-
-    const std::streampos fileSize = file.tellg();
-    file.seekg(0, std::ios::beg);
-
-    std::vector<char> binary(static_cast<size_t>(fileSize));
-    if (!file.read(binary.data(), static_cast<std::streamsize>(fileSize)))
-    {
-        print(("Warning: RHI: cannot read the frame skeleton shader \"" + path + "\"").c_str());
-        return false;
-    }
-
-    nvrhi::ShaderDesc desc;
-    desc.shaderType = type;
-    desc.debugName = pFileName;
-
-    result = device->createShader(desc, binary.data(), binary.size());
+    // The helper stays silent about a missing or unreadable blob, so that this class keeps its own
+    // warning and its 'unavailable' path (RhiPipeline.h).
+    result = rhi::loadShader(device, path, type, pFileName);
     if (result == nullptr)
     {
-        print(("Warning: RHI: failed to create the frame skeleton shader \"" + path + "\"").c_str());
+        print(("Warning: RHI: cannot load the frame skeleton shader \"" + path + "\"").c_str());
         return false;
     }
 
+    return true;
+}
+
+bool NvrhiFrameSkeleton::CreatePassResources()
+{
+    // The three bindings of the present, at the NVRHI slots whose Vulkan binding numbers the shader
+    // spells [[vk::binding(...)]] for: the constant buffer at 256, the ALBEDO texture at 0 and its
+    // sampler at 128 (the slot-to-binding rule is documented in RhiPipeline.h). The layout becomes
+    // descriptor set 0, the only set RhiPresent.frag declares.
+    const nvrhi::BindingLayoutItem layoutItems[] =
+    {
+        nvrhi::BindingLayoutItem::VolatileConstantBuffer(0),
+        nvrhi::BindingLayoutItem::Texture_SRV(0),
+        nvrhi::BindingLayoutItem::Sampler(0),
+    };
+
+    bindingLayout = rhi::createBindingLayout(device, layoutItems, "RhiPresent bindings");
+    if (bindingLayout == nullptr)
+    {
+        print("Warning: RHI: failed to create the present binding layout");
+        return false;
+    }
+
+    // Per-frame contents, so the buffer is volatile: NVRHI allocates PRESENT_PARAMS_VERSIONS copies
+    // of it and its state tracker skips volatile buffers entirely, which is the canonical shape of
+    // nvrhi::CreateVolatileConstantBufferDesc (third_party/nvrhi/src/common/utils.cpp). A write is
+    // only allowed after the command list has been opened, and every presented frame writes one
+    // version.
+    nvrhi::BufferDesc bufferDesc;
+    bufferDesc.byteSize = sizeof(RhiPresentParams);
+    bufferDesc.isConstantBuffer = true;
+    bufferDesc.isVolatile = true;
+    bufferDesc.maxVersions = PRESENT_PARAMS_VERSIONS;
+
+    presentParamsBuffer = rhi::createBuffer(device, bufferDesc, "RhiPresent params");
+    if (presentParamsBuffer == nullptr)
+    {
+        print("Warning: RHI: failed to create the present constant buffer");
+        return false;
+    }
+
+    // The sampler of the present: the ALBEDO render image can be smaller than the swapchain (the
+    // engine's resolution modes render below the window size by default), so the present magnifies
+    // it. Linear minification/magnification and clamp on all axes are nvrhi::SamplerDesc's defaults
+    // (nvrhi.h:1333-1338) and the shape of the engine's own bilinear sampler
+    // (SamplerManager.cpp:89-92). The shader's sample is an explicit LOD 0, so the mip mode only
+    // stays consistent with the engine's linear mip mode.
+    nvrhi::SamplerDesc samplerDesc;
+    samplerDesc.setAllFilters(true);
+    samplerDesc.setAllAddressModes(nvrhi::SamplerAddressMode::Clamp);
+
+    presentSampler = rhi::createSampler(device, samplerDesc, "RhiPresent sampler");
+    if (presentSampler == nullptr)
+    {
+        print("Warning: RHI: failed to create the present sampler");
+        return false;
+    }
+
+    return true;
+}
+
+bool NvrhiFrameSkeleton::PreparePresentBindingSet(uint32_t frameIndex, nvrhi::ITexture *albedo)
+{
+    assert(frameIndex < MAX_FRAMES_IN_FLIGHT);
+
+    // The set references exactly one texture, so it follows the slot's wrap: the sky pass replaces
+    // the wrap when the engine re-creates its framebuffers and, with them, the ALBEDO images
+    // (Framebuffers::PrepareForSize), and a set built for the old wrap would sample an image that is
+    // on its way out.
+    if (presentBindingSets[frameIndex] != nullptr && presentAlbedoTextures[frameIndex].Get() == albedo)
+    {
+        return true;
+    }
+
+    nvrhi::BindingSetDesc setDesc;
+    setDesc.addItem(nvrhi::BindingSetItem::ConstantBuffer(0, presentParamsBuffer));
+    setDesc.addItem(nvrhi::BindingSetItem::Texture_SRV(0, albedo));
+    setDesc.addItem(nvrhi::BindingSetItem::Sampler(0, presentSampler));
+
+    nvrhi::BindingSetHandle bindingSet = device->createBindingSet(setDesc, bindingLayout);
+    if (bindingSet == nullptr)
+    {
+        print("Warning: RHI: failed to create the present binding set");
+        return false;
+    }
+
+    // Anything a recorded list may still reference has to go through the frame context's retire
+    // queue (RhiFrameContext.h): the old set and the texture handle it held are released only after
+    // the queue finished the submission that could still use them.
+    if (frameContext != nullptr)
+    {
+        if (presentBindingSets[frameIndex] != nullptr)
+        {
+            frameContext->Retire(presentBindingSets[frameIndex]);
+        }
+
+        if (presentAlbedoTextures[frameIndex] != nullptr)
+        {
+            frameContext->Retire(presentAlbedoTextures[frameIndex]);
+        }
+    }
+
+    presentBindingSets[frameIndex] = std::move(bindingSet);
+    presentAlbedoTextures[frameIndex] = albedo;
     return true;
 }
 
@@ -248,6 +682,9 @@ bool NvrhiFrameSkeleton::CreatePipeline(nvrhi::Format colorFormat)
     desc.setVertexShader(vertexShader);
     desc.setPixelShader(pixelShader);
     desc.primType = nvrhi::PrimitiveType::TriangleList;
+    // One layout, the present's own set 0. RhiPresent.frag declares no bindless table, so the
+    // pipeline of the checkerboard (which carried the shared table as its second set) is gone.
+    desc.addBindingLayout(bindingLayout);
 
     // The fullscreen triangle is drawn in clip space, without any vertex buffer.
     desc.renderState.rasterState.cullMode = nvrhi::RasterCullMode::None;
@@ -258,7 +695,7 @@ bool NvrhiFrameSkeleton::CreatePipeline(nvrhi::Format colorFormat)
     nvrhi::FramebufferInfo framebufferInfo;
     framebufferInfo.addColorFormat(colorFormat);
 
-    pipeline = device->createGraphicsPipeline(desc, framebufferInfo);
+    pipeline = rhi::createGraphicsPipeline(device, desc, framebufferInfo, "RhiPresent pipeline");
     if (pipeline == nullptr)
     {
         print("Warning: RHI: failed to create the frame skeleton pipeline");
@@ -317,6 +754,34 @@ bool NvrhiFrameSkeleton::CreateSwapchainResources(const Swapchain *pSwapchain)
 
 void NvrhiFrameSkeleton::DestroySwapchainResources()
 {
+    // The sky pass wraps the engine's ALBEDO images and keeps one wrapped target per frame slot.
+    // Dropping them here is what lets the engine destroy and re-create its framebuffers: the
+    // re-create path of the swapchain waits for the device before it notifies
+    // (Swapchain.cpp:323-326), and the next Prepare re-wraps the new images. The releases go
+    // through the frame context's retire queue.
+    if (skyPass != nullptr)
+    {
+        skyPass->ReleaseTargets();
+    }
+
+    // The debug trace pass wraps the same engine ALBEDO images and keeps its own per-slot wrap, UAV
+    // set and TLAS set over them, so it has to drop them at the same point and for the same reason
+    // as the sky pass above.
+    if (debugTracePass != nullptr)
+    {
+        debugTracePass->ReleaseTargets();
+    }
+
+    // A present binding set references the ALBEDO wrap of one slot, so it goes with it; the next
+    // frame builds a set for the new wrap. Every caller runs after a device wait - the destructor
+    // and OnSwapchainDestroy wait themselves, and the swapchain's re-create waits before it
+    // notifies - so the handles can be dropped directly instead of through the retire queue.
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+    {
+        presentBindingSets[i] = nullptr;
+        presentAlbedoTextures[i] = nullptr;
+    }
+
     swapchainFramebuffers.clear();
     swapchainTextures.clear();
 }

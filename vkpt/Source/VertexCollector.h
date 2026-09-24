@@ -97,6 +97,30 @@ public:
     uint32_t GetCurrentVertexCount() const;
     uint32_t GetCurrentIndexCount() const;
 
+    // Read-only views for the RHI layer's acceleration-structure builds (RHI/RhiAccelStructs.cpp);
+    // no behaviour change, the accessors only read what the collector already holds.
+    // Device address of the device-local vertex buffer, so that the RHI side can turn the absolute
+    // addresses in the AS geometry descriptors into NVRHI buffer offsets.
+    VkDeviceAddress GetVertexBufferAddress() const;
+    // Device address of the device-local index buffer, for the same offset arithmetic.
+    VkDeviceAddress GetIndexBufferAddress() const;
+    // Device address of the transforms buffer: the RHI side reads the transform values from the CPU
+    // copy below, so the address only serves to locate a geometry's transform index in it.
+    VkDeviceAddress GetTransformsBufferAddress() const;
+    // Byte sizes of the two device-local buffers, for the RHI wrap's bookkeeping desc (a native
+    // wrap has no other source for them).
+    VkDeviceSize GetVertexBufferSize() const;
+    VkDeviceSize GetIndexBufferSize() const;
+    // The CPU-side staging copy of the per-geometry transforms (VkTransformMatrixKHR, one per
+    // geometry): the same array GetGeometryDrawInfos reads; valid while the collector lives.
+    const VkTransformMatrixKHR *GetTransformsStaging() const;
+    // The host-visible staging buffers that AddGeometry fills (the device-local buffers above are
+    // their copy targets): the copy source for the RHI layer's per-frame transfer of the used
+    // vertex/index prefix (RHI/RhiAccelStructs.cpp). The staging sizes equal the device-local
+    // sizes; valid while the collector lives.
+    VkBuffer GetStagingVertexBuffer() const;
+    VkBuffer GetStagingIndexBuffer() const;
+
     // Convenience data for drawing the collected geometry with a custom
     // graphics pipeline (e.g. the shadow map). One entry per geometry.
     struct GeometryDrawInfo

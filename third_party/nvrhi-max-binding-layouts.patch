@@ -1,0 +1,13 @@
+diff --git a/include/nvrhi/nvrhi.h b/include/nvrhi/nvrhi.h
+index 489edf4..3f06b26 100644
+--- a/include/nvrhi/nvrhi.h
++++ b/include/nvrhi/nvrhi.h
+@@ -74,7 +74,7 @@ namespace nvrhi
+     static constexpr uint32_t c_MaxRenderTargets = 8;
+     static constexpr uint32_t c_MaxViewports = 16;
+     static constexpr uint32_t c_MaxVertexAttributes = 16;
+-    static constexpr uint32_t c_MaxBindingLayouts = 8;
++    static constexpr uint32_t c_MaxBindingLayouts = 16;
+     static constexpr uint32_t c_MaxBindlessRegisterSpaces = 16;
+     static constexpr uint32_t c_MaxVolatileConstantBuffersPerLayout = 6;
+     static constexpr uint32_t c_MaxVolatileConstantBuffers = 32;

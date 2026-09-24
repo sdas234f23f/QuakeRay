@@ -615,6 +615,16 @@ std::tuple<VkImage, VkImageView, VkFormat, VkExtent2D> Framebuffers::GetImageHan
     return std::make_tuple( image, view, format, GetFramebufSize( resolutionState, fbImageIndex ) );
 }
 
+std::tuple<VkImage, VkImageView, VkFormat> Framebuffers::GetScreenEmissionHandles(uint32_t frameIndex) const
+{
+    return GetImageHandles(FB_IMAGE_INDEX_SCREEN_EMISSION, frameIndex);
+}
+
+std::tuple<VkImage, VkImageView, VkFormat> Framebuffers::GetPrimaryToReflRefrHandles(uint32_t frameIndex) const
+{
+    return GetImageHandles(FB_IMAGE_INDEX_PRIMARY_TO_REFL_REFR, frameIndex);
+}
+
 VkExtent2D vkpt::Framebuffers::GetFramebufSize( const ResolutionState& resolutionState,
                                                  FramebufferImageIndex  index ) const
 {

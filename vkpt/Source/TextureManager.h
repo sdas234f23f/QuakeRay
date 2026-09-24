@@ -40,6 +40,11 @@
 namespace vkpt
 {
 
+namespace rhi
+{
+class RhiTextureTable;
+}
+
 class TextureManager
 {
 public:
@@ -78,6 +83,11 @@ public:
     static constexpr uint32_t GetEmptyTextureIndex();
     uint32_t GetWaterNormalTextureIndex() const;
 
+    // The RHI texture table (vkpt::rhi::RhiTextureTable) mirrors this manager's texture and sampler
+    // slots. The host sets it after creating the table; while it is null every RHI call is skipped,
+    // so the legacy behaviour is unchanged. The manager does not own the table.
+    void SetRhiTextureTable(rhi::RhiTextureTable *pTable);
+
     VkDescriptorSet GetDescSet(uint32_t frameIndex) const;
     VkDescriptorSetLayout GetDescSetLayout() const;
 
@@ -99,7 +109,9 @@ private:
                              bool                                            isUpdateable,
                              std::optional< RgTextureSwizzling >             swizzling );
 
-    uint32_t InsertTexture(uint32_t frameIndex, VkImage image, VkImageView view, SamplerManager::Handle samplerHandle);
+    uint32_t InsertTexture(uint32_t frameIndex, VkImage image, VkImageView view,
+                           SamplerManager::Handle samplerHandle, VkFormat format,
+                           VkExtent2D baseSize, uint32_t mipLevels);
     void DestroyTexture(const Texture &texture);
     void AddToBeDestroyed(uint32_t frameIndex, const Texture &texture);
 
@@ -142,6 +154,9 @@ private:
     std::vector<TalCdfSource> talCdfSources;
 
     std::vector<Texture> textures;
+    // Optional mirror of 'textures' in the RHI bindless table (RHI/RhiTextureTable.h). Not owned;
+    // the host sets it with SetRhiTextureTable. All RHI writes are guarded by it being non-null.
+    rhi::RhiTextureTable *rhiTextureTable = nullptr;
     // Textures are not destroyed immediately, but when
     // they won't be in use
     std::vector<Texture> texturesToDestroy[MAX_FRAMES_IN_FLIGHT];

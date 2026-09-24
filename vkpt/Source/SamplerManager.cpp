@@ -23,6 +23,7 @@
 #include <string>
 
 #include "RgException.h"
+#include "RHI/RhiTextureTable.h"
 
 using namespace vkpt;
 
@@ -50,11 +51,59 @@ static VkSamplerAddressMode RgAddressModeToVk(RgSamplerAddressMode r)
     }
 }
 
-
-SamplerManager::SamplerManager(VkDevice _device, uint32_t _anisotropy, bool _forceMinificationFilterLinear)
-:
-    device(_device), mipLodBias(0.0f), anisotropy(_anisotropy), forceMinificationFilterLinear(_forceMinificationFilterLinear)
+static nvrhi::SamplerAddressMode VkAddressModeToNvrhi(VkSamplerAddressMode mode)
 {
+    switch (mode)
+    {
+        case VK_SAMPLER_ADDRESS_MODE_REPEAT:                return nvrhi::SamplerAddressMode::Repeat;
+        case VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT:       return nvrhi::SamplerAddressMode::MirroredRepeat;
+        case VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE:         return nvrhi::SamplerAddressMode::ClampToEdge;
+        case VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER:       return nvrhi::SamplerAddressMode::ClampToBorder;
+        case VK_SAMPLER_ADDRESS_MODE_MIRROR_CLAMP_TO_EDGE:  return nvrhi::SamplerAddressMode::MirrorClampToEdge;
+        default: assert(0); return nvrhi::SamplerAddressMode::Repeat;
+    }
+}
+
+// nvrhi::SamplerDesc expresses a filter as a bool: true is linear, false is nearest.
+static bool IsLinearFilter(VkFilter filter)
+{
+    assert(filter == VK_FILTER_NEAREST || filter == VK_FILTER_LINEAR);
+    return filter == VK_FILTER_LINEAR;
+}
+
+// The RHI mirror of the legacy create-info, field by field. What the legacy info sets but
+// nvrhi::SamplerDesc has no field for is left to what the nvrhi Vulkan backend does itself:
+// minLod is hardcoded to 0 (the legacy 0.0f), maxLod to FLT_MAX (the legacy VK_LOD_CLAMP_NONE),
+// unnormalizedCoordinates stays false (the legacy VK_FALSE), and the anisotropy-enable flag is
+// derived from maxAnisotropy (the legacy enable is _anisotropy > 0, and the assert above allows
+// only 0/2/4/8/16, so the two agree).
+static nvrhi::SamplerDesc VkSamplerInfoToNvrhiDesc(const VkSamplerCreateInfo &info)
+{
+    nvrhi::SamplerDesc desc;
+    desc.minFilter = IsLinearFilter(info.minFilter);
+    desc.magFilter = IsLinearFilter(info.magFilter);
+    desc.mipFilter = info.mipmapMode == VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    desc.addressU = VkAddressModeToNvrhi(info.addressModeU);
+    desc.addressV = VkAddressModeToNvrhi(info.addressModeV);
+    desc.addressW = VkAddressModeToNvrhi(info.addressModeW);
+    desc.mipBias = info.mipLodBias;
+    desc.maxAnisotropy = info.maxAnisotropy;
+    desc.reductionType = nvrhi::SamplerReductionType::Standard; // info.compareEnable == VK_FALSE
+    // info.borderColor is always VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK where the info is set up
+    // above; the nvrhi Vulkan backend maps Color(0,0,0,0) back to eFloatTransparentBlack.
+    desc.borderColor = nvrhi::Color(0.0f, 0.0f, 0.0f, 0.0f);
+    return desc;
+}
+
+
+SamplerManager::SamplerManager(VkDevice _device, uint32_t _anisotropy, bool _forceMinificationFilterLinear,
+                               rhi::RhiTextureTable *pRhiTextureTable)
+:
+    device(_device), mipLodBias(0.0f), anisotropy(_anisotropy), forceMinificationFilterLinear(_forceMinificationFilterLinear),
+    rhiTextureTable(pRhiTextureTable)
+{
+    // The pointer is set before this call: CreateAllSamplers hands each sampler desc to the RHI
+    // table as it creates the legacy sampler, and those descs are lost if the pointer arrives later.
     CreateAllSamplers(anisotropy, mipLodBias);
 }
 
@@ -76,6 +125,11 @@ SamplerManager::~SamplerManager()
     }
 ;
     samplers.clear();
+}
+
+void SamplerManager::SetRhiTextureTable(rhi::RhiTextureTable *pTable)
+{
+    rhiTextureTable = pTable;
 }
 
 void vkpt::SamplerManager::CreateAllSamplers(uint32_t _anisotropy, float _mipLodBias)
@@ -131,6 +185,13 @@ void vkpt::SamplerManager::CreateAllSamplers(uint32_t _anisotropy, float _mipLod
                 assert(samplers.find(index) == samplers.end());
 
                 samplers[index] = sampler;
+
+                // Mirror the sampler into the RHI table under the same engine index (a slot's
+                // sampler is the array element of that index). The legacy samplers are untouched.
+                if (rhiTextureTable != nullptr)
+                {
+                    rhiTextureTable->SetSamplerDesc(index, VkSamplerInfoToNvrhiDesc(info));
+                }
             }
         }
     }
@@ -150,6 +211,14 @@ void vkpt::SamplerManager::CreateAllSamplers(uint32_t _anisotropy, float _mipLod
         assert(samplers.find(index) == samplers.end());
 
         samplers[index] = sampler;
+
+        if (rhiTextureTable != nullptr)
+        {
+            // The RHI mirror gets the same filters, addresses, bias and anisotropy, but not the
+            // force-lowest behaviour: nvrhi::SamplerDesc has no minLod, so the RHI sampler keeps
+            // minLod 0 and walks the normal mip chain. Known, reported gap.
+            rhiTextureTable->SetSamplerDesc(index, VkSamplerInfoToNvrhiDesc(info));
+        }
     }
 }
 
@@ -220,6 +289,14 @@ bool vkpt::SamplerManager::TryChangeMipLodBias(uint32_t frameIndex, float newMip
     
     AddAllSamplersToDestroy(frameIndex);
     CreateAllSamplers(anisotropy, newMipLodBias);
+
+    if (rhiTextureTable != nullptr)
+    {
+        // CreateAllSamplers has just handed over the descs carrying the new lod bias, so the RHI
+        // side recreates its own samplers from them and rewrites the sampler side of every set
+        // slot.
+        rhiTextureTable->RebuildSamplers();
+    }
 
     mipLodBias = newMipLodBias;
     return true;

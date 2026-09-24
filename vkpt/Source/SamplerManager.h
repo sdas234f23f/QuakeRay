@@ -26,6 +26,13 @@
 #include "Containers.h"
 #include "vkpt/vkpt.h"
 
+// The RHI layer's own sampler table (RHI/RhiTextureTable.h). Forward declared on purpose: this
+// header must stay free of the NVRHI include.
+namespace vkpt::rhi
+{
+    class RhiTextureTable;
+}
+
 namespace vkpt
 {
 
@@ -46,6 +53,9 @@ public:
             return other.internalIndex == internalIndex;
         }
 
+        // The RHI texture table needs the raw index to point a slot at the mirrored nvrhi sampler.
+        uint32_t GetIndex() const { return internalIndex; }
+
         bool SetIfHasDynamicSamplerFilter(RgSamplerFilter newDynamicSamplerFilter);
 
     private:
@@ -54,7 +64,11 @@ public:
     };
 
 public:
-    SamplerManager(VkDevice device, uint32_t anisotropy, bool forceMinificationFilterLinear);
+    // 'pRhiTextureTable' may be null (legacy-only): the manager then mirrors nothing. The world
+    // manager gets the table so that it receives the sampler descs while it creates them; the
+    // cubemap manager stays null because it would overwrite the same indices.
+    SamplerManager(VkDevice device, uint32_t anisotropy, bool forceMinificationFilterLinear,
+                   rhi::RhiTextureTable *pRhiTextureTable = nullptr);
     ~SamplerManager();
 
     SamplerManager(const SamplerManager &other) = delete;
@@ -75,6 +89,10 @@ public:
 
     // Wait idle and recreate all the samplers with new lod bias
     bool TryChangeMipLodBias(uint32_t frameIndex, float newMipLodBias);
+
+    // The host hands over the RHI copy of the sampler table once both objects exist. Not owned;
+    // null means legacy-only, and every use of the pointer is guarded.
+    void SetRhiTextureTable(rhi::RhiTextureTable *pTable);
 
 private:
     void CreateAllSamplers(uint32_t anisotropy, float mipLodBias);
@@ -100,6 +118,9 @@ private:
     float mipLodBias;
     uint32_t anisotropy;
     bool forceMinificationFilterLinear;
+
+    // The RHI copy of the sampler table (RHI/RhiTextureTable.h); null until the host wires it up.
+    rhi::RhiTextureTable *rhiTextureTable = nullptr;
 };
 
 }

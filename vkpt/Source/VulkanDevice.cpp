@@ -1231,7 +1231,7 @@ void VulkanDevice::Render(VkCommandBuffer cmd, const RgDrawFrameInfo &drawInfo)
     passTimings->Mark(cmd, frameIndex, GPU_PASS_COUNT);
 }
 
-bool VulkanDevice::RenderThroughRhi()
+bool VulkanDevice::RenderThroughRhi(const RgDrawFrameInfo &drawInfo)
 {
     if (nvrhiFrameSkeleton->IsUnavailable())
     {
@@ -1240,6 +1240,85 @@ bool VulkanDevice::RenderThroughRhi()
 
     const uint32_t frameIndex = currentFrameState.GetFrameIndex();
 
+    // The engine's framebuffers are created by the legacy Render path and nowhere else
+    // (Framebuffers::PrepareForSize, VulkanDevice.cpp:738), and the RHI sky pass draws into their
+    // ALBEDO image. Keeping them prepared here is what makes ALBEDO exist and follow a resolution
+    // change under `rhiframe`; the call is idempotent, so the fallback below can repeat it with the
+    // same resolution state and get the same no-op.
+    framebuffers->PrepareForSize(renderResolution.GetResolutionState());
+
+    // The sky inputs are built from the same sources the legacy DrawSkyToAlbedo call reads
+    // (VulkanDevice.cpp:748-756): the uniform's view/projection/jitter filled by the FillUniform
+    // call of DrawFrame, the sky params' viewer position of the draw info, and the frame's sky draw
+    // list of the collector. No legacy math is duplicated in the RHI path - the pass gets the same
+    // arguments.
+    const ShGlobalUniform *globalUniform = uniform->GetData();
+    const RgFloat3D skyViewerPosition =
+        drawInfo.pSkyParams ? drawInfo.pSkyParams->skyViewerPosition : RgFloat3D{ 0, 0, 0 };
+
+    const std::vector<RasterizedDataCollector::DrawInfo> &skyDraws =
+        rasterizer->GetDataCollector().GetSkyDrawInfos();
+
+    // The world sub-pass draws the frame's raster draw list - what the legacy world draw consumes
+    // (VulkanDevice.cpp:1071-1082, Rasterizer::DrawToFinalImage) - and reads the same engine global
+    // uniform and tonemapping objects the legacy world draw binds (Rasterizer.cpp:273-279). The
+    // skeleton receives them as pointers because it wraps the two buffers itself, on the first
+    // frame the engine's framebuffers exist (see NvrhiFrameSkeleton::PrepareWorld).
+    const std::vector<RasterizedDataCollector::DrawInfo> &worldDraws =
+        rasterizer->GetDataCollector().GetRasterDrawInfos();
+
+    // The engine's TLAS preparation and build, the two calls Scene::SubmitForFrame makes on this
+    // frame's legacy command buffer (Scene.cpp:108-118), with exactly the values of the legacy call
+    // site (VulkanDevice.cpp:732-735): the uniform's world-ray cull mask, the instance-wide sky
+    // flag and the draw info's "disable ray-traced geometry" flag. They stay on the legacy buffer:
+    // PrepareForBuildingTLAS fills the uniform's per-instance geometry offsets - the CPU copy the
+    // skeleton writes into the device-local uniform - and BuildTLAS fills the engine's instance
+    // buffer, which the RHI acceleration structures wrap and build their TLAS from.
+    //
+    // The one-frame lag this implies, deliberate for this increment: the legacy command buffer is
+    // submitted after the RHI command list of the same frame (VulkanDevice.cpp:1301-1305), so the
+    // RHI list of frame N builds its TLAS from the instance buffer contents that frame N-1's
+    // submission left behind. The TLAS therefore references the engine's own BLAS addresses (the
+    // ones the engine wrote into the instance buffer), not the RHI module's; the A3.1 increment
+    // moves the instance fill onto the RHI list and flips the references.
+    const std::shared_ptr<ASManager> &asManager = scene->GetASManager();
+    const auto prepare = asManager->PrepareForBuildingTLAS(
+        frameIndex, *uniform->GetData(), uniform->GetData()->rayCullMaskWorld,
+        allowGeometryWithSkyFlag, drawInfo.disableRayTracedGeometry);
+
+    // Fill the engine's instance buffer ahead of the skeleton's Render: the skeleton records the RHI
+    // TLAS build from it, and the raster mode's world branch writes the uniform data (including the
+    // per-instance geometry offsets filled just above) into the device-local uniform. The traced
+    // mode has no such write yet - the debug pass reads the uniform the engine buffer holds, and
+    // under `rhiframe` GlobalUniform::Upload does not run - so a traced frame reads whatever the
+    // last upload left there; refreshing it on the RHI list belongs to the A4 wiring. The TLAS build
+    // is not part of the legacy renderer's frame here, so it has to happen on the legacy buffer
+    // regardless of which mode the skeleton records.
+    asManager->BuildTLAS(currentFrameState.GetCmdBuffer(), frameIndex, prepare.first);
+
+    NvrhiFrameSkeleton::SkyFrameInputs sky = {};
+    sky.framebuffers = framebuffers.get();
+    sky.draws = skyDraws.data();
+    sky.drawCount = static_cast<uint32_t>(skyDraws.size());
+    sky.width = renderResolution.Width();
+    sky.height = renderResolution.Height();
+    memcpy(sky.view, globalUniform->view, sizeof(sky.view));
+    memcpy(sky.projection, globalUniform->projection, sizeof(sky.projection));
+    sky.jitter[0] = globalUniform->jitterX;
+    sky.jitter[1] = globalUniform->jitterY;
+    memcpy(sky.skyViewerPos, skyViewerPosition.data, sizeof(sky.skyViewerPos));
+    sky.applyVertexColorGamma = rasterizedVertexColorGamma;
+    sky.worldDraws = worldDraws.data();
+    sky.worldDrawCount = static_cast<uint32_t>(worldDraws.size());
+    sky.uniform = uniform.get();
+    sky.tonemapping = tonemapping.get();
+    // The module synthesises the instance list itself from the engine's registry, so it takes the
+    // same three frame inputs the engine's own TLAS preparation takes (VulkanDevice.cpp:1285): the
+    // uniform's world-ray cull mask, the instance-wide sky flag, and the draw info's flag.
+    sky.rayCullMaskWorld = uniform->GetData()->rayCullMaskWorld;
+    sky.allowGeometryWithSkyFlag = allowGeometryWithSkyFlag;
+    sky.disableRayTracedGeometry = drawInfo.disableRayTracedGeometry;
+
     // The RHI pass waits on the acquire semaphore itself, so the semaphore is
     // taken away from the renderer: it may be waited on only once per signal.
     VkPipelineStageFlags semaphoreWaitStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
@@ -1247,7 +1326,7 @@ bool VulkanDevice::RenderThroughRhi()
 
     assert(semaphoreToWait != VK_NULL_HANDLE);
 
-    if (!nvrhiFrameSkeleton->Render(swapchain.get(), semaphoreToWait, renderFinishedSemaphores[frameIndex]))
+    if (!nvrhiFrameSkeleton->Render(swapchain.get(), frameIndex, sky, semaphoreToWait, renderFinishedSemaphores[frameIndex]))
     {
         // Give it back: the renderer will submit the frame itself.
         currentFrameState.SetSemaphore(semaphoreToWait, semaphoreWaitStage);
@@ -1351,17 +1430,45 @@ void VulkanDevice::DrawFrame(const RgDrawFrameInfo *drawInfo)
 
     textureManager->CheckForHotReload(cmd, frameIndex);
 
-    // The RHI frame skeleton takes over the frame: the pass is drawn and
-    // submitted through the RHI layer, the renderer is skipped.
-    if (nvrhiFrameSkeleton != nullptr && RenderThroughRhi())
-    {
-        currentFrameState.OnEndFrame();
-        return;
-    }
+    const bool canRender = renderResolution.Width() > 0 && renderResolution.Height() > 0;
 
-    if (renderResolution.Width() > 0 && renderResolution.Height() > 0)
+    // The uniform is filled once for both renderers: the RHI sky pass reads the same view,
+    // projection and jitter the legacy path uses (VulkanDevice.cpp:748-756), and FillUniform is what
+    // puts them there. The legacy fallback below keeps its existing FillUniform+Render pair and
+    // fills nothing a second time.
+    if (canRender)
     {
         FillUniform(uniform->GetData(), *drawInfo);
+    }
+
+    // The RHI frame skeleton takes over the frame: the rasterized sky is drawn into the engine's
+    // ALBEDO image and presented through the RHI layer, the renderer is skipped. The collector copy
+    // is what the legacy Rasterizer::SubmitForFrame does (Rasterizer.cpp:160); the legacy command
+    // buffer that carries it is submitted after the RHI list, so the sky of this frame still reads
+    // the copy of the previous frame - the geometry is static per level, so only the first frame
+    // after a level load reads the zeroed buffer (see the geometry wrap in VulkanDevice_Init.cpp).
+    // The availability check keeps the copy out of the fallback path: when the skeleton cannot
+    // render, the legacy Render below calls SubmitForFrame and would copy a second time.
+    if (nvrhiFrameSkeleton != nullptr && !nvrhiFrameSkeleton->IsUnavailable() && canRender)
+    {
+        // The engine's per-frame descriptor flush lives on the legacy path (VulkanDevice.cpp:724-727),
+        // which the RHI takes over. Without it the shared RHI texture table is never filled and every
+        // bindless sample reads an unwritten descriptor - the sky renders black. The cubemap table is a
+        // separate set the ported passes do not use yet, so its flush stays on the legacy path.
+        const bool mipLodBiasUpdated = worldSamplerManager->TryChangeMipLodBias(frameIndex, renderResolution.GetMipLodBias());
+        textureManager->SubmitDescriptors(frameIndex, drawInfo->pTexturesParams, mipLodBiasUpdated);
+
+        rasterizer->GetDataCollector().CopyFromStaging(cmd, frameIndex);
+
+        if (RenderThroughRhi(*drawInfo))
+        {
+            currentFrameState.OnEndFrame();
+            return;
+        }
+    }
+
+    if (canRender)
+    {
         Render(cmd, *drawInfo);
     }
 

@@ -27,11 +27,17 @@
 #include "HaltonSequence.h"
 #include "RenderResolutionHelper.h"
 #include "RgException.h"
+#include "Const.h"
 #include "Generated/ShaderCommonC.h"
 #include "LibraryConfig.h"
 #include "RHI/NvrhiContext.h"
 #include "RHI/NvrhiFrameSkeleton.h"
 #include "RHI/NvrhiRequirements.h"
+#include "RHI/RhiAccelStructs.h"
+#include "RHI/RhiDebugTracePass.h"
+#include "RHI/RhiFrameContext.h"
+#include "RHI/RhiSkyPass.h"
+#include "RHI/RhiTextureTable.h"
 
 using namespace vkpt;
 
@@ -50,6 +56,7 @@ VulkanDevice::VulkanDevice( const RgInstanceCreateInfo* info )
     , rayCullBackFacingTriangles( info->rayCullBackFacingTriangles )
     , allowGeometryWithSkyFlag( info->allowGeometryWithSkyFlag )
     , lensFlareVerticesInScreenSpace( info->lensFlareVerticesInScreenSpace )
+    , rasterizedVertexColorGamma( info->rasterizedVertexColorGamma != 0 )
     , previousFrameTime( -1.0 / 60.0 )
     , currentFrameTime( 0 )
 {
@@ -81,6 +88,40 @@ VulkanDevice::VulkanDevice( const RgInstanceCreateInfo* info )
     // once both exist
     CreateNvrhiDevice();
 
+    // The RHI texture table (RHI/RhiTextureTable.h) has to exist before the sampler managers: the
+    // world manager mirrors its sampler descs into it while it creates the samplers. The capacity is
+    // the same clamped value TextureManager builds its own table with - a bindless table's capacity
+    // is fixed at layout creation, and the two tables address the same slots. On failure the pointer
+    // stays null and the game continues without the RHI textures. The table is built only when the
+    // RHI frame skeleton is on: with `rhiframe` off the engine writes to the legacy table alone, so
+    // the legacy path pays neither the wrapping of every texture nor the descriptor writes. The world
+    // stage of A2 revisits this when the RHI renderer owns the frame.
+    if (libconfig.rhiFrameSkeleton)
+    {
+        const uint32_t maxTextureCount =
+            std::clamp(info->maxTextureCount, TEXTURE_COUNT_MIN, TEXTURE_COUNT_MAX);
+
+        // The frame context comes first: the table retires its dropped samplers and wrapped textures
+        // through it, and the skeleton records through it, one command list per engine frame slot.
+        rhiFrameContext = std::make_shared<rhi::RhiFrameContext>();
+
+        if (!rhiFrameContext->Create(nvrhi->GetDevice(), MAX_FRAMES_IN_FLIGHT))
+        {
+            rhiFrameContext.reset();
+            Print("Warning: RHI: failed to create the frame context, the RHI renderer is unavailable");
+        }
+        else
+        {
+            rhiTextureTable = std::make_shared<rhi::RhiTextureTable>();
+
+            if (!rhiTextureTable->Create(nvrhi->GetDevice(), maxTextureCount, rhiFrameContext.get()))
+            {
+                rhiTextureTable.reset();
+                Print("Warning: RHI: failed to create the texture table, the RHI renderer will not see engine textures");
+            }
+        }
+    }
+
 
     memAllocator        = std::make_shared<MemoryAllocator>(instance, device, physDevice);
 
@@ -91,7 +132,8 @@ VulkanDevice::VulkanDevice( const RgInstanceCreateInfo* info )
     swapchain           = std::make_shared<Swapchain>(device, surface, physDevice->Get(), cmdManager);
 
     // for world samplers with modifyable lod biad
-    worldSamplerManager     = std::make_shared<SamplerManager>(device, 8, info->textureSamplerForceMinificationFilterLinear);
+    worldSamplerManager     = std::make_shared<SamplerManager>(device, 8, info->textureSamplerForceMinificationFilterLinear,
+                                                               rhiTextureTable.get());
     genericSamplerManager   = std::make_shared<SamplerManager>(device, 0, info->textureSamplerForceMinificationFilterLinear);
 
     framebuffers        = std::make_shared<Framebuffers>(
@@ -115,6 +157,10 @@ VulkanDevice::VulkanDevice( const RgInstanceCreateInfo* info )
         userFileLoad,
         *info,
         libconfig);
+
+    // The table was created before the texture manager; attaching it afterwards fills every live
+    // slot of the new table through the manager's all-dirty path (TextureManager::SetRhiTextureTable).
+    textureManager->SetRhiTextureTable(rhiTextureTable.get());
 
     cubemapManager      = std::make_shared<CubemapManager>(
         device,
@@ -314,13 +360,126 @@ VulkanDevice::VulkanDevice( const RgInstanceCreateInfo* info )
     {
         if (nvrhi != nullptr)
         {
+            // The acceleration structures of the RHI path (RHI/RhiAccelStructs.h): the NVRHI copy of
+            // the engine's static BLAS plus one TLAS per frame slot, built from the engine's
+            // ASManager. Created after the scene exists (the manager is their geometry registry) and
+            // next to the skeleton, which records their builds and reads the TLAS. A failure leaves
+            // the pointer null; the skeleton refuses to be available without it, so the legacy
+            // renderer keeps the frame.
+            rhiAccelStructs = std::make_shared<rhi::RhiAccelStructs>();
+            if (!rhiAccelStructs->Create(nvrhi->GetDevice(), rhiFrameContext.get(),
+                                         scene->GetASManager().get(),
+                                         [this](const char *pMessage) { Print(pMessage); }))
+            {
+                rhiAccelStructs.reset();
+                Print("Warning: RHI: the acceleration structures are unavailable, the legacy renderer is kept");
+            }
+
+            // The debug ray-tracing pass (RHI/RhiDebugTracePass.h), created only when 'rhitrace' is
+            // on. Its set 1 is the engine's global uniform, wrapped here as a static constant buffer
+            // - the same shape the skeleton's world pass wraps it with, because a volatile wrap
+            // would become a dynamic-offset binding the pass's static layout item cannot take. The
+            // binding set the pass builds over the wrap keeps it alive; the pass retires its per-slot
+            // ALBEDO wraps through the frame context. A failure leaves the pointer null: with the
+            // flag on the skeleton then refuses to be available and the legacy renderer keeps the
+            // frame.
+            if (libconfig.rhiDebugTrace)
+            {
+                nvrhi::BufferDesc debugUniformDesc;
+                debugUniformDesc.byteSize = sizeof(ShGlobalUniform);
+                debugUniformDesc.isConstantBuffer = true;
+                debugUniformDesc.initialState = nvrhi::ResourceStates::ConstantBuffer;
+                debugUniformDesc.keepInitialState = true;
+                debugUniformDesc.debugName = "RHI debug trace uniform (GlobalUniform wrap)";
+
+                nvrhi::BufferHandle debugTraceUniformBuffer = nvrhi->GetDevice()->createHandleForNativeBuffer(
+                    nvrhi::ObjectTypes::VK_Buffer,
+                    nvrhi::Object(static_cast<uint64_t>(reinterpret_cast<uintptr_t>(uniform->GetBuffer()))),
+                    debugUniformDesc);
+
+                rhiDebugTracePass = std::make_shared<RhiDebugTracePass>();
+                if (!rhiDebugTracePass->Create(nvrhi->GetDevice(), rhiFrameContext.get(),
+                                               debugTraceUniformBuffer, info->pShaderFolderPath,
+                                               [this](const char *pMessage) { Print(pMessage); }))
+                {
+                    rhiDebugTracePass.reset();
+                    Print("Warning: RHI: the debug trace pass is unavailable, the legacy renderer is kept");
+                }
+            }
+
+            // The pass binds the shared RHI texture table (its slot 0 holds the engine's empty
+            // texture: 1x1, VK_FORMAT_R8G8B8A8_UNORM, created and left in the read-only layout by
+            // TextureManager) and records through the shared frame context, so the host hands both
+            // over here.
             nvrhiFrameSkeleton = std::make_shared<NvrhiFrameSkeleton>(
                 nvrhi->GetDevice(),
                 swapchain.get(),
                 info->pShaderFolderPath,
+                rhiTextureTable.get(),
+                rhiFrameContext.get(),
+                rhiAccelStructs.get(),
+                rhiDebugTracePass.get(),
+                libconfig.rhiDebugTrace,
                 [this](const char *pMessage) { Print(pMessage); });
 
             swapchain->Subscribe(nvrhiFrameSkeleton);
+
+            // The sky pass binds the geometry the legacy collector recorded, so its device-local
+            // VkBuffers are wrapped once, here, with NVRHI handles. The legacy command buffer that
+            // fills them (Rasterizer::SubmitForFrame -> CopyFromStaging, VulkanDevice.cpp:1261) is
+            // submitted after the RHI list of the same frame, so the sky of a frame reads the copy
+            // of the previous frame. The geometry is static per level - the collector's copy only
+            // moves what the level uploaded (RasterizedDataCollector::CopyFromStaging) - so only
+            // the very first frame after a level load reads the zeroed buffer; from the second
+            // frame on the sky draws the same data the legacy renderer would draw. The wraps are
+            // deliberately long-lived: the engine's AutoBuffer keeps the same VkBuffer for the
+            // whole run.
+            if (RhiSkyPass *skyPass = nvrhiFrameSkeleton->GetSkyPass())
+            {
+                const RasterizedDataCollector &collector = rasterizer->GetDataCollector();
+
+                // The byte counts are the sizes the collector's AutoBuffers are created with
+                // (RasterizedDataCollector.cpp:69-73); on a native wrap NVRHI only keeps the desc
+                // for bookkeeping (vulkan-buffer.cpp:202-213).
+                nvrhi::BufferDesc vertexBufferDesc;
+                vertexBufferDesc.byteSize =
+                    static_cast<uint64_t>(std::max(info->rasterizedMaxVertexCount, 64u)) * sizeof(RgVertex);
+                vertexBufferDesc.isVertexBuffer = true;
+                // The engine's buffer is written by its own command buffer, so NVRHI cannot have seen
+                // it: the first list that binds it would report an unknown prior state
+                // (state-tracking.cpp:290-297). Declaring the state the engine's AutoBuffer leaves
+                // the data in - readable for vertex fetch (AutoBuffer.cpp:115-125) - makes the first
+                // use transition-free and keeps the claim for every later list.
+                vertexBufferDesc.initialState = nvrhi::ResourceStates::VertexBuffer;
+                vertexBufferDesc.keepInitialState = true;
+                vertexBufferDesc.debugName = "Rasterizer vertex buffer (RHI)";
+
+                nvrhi::BufferDesc indexBufferDesc;
+                indexBufferDesc.byteSize =
+                    static_cast<uint64_t>(std::max(info->rasterizedMaxIndexCount, 64u)) * sizeof(uint32_t);
+                indexBufferDesc.isIndexBuffer = true;
+                indexBufferDesc.initialState = nvrhi::ResourceStates::IndexBuffer;
+                indexBufferDesc.keepInitialState = true;
+                indexBufferDesc.debugName = "Rasterizer index buffer (RHI)";
+
+                nvrhi::BufferHandle vertexBuffer = nvrhi->GetDevice()->createHandleForNativeBuffer(
+                    nvrhi::ObjectTypes::VK_Buffer,
+                    nvrhi::Object(static_cast<uint64_t>(reinterpret_cast<uintptr_t>(collector.GetVertexBuffer()))),
+                    vertexBufferDesc);
+                nvrhi::BufferHandle indexBuffer = nvrhi->GetDevice()->createHandleForNativeBuffer(
+                    nvrhi::ObjectTypes::VK_Buffer,
+                    nvrhi::Object(static_cast<uint64_t>(reinterpret_cast<uintptr_t>(collector.GetIndexBuffer()))),
+                    indexBufferDesc);
+
+                if (vertexBuffer == nullptr || indexBuffer == nullptr)
+                {
+                    Print("Warning: RHI: failed to wrap the rasterized geometry buffers, the sky is skipped");
+                }
+                else
+                {
+                    skyPass->SetGeometryBuffers(vertexBuffer, indexBuffer);
+                }
+            }
         }
         else
         {
@@ -336,6 +495,18 @@ VulkanDevice::~VulkanDevice()
     // the skeleton wraps the swapchain images with the RHI device, so it has to
     // be released before both of them
     nvrhiFrameSkeleton.reset();
+
+    // The skeleton references both, so they follow it immediately; both wrap engine buffers and
+    // quote the RHI device, so they precede the table/context and the device below.
+    rhiDebugTracePass.reset();
+    rhiAccelStructs.reset();
+
+    // The table's wrapped textures reference engine images and its samplers belong to the NVRHI
+    // device, so it goes before the texture/sampler managers and the RHI device. The frame context
+    // goes after both of its users (the skeleton and the table) and before the RHI device.
+    rhiTextureTable.reset();
+
+    rhiFrameContext.reset();
 
     // the RHI device holds Vulkan objects created from this device,
     // so it has to be released before them
@@ -688,9 +859,35 @@ void VulkanDevice::CreateDevice()
     sync2Features.pNext = &storage16;
     sync2Features.synchronization2 = 1;
 
+    std::vector<VkExtensionProperties> supportedDeviceExtensions;
+    uint32_t supportedExtensionsCount;
+
+    if (vkEnumerateDeviceExtensionProperties(physDevice->Get(), nullptr, &supportedExtensionsCount, nullptr) == VK_SUCCESS)
+    {
+        supportedDeviceExtensions.resize(supportedExtensionsCount);
+        vkEnumerateDeviceExtensionProperties(physDevice->Get(), nullptr, &supportedExtensionsCount, supportedDeviceExtensions.data());
+    }
+
+    // Optional: the ray-query feature. NVRHI's state tracking maps the acceleration-structure-read
+    // state to the compute stage as well as the ray-tracing one (vulkan-constants.cpp:282-285), and
+    // the spec forbids the acceleration-structure-read access at any shader stage except the
+    // ray-tracing ones while rayQuery is disabled (VUID-VkBufferMemoryBarrier2-srcAccessMask-06256).
+    // No shader here uses inline ray tracing, but enabling the feature is what keeps a traced frame
+    // validation-clean, so it is requested whenever the physical device offers the extension.
+    const bool rayQuerySupported = std::any_of(supportedDeviceExtensions.cbegin(), supportedDeviceExtensions.cend(),
+        [](const VkExtensionProperties& ext)
+        {
+            return !std::strcmp(ext.extensionName, VK_KHR_RAY_QUERY_EXTENSION_NAME);
+        });
+
+    VkPhysicalDeviceRayQueryFeaturesKHR rayQueryFeatures = {};
+    rayQueryFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR;
+    rayQueryFeatures.pNext = &sync2Features;
+    rayQueryFeatures.rayQuery = rayQuerySupported ? 1 : 0;
+
     VkPhysicalDeviceRayTracingPipelineFeaturesKHR rtPipelineFeatures = {};
     rtPipelineFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR;
-    rtPipelineFeatures.pNext = &sync2Features;
+    rtPipelineFeatures.pNext = rayQuerySupported ? static_cast<void *>(&rayQueryFeatures) : static_cast<void *>(&sync2Features);
     rtPipelineFeatures.rayTracingPipeline = 1;
 
     VkPhysicalDeviceAccelerationStructureFeaturesKHR asFeatures = {};
@@ -702,15 +899,6 @@ void VulkanDevice::CreateDevice()
     physicalDeviceFeatures2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
     physicalDeviceFeatures2.pNext = &asFeatures;
     physicalDeviceFeatures2.features = features;
-
-    std::vector<VkExtensionProperties> supportedDeviceExtensions;
-    uint32_t supportedExtensionsCount;
-
-    if (vkEnumerateDeviceExtensionProperties(physDevice->Get(), nullptr, &supportedExtensionsCount, nullptr) == VK_SUCCESS)
-    {
-        supportedDeviceExtensions.resize(supportedExtensionsCount);
-        vkEnumerateDeviceExtensionProperties(physDevice->Get(), nullptr, &supportedExtensionsCount, supportedDeviceExtensions.data());
-    }
 
     std::vector<const char *> deviceExtensions = {
         VK_KHR_SWAPCHAIN_EXTENSION_NAME,
@@ -740,6 +928,11 @@ void VulkanDevice::CreateDevice()
         }
 
         deviceExtensions.push_back(n);
+    }
+
+    if (rayQuerySupported)
+    {
+        deviceExtensions.push_back(VK_KHR_RAY_QUERY_EXTENSION_NAME);
     }
 
     enabledDeviceExtensions.clear();

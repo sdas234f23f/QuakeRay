@@ -77,6 +77,13 @@ namespace vkpt
         void UploadLensFlare( uint32_t frameIndex, const RgLensFlareUploadInfo& uploadInfo );
 
         void SubmitForFrame( VkCommandBuffer cmd, uint32_t frameIndex );
+
+        // The RHI passes read the collector directly: the sky pass takes the collected draw infos, and
+        // the RHI frame runs the per-frame staging copy that the legacy SubmitForFrame would otherwise
+        // do (RasterizedDataCollector::CopyFromStaging, which is not const). The collector stays owned
+        // by this class, and this accessor changes no legacy behaviour.
+        RasterizedDataCollector &GetDataCollector() { return *collector; }
+
         void DrawSkyToCubemap( VkCommandBuffer                          cmd,
                                uint32_t                                 frameIndex,
                                const std::shared_ptr< TextureManager >& textureManager,
