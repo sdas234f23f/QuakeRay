@@ -1078,11 +1078,26 @@ static void TexMgr_LoadImage32 (gltexture_t *glt, unsigned *data)
 	SDL_UnlockMutex (texmgr_mutex);
 }
 
-/* qr light editor diagnostics: while set (qr_editor_debug), a live reload logs
-   what it read and dumps the synthesized albedo/RME to <gamedir>/qre_dump. */
-extern cvar_t qr_editor_debug;
-static qboolean texmgr_dump_reload = false;
+/* A texel is part of the glow extents above this emission; below it the mask is noise. The
+   extents are computed once per texture, at load, so this cannot be a live cvar. */
+#define RT_EMIS_GLOW_THRESHOLD 0.02f
+
+#define QRE_DUMPED_MAX 128
+static char     texmgr_dumped[QRE_DUMPED_MAX][MAX_QPATH];
+static int      texmgr_dumped_count = 0;
 static qboolean texmgr_dump_dir_checked = false;
+
+static qboolean TexMgr_AlreadyDumped (const char *name)
+{
+	int i;
+
+	for (i = 0; i < texmgr_dumped_count; i++)
+	{
+		if (!strcmp (texmgr_dumped[i], name))
+			return true;
+	}
+	return false;
+}
 
 static void TexMgr_DumpReloadTGA (const char *suffix, const char *name, int w, int h, const byte *rgba)
 {
@@ -1458,19 +1473,24 @@ static qboolean TexMgr_ApplyMaterialFromMat (gltexture_t *glt, unsigned *albedoF
 		            glt->rtemissiveglowtex ? 1 : 0);
 	}
 
-	if (texmgr_dump_reload)
+	if (!TexMgr_AlreadyDumped (mat->name))
 	{
-		Con_Printf ("qr editor dump: material '%s' tex '%s' %dx%d base='%s' emis='%s' gloss='%s' norm='%s' light=%d emiss=%d mean=%.4f\n",
+		Con_Printf ("qr editor dump: material '%s' tex '%s' %dx%d base='%s' emis='%s' gloss='%s' norm='%s' light=%d\n",
 		            mat->name, glt->name, tw, th,
 		            mat->filename_base[0] ? mat->filename_base : "-",
 		            mat->filename_emissive[0] ? mat->filename_emissive : "-",
 		            mat->filename_gloss[0] ? mat->filename_gloss : "-",
 		            mat->filename_normals[0] ? mat->filename_normals : "-",
-		            mat->is_light ? 1 : 0, emisBuf ? 1 : 0, glt->rtemissivemean);
+		            mat->is_light ? 1 : 0);
+		Con_Printf ("qr editor dump:   loaded base=%d emis=%d gloss=%d norm=%d mean=%.4f\n",
+		            baseBuf ? 1 : 0, emisBuf ? 1 : 0, glossBuf ? 1 : 0, normBuf ? 1 : 0, glt->rtemissivemean);
 
 		TexMgr_DumpReloadTGA ("_albedo", glt->name, tw, th, albedo);
 		TexMgr_DumpReloadTGA ("_rme", glt->name, tw, th, rme);
 		TexMgr_DumpReloadTGA ("_normal", glt->name, tw, th, normal);
+
+		if (texmgr_dumped_count < QRE_DUMPED_MAX)
+			q_strlcpy (texmgr_dumped[texmgr_dumped_count++], mat->name, MAX_QPATH);
 	}
 
 	RgMaterialCreateInfo info = {
@@ -1936,9 +1956,7 @@ int TexMgr_ReloadImagesForMaterial (const char *materialName)
 	if (!materialName || !materialName[0])
 		return 0;
 
-	texmgr_dump_reload = CVAR_TO_BOOL (qr_editor_debug);
-	if (texmgr_dump_reload)
-		Con_Printf ("qr editor: reload material '%s'\n", materialName);
+	Con_Printf ("qr editor: reload material '%s'\n", materialName);
 
 	for (glt = active_gltextures; glt; glt = glt->next)
 	{
@@ -1955,9 +1973,9 @@ int TexMgr_ReloadImagesForMaterial (const char *materialName)
 		if (!mat || strcmp (mat->name, materialName))
 			continue;
 
-		if (texmgr_dump_reload)
-			Con_Printf ("qr editor:   tex '%s' %ux%u src='%s'+%u flags=0x%x\n",
-			            glt->name, glt->width, glt->height, glt->source_file, (unsigned)glt->source_offset, glt->flags);
+		Con_Printf ("qr editor:   tex '%s' %ux%u fmt=%d src='%s'+%u flags=0x%x\n",
+		            glt->name, glt->width, glt->height, (int)glt->source_format,
+		            glt->source_file, (unsigned)glt->source_offset, glt->flags);
 
 		fullbright = TexMgr_FindFullbrightTexture (glt);
 		if (!fullbright)
@@ -1974,8 +1992,6 @@ int TexMgr_ReloadImagesForMaterial (const char *materialName)
 		TexMgr_RT_SpecialEnd ();
 		count++;
 	}
-
-	texmgr_dump_reload = false;
 
 	return count;
 }
