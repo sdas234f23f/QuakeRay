@@ -39,13 +39,53 @@ foreach ($line in $envLines) {
     }
 }
 
+# The NVRHI pin needs one local change - the binding-layout limit raised to 16 for the ray-tracing
+# pipeline - which the repository carries as third_party/nvrhi-max-binding-layouts.patch. The patch is
+# applied for the duration of this build and removed again before the script ends, so the checked-out
+# dependency always stays exactly what the submodule records. Any other build path (an IDE, a manual
+# cmake invocation) has to apply the patch itself.
+$nvrhiDir = Join-Path $PSScriptRoot "third_party\nvrhi"
+$nvrhiPatch = Join-Path $PSScriptRoot "third_party\nvrhi-max-binding-layouts.patch"
+$nvrhiPatchedHere = $false
+
+if ((Test-Path $nvrhiPatch) -and (Test-Path (Join-Path $nvrhiDir "include\nvrhi\nvrhi.h")))
+{
+    & git -C $nvrhiDir apply --check --reverse $nvrhiPatch 2>$null
+    if ($LASTEXITCODE -eq 0)
+    {
+        Write-Host "NVRHI patch is already applied, leaving it in place" -ForegroundColor Yellow
+    }
+    else
+    {
+        & git -C $nvrhiDir apply $nvrhiPatch
+        if ($LASTEXITCODE -ne 0) { throw "Failed to apply $nvrhiPatch to third_party/nvrhi." }
+        $nvrhiPatchedHere = $true
+        Write-Host "Applied the NVRHI patch for this build" -ForegroundColor Yellow
+    }
+}
+
+$exitCode = 0
+
 $cmakeArgs = @("-B", $BuildDir, "-G", "Ninja", "-DCMAKE_BUILD_TYPE=$Config", "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON")
 
 cmake @cmakeArgs
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+if ($LASTEXITCODE -ne 0) { $exitCode = $LASTEXITCODE }
 
-cmake --build $BuildDir
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+if ($exitCode -eq 0)
+{
+    cmake --build $BuildDir
+    if ($LASTEXITCODE -ne 0) { $exitCode = $LASTEXITCODE }
+}
+
+if ($exitCode -ne 0)
+{
+    if ($nvrhiPatchedHere)
+    {
+        & git -C $nvrhiDir apply --reverse $nvrhiPatch
+        if ($LASTEXITCODE -eq 0) { Write-Host "Reverted the NVRHI patch" -ForegroundColor Yellow }
+    }
+    exit $exitCode
+}
 
 $srcRoot = Join-Path $PSScriptRoot "vkpt\Source"
 $gameDir = Join-Path $BuildDir "id1"
@@ -75,6 +115,13 @@ foreach ($f in @("BlueNoise_LDR_RGBA_128.ktx2", "WaterNormal_n.ktx2")) {
 }
 
 & (Join-Path $PSScriptRoot "build_shaders.ps1") -DestDir (Join-Path $gameDir "shaders")
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+if ($LASTEXITCODE -ne 0) { $exitCode = $LASTEXITCODE }
 
-exit 0
+if ($nvrhiPatchedHere)
+{
+    & git -C $nvrhiDir apply --reverse $nvrhiPatch
+    if ($LASTEXITCODE -ne 0) { throw "Could not revert $nvrhiPatch; third_party/nvrhi is left patched." }
+    Write-Host "Reverted the NVRHI patch, third_party/nvrhi is clean again" -ForegroundColor Yellow
+}
+
+exit $exitCode
