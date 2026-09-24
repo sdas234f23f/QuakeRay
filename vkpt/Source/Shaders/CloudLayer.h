@@ -123,15 +123,7 @@ float valueNoise3(vec3 p)
 // Fractal sum of value noise, normalized so that it stays in [0,1] with a mean of
 // 0.5 whatever the number of octaves is. The octaves are offset from each other
 // as well as scaled, so that they do not line up on the same lattice.
-//
-// `width` is the distance between the samples of the march that reads this, in the
-// units p is in: an octave whose wavelength is finer than that cannot be resolved
-// by the march at all, and sampling it anyway is what leaves the grain a cloud
-// shows -- an error that differs between neighbouring rays (a weave over the layer)
-// and, for one ray, between the frames (a shimmer of it). What cannot be resolved
-// is therefore faded out, with a smooth hand-over, so that the finest detail a
-// cloud keeps is the finest the march that crosses it can carry.
-float cloudNoise(vec3 p, int octaves, float width)
+float cloudNoise(vec3 p, int octaves)
 {
     float v = 0.0;
     float amp = 0.5;
@@ -139,29 +131,22 @@ float cloudNoise(vec3 p, int octaves, float width)
 
     for (int i = 0; i < octaves; i++)
     {
-        // The octave's wavelength in the units of p is 1/2^i, the argument this
-        // sums being doubled with every octave.
-        float wavelength = exp2(-float(i));
-        float fade = smoothstep(width, width * 2.5, wavelength);
-
-        v += amp * fade * valueNoise3(p);
-        norm += amp * fade;
+        v += amp * valueNoise3(p);
+        norm += amp;
         p = p * 2.03 + vec3(1.7, 9.2, 3.9);
         amp *= 0.5;
     }
 
-    // Normalizing by what is left of the sum keeps the mean at 0.5, so that the
-    // coverage threshold still reads as the fraction of the sky left clear.
-    return v / max(norm, 1.0e-4);
+    return v / norm;
 }
 
 // Shape of the cloud in [0,1]: 0 is clear air, 1 is the densest core. The fBm is
 // pushed through the CDF of the normal distribution it is spread like, which
 // spends its whole range instead of leaving it bunched around its mean -- the
 // coverage threshold can then be read as the fraction of the sky it lets through.
-float cloudShape(vec3 p, int octaves, float width)
+float cloudShape(vec3 p, int octaves)
 {
-    float n = cloudNoise(p, octaves, width);
+    float n = cloudNoise(p, octaves);
     float z = (n - CLOUD_NOISE_MEAN) / CLOUD_NOISE_SIGMA;
     return clamp(0.5 + 0.5 * z / sqrt(1.0 + z * z), 0.0, 1.0);
 }
@@ -189,10 +174,8 @@ float cloudHeightProfile(float h)
 }
 
 // Density of the cloud at a point, in [0,1]: 0 is clear air. `p` is a point of the
-// world (z up), its height measured from the eye. `width` is how far apart the
-// samples of the march that asks are, in world units: the noise it cannot resolve
-// is faded out rather than sampled as grain (cloudNoise).
-float cloudDensity(CloudLayer layer, vec3 p, bool detail, float width)
+// world (z up), its height measured from the eye.
+float cloudDensity(CloudLayer layer, vec3 p, bool detail)
 {
     float h = (p.z - layer.altitude) / layer.thickness;
     if (h <= 0.0 || h >= 1.0)
@@ -210,7 +193,7 @@ float cloudDensity(CloudLayer layer, vec3 p, bool detail, float width)
     vec2 wind = vec2(layer.time * layer.speed * 30.0, layer.time * layer.speed * 12.0);
     float frequency = CLOUD_FREQUENCY / layer.thickness;
 
-    float shape = cloudShape(vec3(p.xy + wind, p.z) * frequency, CLOUD_OCTAVES, width * frequency);
+    float shape = cloudShape(vec3(p.xy + wind, p.z) * frequency, CLOUD_OCTAVES);
 
     float d = (shape - layer.coverage) / max(1.0 - layer.coverage, 1.0e-3);
     d = pow(clamp(d, 0.0, 1.0), CLOUD_SHAPE_POWER);
@@ -225,7 +208,7 @@ float cloudDensity(CloudLayer layer, vec3 p, bool detail, float width)
         // it, which is what takes the cloud's edge apart and gives its silhouette
         // the ragged look of a real one.
         vec3 q = vec3(p.xy + wind * 1.7, p.z * 0.75) * frequency * CLOUD_DETAIL_FREQUENCY;
-        float erosion = layer.detail * cloudShape(q, CLOUD_DETAIL_OCTAVES, width * frequency * CLOUD_DETAIL_FREQUENCY);
+        float erosion = layer.detail * cloudShape(q, CLOUD_DETAIL_OCTAVES);
         d = clamp((d - erosion) / max(1.0 - erosion, 1.0e-3), 0.0, 1.0);
     }
 
@@ -269,7 +252,7 @@ float cloudSunDepth(CloudLayer layer, vec3 p, vec3 sunDir, int steps)
     {
         // The step is sampled in the middle of the stretch it stands for, so that a
         // thin cloud is not lost to the base of the layer falling between two of them.
-        depth += cloudDensity(layer, cloudSunSample(p, sunDir, (float(i) + 0.5) * dt, dt), false, dt) * dt;
+        depth += cloudDensity(layer, cloudSunSample(p, sunDir, (float(i) + 0.5) * dt, dt), false) * dt;
     }
 
     return depth;
