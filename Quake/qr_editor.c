@@ -1765,6 +1765,10 @@ static void QR_Editor_Stop_f (void)
 	QRE_StopEditor (true);
 }
 
+// Dumps what a live material reload read and synthesized to <gamedir>/qre_dump
+// and logs it (the reload diagnostics of the editor).
+cvar_t qr_editor_debug = { "qr_editor_debug", "0", CVAR_NONE };
+
 void QR_Editor_Init (void)
 {
 	static qboolean qr_editor_registered = false;
@@ -1773,6 +1777,8 @@ void QR_Editor_Init (void)
 	if (qr_editor_registered)
 		return;
 	qr_editor_registered = true;
+
+	Cvar_RegisterVariable (&qr_editor_debug);
 
 	Cmd_AddCommand ("qr_light_editor_start", QR_Editor_Start_f);
 	Cmd_AddCommand ("qr_light_editor_stop", QR_Editor_Stop_f);

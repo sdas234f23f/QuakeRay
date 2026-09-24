@@ -26,6 +26,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "quakedef.h"
 #include "gl_heap.h"
 #include "rt_material.h"
+#include "sys.h"
 
 #if defined(SDL_FRAMEWORK) || defined(NO_SDL_CONFIG)
 #include <SDL2/SDL.h>
@@ -1077,10 +1078,67 @@ static void TexMgr_LoadImage32 (gltexture_t *glt, unsigned *data)
 	SDL_UnlockMutex (texmgr_mutex);
 }
 
+/* qr light editor diagnostics: while set (qr_editor_debug), a live reload logs
+   what it read and dumps the synthesized albedo/RME to <gamedir>/qre_dump. */
+extern cvar_t qr_editor_debug;
+static qboolean texmgr_dump_reload = false;
+static qboolean texmgr_dump_dir_checked = false;
+
+static void TexMgr_DumpReloadTGA (const char *suffix, const char *name, int w, int h, const byte *rgba)
+{
+	char  path[MAX_OSPATH];
+	char  safe[MAX_QPATH];
+	int   i;
+	FILE *f;
+
+	for (i = 0; name[i] && i < (int)sizeof (safe) - 1; i++)
+	{
+		const char c = name[i];
+		safe[i] = (c == '/' || c == '\\' || c == ':' || c == '*' || c == '?' || c == '"' || c == '<' || c == '>' || c == '|') ? '_' : c;
+	}
+	safe[i] = '\0';
+
+	q_snprintf (path, sizeof (path), "%s/qre_dump/%s%s.tga", com_gamedir, safe, suffix);
+
+	if (texmgr_dump_dir_checked == false)
+	{
+		char dir[MAX_OSPATH];
+
+		q_snprintf (dir, sizeof (dir), "%s/qre_dump", com_gamedir);
+		Sys_mkdir (dir);
+		texmgr_dump_dir_checked = true;
+	}
+
+	f = fopen (path, "wb");
+	if (!f)
+		return;
+
+	{
+		byte header[18] = {0};
+
+		header[2] = 2; // uncompressed true-color
+		header[12] = (byte)(w & 0xff);
+		header[13] = (byte)((w >> 8) & 0xff);
+		header[14] = (byte)(h & 0xff);
+		header[15] = (byte)((h >> 8) & 0xff);
+		header[16] = 32;
+		header[17] = 0x28; // top-left origin, 8 alpha bits
+		fwrite (header, 1, sizeof (header), f);
+	}
+
+	for (i = 0; i < w * h; i++)
+	{
+		byte bgra[4] = { rgba[i * 4 + 2], rgba[i * 4 + 1], rgba[i * 4 + 0], rgba[i * 4 + 3] };
+
+		fwrite (bgra, 1, sizeof (bgra), f);
+	}
+
+	fclose (f);
+}
+
 /* A texel is part of the glow extents above this emission; below it the mask is noise. The
    extents are computed once per texture, at load, so this cannot be a live cvar. */
-#define RT_EMIS_GLOW_THRESHOLD 0.02f
-/* Below this area fraction the extents are a proper part of the texture and the light is built
+#define RT_EMIS_GLOW_THRESHOLD 0.02f/* Below this area fraction the extents are a proper part of the texture and the light is built
    as polygons over them; at or above it the whole surface glows and stays a single light. */
 #define RT_EMIS_GLOW_FULL 0.999f
 
@@ -1398,6 +1456,21 @@ static qboolean TexMgr_ApplyMaterialFromMat (gltexture_t *glt, unsigned *albedoF
 		            glt->rtemisuvmax[0], glt->rtemisuvmax[1],
 		            glt->rtemisglowfrac, glt->rtemissiveglow,
 		            glt->rtemissiveglowtex ? 1 : 0);
+	}
+
+	if (texmgr_dump_reload)
+	{
+		Con_Printf ("qr editor dump: material '%s' tex '%s' %dx%d base='%s' emis='%s' gloss='%s' norm='%s' light=%d emiss=%d mean=%.4f\n",
+		            mat->name, glt->name, tw, th,
+		            mat->filename_base[0] ? mat->filename_base : "-",
+		            mat->filename_emissive[0] ? mat->filename_emissive : "-",
+		            mat->filename_gloss[0] ? mat->filename_gloss : "-",
+		            mat->filename_normals[0] ? mat->filename_normals : "-",
+		            mat->is_light ? 1 : 0, emisBuf ? 1 : 0, glt->rtemissivemean);
+
+		TexMgr_DumpReloadTGA ("_albedo", glt->name, tw, th, albedo);
+		TexMgr_DumpReloadTGA ("_rme", glt->name, tw, th, rme);
+		TexMgr_DumpReloadTGA ("_normal", glt->name, tw, th, normal);
 	}
 
 	RgMaterialCreateInfo info = {
@@ -1863,6 +1936,10 @@ int TexMgr_ReloadImagesForMaterial (const char *materialName)
 	if (!materialName || !materialName[0])
 		return 0;
 
+	texmgr_dump_reload = CVAR_TO_BOOL (qr_editor_debug);
+	if (texmgr_dump_reload)
+		Con_Printf ("qr editor: reload material '%s'\n", materialName);
+
 	for (glt = active_gltextures; glt; glt = glt->next)
 	{
 		rt_material_t *mat;
@@ -1877,6 +1954,10 @@ int TexMgr_ReloadImagesForMaterial (const char *materialName)
 		mat = RT_MAT_Find (glt->name);
 		if (!mat || strcmp (mat->name, materialName))
 			continue;
+
+		if (texmgr_dump_reload)
+			Con_Printf ("qr editor:   tex '%s' %ux%u src='%s'+%u flags=0x%x\n",
+			            glt->name, glt->width, glt->height, glt->source_file, (unsigned)glt->source_offset, glt->flags);
 
 		fullbright = TexMgr_FindFullbrightTexture (glt);
 		if (!fullbright)
@@ -1893,6 +1974,8 @@ int TexMgr_ReloadImagesForMaterial (const char *materialName)
 		TexMgr_RT_SpecialEnd ();
 		count++;
 	}
+
+	texmgr_dump_reload = false;
 
 	return count;
 }
