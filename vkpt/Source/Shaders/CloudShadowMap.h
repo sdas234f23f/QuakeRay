@@ -103,15 +103,18 @@ float cloudShadowTauFromUV(sampler3D shadowVolume, vec2 uv, float height)
 // what the sun sends (Beer-Lambert).
 //
 // Negative when the volume does not reach the point -- it is beyond what it was
-// laid out over, or the clouds cast no shadow at all -- and then the caller
-// answers for the point with a march towards the sun of its own.
+// laid out over, or the clouds cast no shadow at all -- and then the caller answers
+// for the point with a walk of the column the volume itself is filled with.
 //
 // `blend` is how much of the volume's answer stands: 1 where the volume is read
 // whole, less than that within the band it fades out over (cloudShadowUV). A
-// caller that marches the layer itself where the volume fades -- the sky, which
-// has to shade the horizon the volume does not reach -- blends its own answer in
-// by this rather than switching between the two, which is what keeps the edge of
-// the volume from being a line the eye can find (CmSkyClouds.comp).
+// caller that falls back on a walk of the column where the volume fades -- the sky,
+// which has to shade the horizon the volume does not reach -- blends its own answer
+// in by this rather than switching between the two, which is what keeps the edge of
+// the volume from being a line the eye can find (CmSkyClouds.comp). That walk is
+// the volume's own, repeated (cloudSunDepth, CloudLayer.h), so the two answers are
+// the same number for the same column and what stands between them is the light of
+// the cloud alone.
 //
 // `height` is the fraction of the layer the point stands at: 0 at its base (a
 // point on the ground), 1 at its top. `sunDir` points towards the sun and

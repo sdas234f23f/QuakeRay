@@ -867,9 +867,11 @@ void VulkanDevice::Render(VkCommandBuffer cmd, const RgDrawFrameInfo &drawInfo)
             p.cloudLayer[3] = 1.0f;
             // How finely the clouds are marched, how much the fine noise is allowed
             // to eat into them, and how strongly they scatter the sunlight forward
-            // (Henyey-Greenstein g) -- which is what draws the bright rim.
+            // (Henyey-Greenstein g) -- which is what draws the bright rim. The steps
+            // of the view march are the renderer's to pick by quality (the value here
+            // is only its default), and the walk of a column towards the sun is the
+            // volume's own (CloudLayer.h), so it is not asked of the host at all.
             p.cloudMarch[0] = 48.0f;
-            p.cloudMarch[1] = 6.0f;
             p.cloudMarch[2] = 0.35f;
             p.cloudMarch[3] = 0.75f;
 

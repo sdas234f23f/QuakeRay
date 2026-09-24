@@ -65,6 +65,20 @@ const float CLOUD_EXTINCTION = 8.0;
 // comes out from behind it, instead of the whole cloud switching at once.
 const float CLOUD_LIGHT_CONE = 0.15;
 
+// The most steps a walk of a column towards the sun may take. The sky falls back on
+// a walk of the same shape as the one the volume of the layer's shadow is filled
+// with (cloudSunDepth), so the bound is the one that pass holds itself to.
+const int CLOUD_SUN_STEPS_MAX = 64;
+
+// The steps the walk of a column of cloud towards the sun is made of, from the base
+// of the layer to its top. One such walk fills the volume of the layer's shadow
+// (CmCloudShadow.comp), slice by slice, and the sky falls back on the very same walk
+// where that volume does not reach (cloudSunDepth): the two have to be the same
+// number for the same column, or the edge of the volume stands in the light of the
+// clouds as a square over the sky, so the count lives here rather than in a pass or
+// in the host.
+const int CLOUD_SHADOW_STEPS = 16;
+
 // The steps of the sequences the taps of a march are spread by, taken from the
 // golden ratio: successive taps land in different parts of the stretch they stand
 // for (a low-discrepancy sequence), rather than anywhere at all (white noise),
@@ -227,33 +241,59 @@ float cloudOpticalDepth(CloudLayer layer, float column)
 // Optical depth of the cloud between a point in the layer and the sun, in the
 // same units cloudDensity() returns.
 //
-// The march goes towards the sun through a cone that widens with the distance
-// travelled, so that what is being asked is how much of the sky AROUND the sun is
-// clouded, which is what a real cloud sees (cloudSunSample). The fine noise is
-// left out of it: it is what the widening of the light would blur anyway, and this
-// is the most called function of the pass.
+// This is the walk the volume of the layer's shadow is filled with -- the column
+// over the base point of p, from the base of the layer to its top, in the steps the
+// pass that fills it marches (CmCloudShadow.comp) and through the same cone around
+// the sun (cloudSunSample) -- and the reading of that volume's slices is repeated
+// at the end (CloudShadowMap.h reads them the same way). `steps` and `slices` are
+// the ones that volume was made with, and they have to be its own.
 //
-// It ends at the top of the layer and goes no further: above the layer there is
-// nothing but sky, and a sample standing high in the layer has little left to
-// cross at all -- the space above the cloud is what this march skips for free,
-// having no structure of the layer to consult for the rest of it.
-float cloudSunDepth(CloudLayer layer, vec3 p, vec3 sunDir, int steps)
+// Why such a walk rather than one of its own from p: this is what the sky falls
+// back on where the volume does not reach (CmSkyClouds.comp), and the two answers
+// meet at the edge of the volume. A march of its own, however similar, is a
+// different number for the same column -- a coarser step, another phase of the cone,
+// no interpolation of the slices -- and the difference stands in the light of the
+// clouds as a square over the sky. Being the very number the volume holds, this
+// turns the edge into nothing at all.
+//
+// The fine noise is left out of it: it is what the widening of the light would blur
+// anyway, and this is the most called function of the pass. The cone is what asks
+// how much of the sky AROUND the sun is clouded, which is what a real cloud sees.
+float cloudSunDepth(CloudLayer layer, vec3 p, vec3 sunDir, int steps, int slices)
 {
-    float span = max((layer.altitude + layer.thickness - p.z) / max(sunDir.z, 1.0e-3), 0.0);
-    if (span <= 0.0)
-    {
-        return 0.0;
-    }
+    steps = clamp(steps, 1, CLOUD_SUN_STEPS_MAX);
+    slices = max(slices, 2);
 
-    float dt = span / float(steps);
-    float depth = 0.0;
+    float height = clamp((p.z - layer.altitude) / layer.thickness, 0.0, 1.0);
+
+    // The column stand where the sun ray through p crosses the base of the layer,
+    // which is where the volume's own walk of it stood: a ray is a straight line and
+    // the same column of cloud is what every point on it sees.
+    float dt = layer.thickness / max(sunDir.z, 1.0e-3) / float(steps);
+    vec3 base = p + sunDir * ((layer.altitude - p.z) / max(sunDir.z, 1.0e-3));
+
+    // The two slices the height of p stands between, and how far it is through them:
+    // the sampler that reads the volume interpolates between the same two, by the
+    // same fraction.
+    float slice = height * float(slices - 1);
+    float low = floor(slice) / float(slices - 1);
+    float high = min(low + 1.0 / float(slices - 1), 1.0);
+    float through = slice - floor(slice);
+
+    // One traversal of the column answers for both slices: what a slice holds is
+    // the part of each step standing above its own height (CmCloudShadow.comp).
+    float columnLow = 0.0;
+    float columnHigh = 0.0;
 
     for (int i = 0; i < steps; i++)
     {
         // The step is sampled in the middle of the stretch it stands for, so that a
         // thin cloud is not lost to the base of the layer falling between two of them.
-        depth += cloudDensity(layer, cloudSunSample(p, sunDir, (float(i) + 0.5) * dt, dt), false) * dt;
+        float column = cloudDensity(layer, cloudSunSample(base, sunDir, (float(i) + 0.5) * dt, dt), false) * dt;
+        float step = float(i + 1);
+        columnLow  += column * clamp(step - low * float(steps), 0.0, 1.0);
+        columnHigh += column * clamp(step - high * float(steps), 0.0, 1.0);
     }
 
-    return depth;
+    return cloudOpticalDepth(layer, mix(columnLow, columnHigh, through));
 }

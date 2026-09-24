@@ -48,7 +48,7 @@ public:
         // same offset.
         float sunDiscColor[4];  // xyz = colour of the sun disc (rt_sky_sun_color), w unused
         float cloudLayer[4];    // x = altitude of the layer's bottom over the eye, y = thickness, z = sunlight strength, w = sky light strength
-        float cloudMarch[4];    // x = view march steps, y = sun march steps, z = detail erosion strength, w = forward scattering
+        float cloudMarch[4];    // x = view march steps, y = unused (the walk of a column towards the sun is CLOUD_SHADOW_STEPS, CloudLayer.h), z = detail erosion strength, w = forward scattering
         float cloudAnchor[4];   // xy = the eye's place in the world's horizontal plane, z = its height in the world, w = which quarter of the layer's map this frame marches (CLOUD_UPDATE_FRAMES meaning all of it)
         float cloudShadowPlacement[4]; // x = 1 while the layer's shadow volume stands (see GetCloudShadowPlacement), yz = its snapped world origin, w = its extent in metres
         // How far the column of cloud a texel stands over has moved over the world
@@ -191,7 +191,7 @@ private:
     {
         float sunDirection[4];  // xyz = unit direction towards the sun, w = height of the layer's bottom over the eye
         float cloudLayer[4];    // x = thickness, y = coverage, z = density, w = detail erosion strength
-        float cloudMarch[4];    // x = cloud time (s), y = drift speed, z = march steps per column, w = height of the layer over the plane the volume is keyed on
+        float cloudMarch[4];    // x = cloud time (s), y = drift speed, z = unused (the walk is CLOUD_SHADOW_STEPS, CloudLayer.h), w = height of the layer over the plane the volume is keyed on
         float mapProjection[4]; // xy = world-space corner of the volume, z = its extent (m), w = its extent in texels a side
     };
 

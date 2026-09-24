@@ -69,11 +69,6 @@ constexpr uint32_t CLOUD_SHADOW_SIZES[vkpt::RenderCubemap::QUALITY_LEVELS] = { 1
 constexpr uint32_t CLOUD_SHADOW_SLICES = 4;
 constexpr float    CLOUD_SHADOW_EXTENT = 4000.0f;
 
-// How many steps of the layer's thickness a column is marched in. The march
-// finds how much cloud the sun crosses, not where it is, so it neither needs
-// the detail erosion nor many steps.
-constexpr uint32_t CLOUD_SHADOW_MARCH_STEPS = 16;
-
 // The map is redrawn when the eye has moved a texel over it, and at least this
 // often whatever the eye does: the clouds drift on their own, and a stale map
 // would hold the shadow still under them. The finer the map, the sooner it is
@@ -84,15 +79,14 @@ constexpr uint32_t CLOUD_SHADOW_MARCH_STEPS = 16;
 constexpr uint32_t CLOUD_SHADOW_REFRESH_FRAMES[vkpt::RenderCubemap::QUALITY_LEVELS] = { 4, 4, 2, 1, 1 };
 
 // Steps the sky pass marches a ray through the layer in, one entry per quality
-// level: per view ray, and per sunlight sample taken inside the layer. The sun is
-// the dearer of the two -- every step of it is a sample of the shape -- and the
-// noisier: what a cloud's light is estimated from is a handful of taps through the
-// cone, so even the bottom of the ladder takes six of them. What noise is left is
-// finer than white noise would leave, the taps of both marches being spread by
-// low-discrepancy sequences (CloudLayer.h), so a step here buys smoothness as much
-// as it buys detail.
+// level: per view ray, and per sunlight sample taken inside the layer. What a
+// cloud's light is estimated from where the volume of the layer's shadow does not
+// reach is the volume's own walk of the column (CLOUD_SHADOW_STEPS, CloudLayer.h),
+// not a march of this pass's own, so the sun has no count of its own here. What
+// noise is left in the march is finer than white noise would leave, its taps being
+// spread by a low-discrepancy sequence (CloudLayer.h), so a step here buys
+// smoothness as much as it buys detail.
 constexpr uint32_t CLOUDS_VIEW_STEPS[vkpt::RenderCubemap::QUALITY_LEVELS] = { 40, 48, 56, 64, 72 };
-constexpr uint32_t CLOUDS_SUN_STEPS[vkpt::RenderCubemap::QUALITY_LEVELS]  = { 6, 6, 6, 8, 8 };
 
 // Below this the sun is under the layer rather than over it, and the layer
 // shades nothing that can be
@@ -1676,7 +1670,6 @@ void vkpt::RenderCubemap::UpdateCloudShadow(VkCommandBuffer cmd, const Procedura
     cloudShadowParams.cloudLayer[3] = params.cloudMarch[2];
     cloudShadowParams.cloudMarch[0] = params.cloudColor[3];
     cloudShadowParams.cloudMarch[1] = params.cloudParams[2];
-    cloudShadowParams.cloudMarch[2] = float(CLOUD_SHADOW_MARCH_STEPS);
     // Where the base of the layer stands over the plane the map is keyed on, which
     // is what a spot of that plane has to be moved back along the sun by to reach
     // the cloud that shades it.
@@ -1923,7 +1916,6 @@ void vkpt::RenderCubemap::DrawProcedural(VkCommandBuffer cmd, const ProceduralSk
     // quality level decides, and the march is part of that: the map doubles with
     // the level, so the march has to resolve what the finer map can hold.
     params.cloudMarch[0] = float(CLOUDS_VIEW_STEPS[quality]);
-    params.cloudMarch[1] = float(CLOUDS_SUN_STEPS[quality]);
 
     // A frame the look of the layer changed in is not a frame the map can take a
     // quarter of. The world's shadow of the layer shows such a change on the frame

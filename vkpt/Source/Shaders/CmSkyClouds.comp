@@ -72,7 +72,7 @@ layout(std140, set = 0, binding = 1) uniform Params
     vec4 cloudParams;   // x = coverage, y = density (rt_sky_clouds_density), z = drift speed, w = clouds enabled
     vec4 sunDiscColor;  // xyz = colour of the sun (rt_sky_sun_color), w unused
     vec4 cloudLayer;    // x = altitude of the layer's bottom over the eye, y = thickness, z = sunlight strength, w = sky light strength
-    vec4 cloudMarch;    // x = view march steps, y = sun march steps, z = detail erosion strength, w = forward scattering (Henyey-Greenstein g)
+    vec4 cloudMarch;    // x = view march steps, y = unused (the walk of a column towards the sun is CLOUD_SHADOW_STEPS, CloudLayer.h), z = detail erosion strength, w = forward scattering (Henyey-Greenstein g)
     vec4 cloudAnchor;   // xy = the eye's place in the world's horizontal plane, z = its height in the world (the volume of the layer's shadow is read with it), w = which quarter of the map this frame marches (CLOUD_UPDATE_FRAMES meaning the map is new)
     vec4 cloudShadowPlacement; // x = 1 while the layer's shadow volume stands, yz = its snapped world origin, w = its extent in metres (RenderCubemap::GetCloudShadowPlacement)
     vec4 cloudAnchorDelta; // xy = how far the column of cloud a texel stands over has moved over the world since the frame before (the eye's movement plus the wind's)
@@ -222,8 +222,12 @@ void main()
     layer.time      = params.cloudColor.w;
 
     int viewSteps = clamp(int(params.cloudMarch.x + 0.5), 8, 256);
-    int sunSteps  = clamp(int(params.cloudMarch.y + 0.5), 1, 32);
     float phaseG  = clamp(params.cloudMarch.w, 0.0, 0.95);
+
+    // The slices of the volume of the layer's shadow, which the fallback below
+    // repeats the reading of (cloudSunDepth): the walk itself is the volume's own
+    // (CLOUD_SHADOW_STEPS, CloudLayer.h), so that the two agree for a column.
+    int sunSlices = int(textureSize(cloudShadowMap, 0).z);
 
     // What the cloud's own colour is worth: it is the light that scatters in it,
     // so a black cloud scatters none of it and only casts its shadow on the sky.
@@ -306,17 +310,21 @@ void main()
 
                 // The light of the cloud: the volume of the layer's shadow answers
                 // for the column of cloud between the sample and the sun, and the
-                // march below answers where the volume fades out at its edge -- the
-                // two are handed over by how far inside the volume the sample
+                // fallback below answers where the volume fades out at its edge --
+                // the two are handed over by how far inside the volume the sample
                 // stands, so the edge of the volume is a gradient rather than a line
-                // the eye could find (CloudShadowMap.h).
+                // the eye could find (CloudShadowMap.h). The fallback is the volume's
+                // own walk of that column, not another march of it (cloudSunDepth),
+                // so the gradient is the light of the cloud itself and not the change
+                // of one answer for another: the same cloud lit by the same volume,
+                // over the whole sky.
                 float blend;
                 float mapTau = cloudSunTauFromMap(layer, p, sunDir, blend);
                 float marchTau = -1.0;
 
                 if (blend < 1.0)
                 {
-                    marchTau = cloudOpticalDepth(layer, cloudSunDepth(layer, p, sunDir, sunSteps));
+                    marchTau = cloudOpticalDepth(layer, cloudSunDepth(layer, p, sunDir, CLOUD_SHADOW_STEPS, sunSlices));
                 }
 
                 float sunTau = (marchTau >= 0.0) ? mix(marchTau, max(mapTau, 0.0), blend) : mapTau;

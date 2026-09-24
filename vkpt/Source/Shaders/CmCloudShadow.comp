@@ -49,16 +49,11 @@ layout(std140, set = 0, binding = 1) uniform Params
 {
     vec4 sunDirection;  // xyz = normalized direction TOWARD the sun, w = height of the layer's bottom over the eye
     vec4 cloudLayer;    // x = thickness, y = coverage, z = density, w = detail erosion strength
-    vec4 cloudMarch;    // x = cloud time (seconds), y = drift speed, z = steps of the sun march, w = height of the layer's bottom over the plane the map is keyed on
+    vec4 cloudMarch;    // x = cloud time (seconds), y = drift speed, z = unused (the steps of the walk are CLOUD_SHADOW_STEPS, CloudLayer.h), w = height of the layer's bottom over the plane the map is keyed on
     vec4 mapProjection; // xy = world-space origin of the map, z = extent in metres, w = extent in texels
 } params;
 
 #include "CloudLayer.h"
-
-// The steps the column is marched in come from the parameters, one entry per
-// quality level; the march of a step is held for every slice of the volume
-// (imageSize below), so the count of steps is bounded here.
-const int CLOUD_SHADOW_STEPS_MAX = 64;
 
 void main()
 {
@@ -79,7 +74,7 @@ void main()
     layer.time      = params.cloudMarch.x;
     layer.speed     = params.cloudMarch.y;
 
-    int steps = clamp(int(params.cloudMarch.z + 0.5), 1, CLOUD_SHADOW_STEPS_MAX);
+    int steps = CLOUD_SHADOW_STEPS;
 
     // Where the base of the layer stands over the spot this texel is for: the map
     // is the plane the layer was projected onto along the sun, and the sun is the
@@ -108,7 +103,7 @@ void main()
     // comes from is walked with them (cloudSunSample), which is what the samples
     // that read the column back expect to have been done.
     float dt = layer.thickness / max(sunDir.z, 1.0e-3) / float(steps);
-    float stepColumn[CLOUD_SHADOW_STEPS_MAX];
+    float stepColumn[CLOUD_SHADOW_STEPS];
 
     for (int i = 0; i < steps; i++)
     {

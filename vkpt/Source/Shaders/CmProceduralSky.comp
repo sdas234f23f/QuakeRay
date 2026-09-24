@@ -72,7 +72,7 @@ layout(std140, set = 0, binding = 1) uniform Params
     vec4 cloudParams;   // x = cloud coverage, y = cloud density (rt_sky_clouds_density), z = drift speed, w = clouds enabled
     vec4 sunDiscColor;  // xyz = color of the sun disc (rt_sky_sun_color), w unused
     vec4 cloudLayer;    // x = altitude of the cloud layer, y = thickness, z = sunlight strength, w = sky light strength
-    vec4 cloudMarch;    // x = view march steps, y = sun march steps, z = detail erosion strength, w = forward scattering
+    vec4 cloudMarch;    // x = view march steps, y = unused (the walk of a column towards the sun is CLOUD_SHADOW_STEPS, CloudLayer.h), z = detail erosion strength, w = forward scattering
 } params;
 
 void main()
