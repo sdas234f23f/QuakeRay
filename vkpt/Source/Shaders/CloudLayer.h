@@ -85,6 +85,14 @@ const int CLOUD_SHADOW_STEPS = 16;
 // which leaves a smaller and a finer error behind.
 const float CLOUD_SEQUENCE_STEP = 0.6180339887; // along the march
 
+// How coarsely the world is divided by the seed that turns the sequence of a march
+// (CmSkyClouds.comp): a distance far larger than a texel of the sky's map, so that
+// the texels around one column draw nearly the same seed and the error the sequence
+// leaves behind is a smooth field of the sky rather than a grain of the map. A
+// grain is what the copying of the map's quarters cannot carry (it reads bilinearly
+// and so averages the grain of the neighbours), and it is what shivers.
+const float CLOUD_SEED_SCALE = 256.0;
+
 // Where a march to the sun samples the layer: the place it has walked to, offset
 // inside the cone the sunlight of a cloud comes from -- what a cloud sees of the
 // sun is the sky around the sun rather than the sun alone, and the cone is what

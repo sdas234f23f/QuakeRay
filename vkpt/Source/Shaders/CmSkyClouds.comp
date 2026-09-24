@@ -273,10 +273,21 @@ void main()
         float span = (pow(CLOUD_STEP_GROWTH, float(viewSteps)) - 1.0) / (CLOUD_STEP_GROWTH - 1.0);
         float dt = (tOut - tIn) / span;
 
-        // The seed of the march, and what the places of its samples inside their
-        // stretches are drawn with: two rays then see the layer a little differently
-        // rather than through the very same samples.
-        float jitter = hash13(vec3(ipos) * 0.371);
+        // The seed of the march: where inside their stretches its samples stand, the
+        // places come from a low-discrepancy sequence (CLOUD_SEQUENCE_STEP), and this
+        // is what turns the sequence as a whole, ray by ray.
+        //
+        // It is drawn from the world, and it changes only over a distance far larger
+        // than a texel of the map -- and that is the point of it: a texel here is
+        // marched once in four frames and reads its neighbours' march in between (see
+        // the top of the file), and a read is a bilinear one, so a seed of the texel's
+        // own (a per-texel jitter) is smoothed away by the reads and then put back by
+        // the next march of that texel, which the eye sees as the grain of the clouds
+        // flickering at the cadence of the quarters. A seed the texels around a column
+        // share leaves a smooth error instead: a read carries it as it is, and a cloud
+        // may stand a little soft where a step is coarse, but it does not shiver.
+        vec2 seedPos = params.cloudAnchor.xy + dir.xy * historySpan;
+        float jitter = valueNoise3(vec3(seedPos, 0.0) / CLOUD_SEED_SCALE);
         float t = tIn;
         float step = dt;
 
@@ -286,9 +297,9 @@ void main()
         for (int i = 0; i < viewSteps; i++)
         {
             // The place of the sample inside its step comes from a low-discrepancy
-            // sequence turned by the ray's own seed: the samples of the march are
-            // then spread evenly inside their stretches rather than let to land
-            // anywhere, and the error that is left is smaller and finer.
+            // sequence turned by the world's seed: the samples of the march are then
+            // spread evenly inside their stretches rather than let to land anywhere,
+            // and the error that is left is smaller and finer.
             float offset = fract(jitter + float(i) * CLOUD_SEQUENCE_STEP);
             float ts = t + step * offset;
 
