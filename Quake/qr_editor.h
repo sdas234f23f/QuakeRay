@@ -3,9 +3,10 @@
 // The editor is started and stopped from the console with qr_light_editor_start /
 // qr_light_editor_stop. While it runs, the view is driven by a free camera (the
 // player stands still); aiming at a face and pressing fire opens the material
-// panel on the right side of the screen, where the materials.yaml parameters of
-// every animation frame of the picked texture can be edited live and saved back
-// to materials.yaml (Apply), reverted (Cancel), or the editor closed (Exit).
+// panel (Dear ImGui, Quake/qr_gui.cpp) on the right side of the screen, where
+// the materials.yaml parameters of every animation frame of the picked texture
+// can be edited live and saved back to materials.yaml (Apply), reverted
+// (Cancel), or the editor closed (Exit).
 
 #ifndef QR_EDITOR_H
 #define QR_EDITOR_H
@@ -30,8 +31,8 @@ void QR_Editor_DrawSelection (cb_context_t *cbx);  // face outlines (R_DrawViewM
 void QR_Editor_DrawPanel (cb_context_t *cbx);      // panel UI (SCR_DrawGUI)
 
 // Input hooks (keys.c / in_sdl.c).
-qboolean QR_Editor_KeyEvent (int key, qboolean down); // true = the key was consumed
-qboolean QR_Editor_CharEvent (int key);               // true = the char was consumed
-qboolean QR_Editor_TextEntryActive (void);            // panel wants SDL text input
+qboolean QR_Editor_KeyEvent (int key, qboolean down);      // true = the key was consumed
+qboolean QR_Editor_GuiProcessEvent (const void *sdl_event); // ImGui panel event routing
+qboolean QR_Editor_TextEntryActive (void);                 // SDL text input wanted
 
 #endif /* QR_EDITOR_H */

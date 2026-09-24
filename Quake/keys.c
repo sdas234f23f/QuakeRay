@@ -976,7 +976,7 @@ void Key_Event (int key, qboolean down)
 	{
 		if (keydown[key])
 		{
-			if (key_dest == key_game && !con_forcedup && !QR_Editor_PanelOpen ())
+			if (key_dest == key_game && !con_forcedup)
 				return; // ignore autorepeats in game mode
 		}
 		else if (key >= 200 && !keybindings[key])
@@ -987,8 +987,8 @@ void Key_Event (int key, qboolean down)
 
 	keydown[key] = down;
 
-	// qr light editor: while the material panel is open it owns the keyboard and
-	// mouse; while flying, ESC exits the editor instead of opening the menu
+	// qr light editor: while flying, ESC exits the editor instead of opening
+	// the menu (the open panel consumes its events at the SDL level)
 	if (QR_Editor_KeyEvent (key, down))
 		return;
 
@@ -1112,10 +1112,6 @@ void Char_Event (int key)
 		return;
 #endif
 	if (keydown[K_CTRL])
-		return;
-
-	// qr light editor: typing into an editor text field
-	if (QR_Editor_CharEvent (key))
 		return;
 
 	if (key_inputgrab.active)

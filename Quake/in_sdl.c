@@ -888,6 +888,10 @@ void IN_SendKeyEvents (void)
 
 	while (SDL_PollEvent (&event))
 	{
+		// qr light editor: the ImGui material panel owns the mouse and keyboard
+		if (QR_Editor_GuiProcessEvent (&event))
+			continue;
+
 		switch (event.type)
 		{
 		case SDL_WINDOWEVENT:

@@ -244,6 +244,33 @@ else()
 endif()
 
 # ============================================================================
+# Dear ImGui — vendored immediate-mode GUI (MIT)
+# ============================================================================
+# Core + the SDL2 input backend. The render backend is our own
+# (Quake/qr_gui.cpp): ImGui draw lists are uploaded through the vkpt
+# rasterizer, so ImGui's own Vulkan backend and pipelines are not used.
+# Built as a separate static lib so the strict /W4 /WX C flags don't apply.
+add_library(imgui STATIC
+    third_party/imgui/imgui.cpp
+    third_party/imgui/imgui_draw.cpp
+    third_party/imgui/imgui_tables.cpp
+    third_party/imgui/imgui_widgets.cpp
+    third_party/imgui/backends/imgui_impl_sdl2.cpp
+)
+target_include_directories(imgui PUBLIC
+    ${CMAKE_SOURCE_DIR}/third_party/imgui
+    ${CMAKE_SOURCE_DIR}/third_party/imgui/backends
+)
+
+if(MSVC)
+    target_compile_options(imgui PRIVATE /W3 /WX- /EHsc)
+else()
+    target_compile_options(imgui PRIVATE -w)
+endif()
+
+target_link_libraries(imgui PUBLIC SDL2::SDL2)
+
+# ============================================================================
 # Source files
 # ============================================================================
 
@@ -298,6 +325,7 @@ set(CORE_SOURCES
     Quake/rt_material.c
     Quake/rt_pkz.c
     Quake/qr_editor.c
+    Quake/qr_gui.cpp
     Quake/sbar.c
     Quake/snd_codec.c
     Quake/snd_dma.c
@@ -458,12 +486,25 @@ endif()
 target_link_libraries(quakeray PRIVATE Vulkan::Vulkan)
 target_link_libraries(quakeray PRIVATE vkpt)
 target_link_libraries(quakeray PRIVATE libyaml)
+target_link_libraries(quakeray PRIVATE imgui)
 
 if(QUAKERAY_PLATFORM_WINDOWS)
     target_link_libraries(quakeray PRIVATE SDL2::SDL2 SDL2::SDL2main)
 else()
     target_link_libraries(quakeray PRIVATE SDL2::SDL2)
 endif()
+
+# ============================================================================
+# Runtime assets
+# ============================================================================
+# The qr light editor loads the GUI font from next to the executable.
+add_custom_command(TARGET quakeray POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:quakeray>/fonts"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_SOURCE_DIR}/third_party/imgui/fonts/Roboto-Regular.ttf"
+        "$<TARGET_FILE_DIR:quakeray>/fonts/Roboto-Regular.ttf"
+    COMMENT "Copying the GUI font"
+)
 
 if(QUAKERAY_PLATFORM_WINDOWS)
     target_link_libraries(quakeray PRIVATE ws2_32 winmm)

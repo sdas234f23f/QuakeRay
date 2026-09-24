@@ -4,11 +4,12 @@
 //
 // While the editor runs the view belongs to a free camera (the player stands
 // still): aim with the crosshair, fire selects the face under it and opens the
-// material panel on the right edge of the screen. The panel edits the
-// materials.yaml parameters of every animation frame of the picked texture
-// (medkits, blinking buttons, ...). Apply writes the changes back to the
-// materials/*.yaml files, Cancel reverts to the values they were loaded from,
-// Exit closes the editor and returns the view to the player.
+// material panel on the right edge of the screen. The panel is Dear ImGui
+// (Quake/qr_gui.cpp), and it edits the materials.yaml parameters of every
+// animation frame of the picked texture (medkits, blinking buttons, ...).
+// Apply writes the changes back to the materials/*.yaml files, Cancel reverts
+// to the values they were loaded from, Exit closes the editor and returns the
+// view to the player.
 //
 // Editing model: the editor mutates the live rt_material_t structs and
 // re-synthesizes the affected textures (TexMgr_ReloadImagesForMaterial); world
@@ -29,6 +30,7 @@
 #include "console.h"
 #include "mathlib.h"
 #include "input.h"
+#include "vid.h"
 
 #include "SDL.h"
 
@@ -40,6 +42,7 @@
 #endif
 
 #include "qr_editor.h"
+#include "qr_gui.h"
 
 #include <ctype.h>
 #include <math.h>
@@ -127,51 +130,12 @@ static const struct qre_param_s
 };
 
 // ---------------------------------------------------------------------------
-// UI layout (CANVAS_EDITOR units: 640 across the screen, 8x8 glyphs)
-// ---------------------------------------------------------------------------
-
-#define QRE_PANEL_X      440   // panel left edge
-#define QRE_PANEL_W      200
-#define QRE_LABEL_X      444
-#define QRE_WIDGET_X     522
-#define QRE_WIDGET_MAX   634
-#define QRE_ROW_H        11
-#define QRE_TEXT_ROW_H   21
-#define QRE_HEADER_H     12
-#define QRE_CONTENT_TOP  40
-#define QRE_SCROLL_X     634
-#define QRE_SCROLL_W     6
-
-#define QRE_GROUP_MAX    12
-#define QRE_ROWS_MAX     640
-#define QRE_DIRTY_MAX    16
-#define QRE_TOUCHED_MAX  128
-
-// ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
 
-enum
-{
-	ROW_HEADER,
-	ROW_FLOAT,
-	ROW_INT,
-	ROW_BOOL,
-	ROW_TEXT,
-	ROW_COLOR,
-	ROW_CR,   // color editor: red slider
-	ROW_CG,   // color editor: green slider
-	ROW_CB,   // color editor: blue slider
-	ROW_CHEX, // color editor: hex text field
-};
-
-typedef struct qre_row_s
-{
-	int kind;
-	int mat;   // index into qre.group
-	int param; // PARAM_*
-	int sub;   // color rows: 0..2 = R/G/B, 3 = hex
-} qre_row_t;
+#define QRE_GROUP_MAX    12
+#define QRE_DIRTY_MAX    16
+#define QRE_TOUCHED_MAX  128
 
 static struct
 {
@@ -206,28 +170,15 @@ static struct
 	int  dirty_count;
 	char touched[QRE_TOUCHED_MAX][MAX_QPATH];
 	int  touched_count;
-
-	// panel state
-	float      scroll;
-	int        rows_count;
-	qre_row_t  rows[QRE_ROWS_MAX];
-	int        active_text_row; // row being typed into, -1 = none
-	char       text_buf[MAX_QPATH];
-	int        drag_slider_row; // row being slider-dragged, -1 = none
-	int        color_expand_mat;
-	int        color_expand_param;
-	qboolean   drag_scroll;
-	float      drag_scroll_grab;
-	float      mouse_x, mouse_y; // canvas coords
 } qre;
 
-// forward declarations (the panel click handler sits above the apply/save code)
-static void    QRE_Apply (void);
-static void    QRE_Cancel (void);
-static void    QRE_StopEditor (qboolean restore);
-static void    QRE_SaveMaterials (void);
+// forward declarations (the panel code sits above the apply/save code)
+static void     QRE_Apply (void);
+static void     QRE_Cancel (void);
+static void     QRE_StopEditor (qboolean restore);
+static void     QRE_ClosePanel (void);
+static void     QRE_SaveMaterials (void);
 static qboolean QRE_BrowseTexture (char *out, size_t outsize);
-
 
 // ---------------------------------------------------------------------------
 // Small helpers
@@ -247,17 +198,6 @@ static RgFloat4D QRE_Rgba (float r, float g, float b, float a)
 	c.data[2] = b;
 	c.data[3] = a;
 	return c;
-}
-
-static void QRE_Truncate (char *out, size_t outsize, const char *in)
-{
-	if (strlen (in) < outsize)
-	{
-		q_strlcpy (out, in, outsize);
-		return;
-	}
-	memcpy (out, in, outsize - 1);
-	out[outsize - 1] = '\0';
 }
 
 // "textures/+3_med25" -> 3, "textures/_med25" -> -1 (not an animation frame)
@@ -566,146 +506,6 @@ static void QRE_SetText (int g, int param, const char *value)
 	QRE_MarkDirty (m);
 }
 
-// Formats the value of a row for display and for the text field.
-static void QRE_FormatValue (const rt_material_t *m, const qre_row_t *row, char *buf, size_t bufsize)
-{
-	switch (row->kind)
-	{
-	case ROW_FLOAT:
-		q_snprintf (buf, bufsize, "%.4g", QRE_GetFloat (m, row->param));
-		break;
-	case ROW_INT:
-		if (row->param == PARAM_KIND)
-		{
-			const char *k = RT_MAT_KindName (QRE_GetInt (m, row->param));
-			q_snprintf (buf, bufsize, "%s", k ? k : "REGULAR");
-		}
-		else
-			q_snprintf (buf, bufsize, "%d", QRE_GetInt (m, row->param));
-		break;
-	case ROW_BOOL:
-		q_snprintf (buf, bufsize, "%s", QRE_GetBool (m, row->param) ? "on" : "off");
-		break;
-	case ROW_TEXT:
-		QRE_Truncate (buf, bufsize, QRE_GetText (m, row->param));
-		break;
-	case ROW_COLOR:
-	case ROW_CHEX:
-	{
-		qboolean en;
-		float    rgb[3];
-
-		QRE_GetColor (m, row->param, &en, rgb);
-		if (!en)
-			q_snprintf (buf, bufsize, "------");
-		else
-			q_snprintf (buf, bufsize, "%02x%02x%02x",
-			            (int)(rgb[0] * 255.0f + 0.5f), (int)(rgb[1] * 255.0f + 0.5f), (int)(rgb[2] * 255.0f + 0.5f));
-		break;
-	}
-	case ROW_CR:
-	case ROW_CG:
-	case ROW_CB:
-	{
-		qboolean en;
-		float    rgb[3];
-
-		QRE_GetColor (m, row->param, &en, rgb);
-		q_snprintf (buf, bufsize, "%d", (int)(rgb[row->sub] * 255.0f + 0.5f));
-		break;
-	}
-	default:
-		buf[0] = '\0';
-		break;
-	}
-}
-
-static qboolean QRE_ParseHexColor (const char *text, float rgb[3])
-{
-	int v[6];
-	int i;
-
-	if (strlen (text) != 6)
-		return false;
-	for (i = 0; i < 6; i++)
-	{
-		char c = text[i];
-
-		if (c >= '0' && c <= '9')       v[i] = c - '0';
-		else if (c >= 'a' && c <= 'f')  v[i] = c - 'a' + 10;
-		else if (c >= 'A' && c <= 'F')  v[i] = c - 'A' + 10;
-		else return false;
-	}
-	rgb[0] = (float)(v[0] * 16 + v[1]) / 255.0f;
-	rgb[1] = (float)(v[2] * 16 + v[3]) / 255.0f;
-	rgb[2] = (float)(v[4] * 16 + v[5]) / 255.0f;
-	return true;
-}
-
-// Commits the text field content to its parameter.
-static void QRE_CommitText (void)
-{
-	const qre_row_t *row;
-	rt_material_t   *m;
-	qboolean         ok = true;
-
-	if (qre.active_text_row < 0 || qre.active_text_row >= qre.rows_count)
-		return;
-	row = &qre.rows[qre.active_text_row];
-	if (row->mat < 0 || row->mat >= qre.group_count)
-		return;
-	m = qre.group[row->mat];
-
-	switch (row->kind)
-	{
-	case ROW_FLOAT:
-		QRE_SetFloat (row->mat, row->param, (float)atof (qre.text_buf));
-		break;
-	case ROW_INT:
-		QRE_SetInt (row->mat, row->param, atoi (qre.text_buf));
-		break;
-	case ROW_BOOL:
-		QRE_SetBool (row->mat, row->param, qre.text_buf[0] == '1' || !q_strcasecmp (qre.text_buf, "on") || !q_strcasecmp (qre.text_buf, "true"));
-		break;
-	case ROW_TEXT:
-		QRE_SetText (row->mat, row->param, qre.text_buf);
-		break;
-	case ROW_COLOR:
-	case ROW_CHEX:
-	{
-		float rgb[3];
-
-		if (QRE_ParseHexColor (qre.text_buf, rgb))
-		{
-			QRE_EnsureLive (row->mat);
-			if (row->param == PARAM_CEMIS)
-			{
-				m->has_color_emissive = true;
-				VectorCopy (rgb, m->color_emissive);
-			}
-			else
-			{
-				m->has_light_color = true;
-				VectorCopy (rgb, m->light_color);
-			}
-			QRE_MarkDirty (m);
-		}
-		else
-		{
-			Con_Printf ("qr editor: '%s' is not a valid RRGGBB color\n", qre.text_buf);
-			ok = false;
-		}
-		break;
-	}
-	default:
-		ok = false;
-		break;
-	}
-
-	if (ok)
-		qre.active_text_row = -1;
-}
-
 // ---------------------------------------------------------------------------
 // Material group resolution (animation frames)
 // ---------------------------------------------------------------------------
@@ -938,35 +738,37 @@ static void QRE_DoPick (qboolean select)
 		return;
 	}
 
+	if (!glt)
+		return;
+	if (!QR_GUI_Ready ())
+	{
+		Con_Printf ("qr editor: the ImGui panel is not available\n");
+		return;
+	}
+
 	qre.pick_model = model;
 	qre.pick_surf = surf;
 	qre.hover_model = NULL;
 	qre.hover_surf = NULL;
 
-	if (glt)
 	{
 		char texname[MAX_QPATH];
+		char *dot;
 
 		RT_MAT_NormalizeName (glt->name, texname, sizeof (texname));
-		{
-			char *dot = strrchr (texname, '.');
-			if (dot && !strchr (dot, ':'))
-				*dot = '\0';
-		}
+		dot = strrchr (texname, '.');
+		if (dot && !strchr (dot, ':'))
+			*dot = '\0';
 
 		QRE_ResolveGroup (texname);
-		qre.panel_open = true;
-		qre.scroll = 0;
-		qre.active_text_row = -1;
-		qre.drag_slider_row = -1;
-		qre.color_expand_mat = -1;
-		qre.color_expand_param = -1;
-		qre.drag_scroll = false;
-
-		// the panel owns the mouse: free the cursor, freeze the camera
-		IN_Deactivate (true);
-		SDL_ShowCursor (SDL_DISABLE);
 	}
+
+	qre.panel_open = true;
+
+	// the panel owns the mouse: free the cursor, freeze the camera
+	IN_Deactivate (true);
+	SDL_ShowCursor (SDL_DISABLE);
+	QR_GUI_SetMouseCursor (1);
 }
 
 // ---------------------------------------------------------------------------
@@ -1099,379 +901,157 @@ void QR_Editor_UpdateView (void)
 }
 
 // ---------------------------------------------------------------------------
-// Panel: row list
+// Panel (Dear ImGui)
 // ---------------------------------------------------------------------------
 
-static float QRE_RowHeight (const qre_row_t *row)
+static void QRE_ParamWidgets (int g)
 {
-	if (row->kind == ROW_TEXT)
-		return QRE_TEXT_ROW_H;
-	if (row->kind == ROW_HEADER)
-		return QRE_HEADER_H;
-	return QRE_ROW_H;
-}
+	rt_material_t *m = qre.group[g];
+	int            p;
 
-static int QRE_TypeToRow (int type)
-{
-	switch (type)
+	for (p = 0; p < PARAM_COUNT; p++)
 	{
-	case QRE_T_FLOAT: return ROW_FLOAT;
-	case QRE_T_INT:   return ROW_INT;
-	case QRE_T_BOOL:  return ROW_BOOL;
-	case QRE_T_TEXT:  return ROW_TEXT;
-	case QRE_T_COLOR: return ROW_COLOR;
-	default:          return ROW_HEADER;
-	}
-}
+		const char *label = qre_params[p].label;
 
-static void QRE_BuildRows (void)
-{
-	int r = 0;
-	int g;
-
-	for (g = 0; g < qre.group_count && r < QRE_ROWS_MAX; g++)
-	{
-		int p;
-
-		qre.rows[r].kind = ROW_HEADER;
-		qre.rows[r].mat = g;
-		qre.rows[r].param = -1;
-		qre.rows[r].sub = -1;
-		r++;
-
-		for (p = 0; p < PARAM_COUNT && r < QRE_ROWS_MAX; p++)
+		switch (qre_params[p].type)
 		{
-			qre.rows[r].kind = QRE_TypeToRow (qre_params[p].type);
-			qre.rows[r].mat = g;
-			qre.rows[r].param = p;
-			qre.rows[r].sub = -1;
-			r++;
+		case QRE_T_TEXT:
+		{
+			char buf[MAX_QPATH];
+			int  res;
+			char file[MAX_QPATH];
 
-			if (qre_params[p].type == QRE_T_COLOR &&
-			    qre.color_expand_mat == g && qre.color_expand_param == p && r + 4 <= QRE_ROWS_MAX)
+			q_strlcpy (buf, QRE_GetText (m, p), sizeof (buf));
+			res = QR_GUI_TexturePath (label, buf, sizeof (buf));
+			if ((res & 1) && strcmp (buf, QRE_GetText (m, p)))
+				QRE_SetText (g, p, buf);
+			if (res & 2)
 			{
-				int c;
+				if (QRE_BrowseTexture (file, sizeof (file)))
+					QRE_SetText (g, p, file);
+			}
+			break;
+		}
+		case QRE_T_FLOAT:
+		{
+			float value = QRE_GetFloat (m, p);
+			if (QR_GUI_SliderFloat (label, &value, qre_params[p].min, qre_params[p].max))
+				QRE_SetFloat (g, p, value);
+			break;
+		}
+		case QRE_T_INT:
+		{
+			int value = QRE_GetInt (m, p);
 
-				for (c = 0; c < 3; c++)
+			if (p == PARAM_KIND)
+			{
+				static const char *const kinds[] = {
+					"REGULAR", "CHROME", "WATER", "LAVA", "SLIME", "GLASS", "SKY", "INVISIBLE", "SCREEN", "CAMERA"
+				};
+				if (QR_GUI_Combo (label, &value, kinds, (int)countof (kinds)))
+					QRE_SetInt (g, p, value);
+			}
+			else if (p == PARAM_EBLEND)
+			{
+				static const char *const blends[] = { "cvar", "0", "1", "2", "3", "4", "5" };
+				int index = value + 1;
+				if (QR_GUI_Combo (label, &index, blends, (int)countof (blends)))
+					QRE_SetInt (g, p, index - 1);
+			}
+			else
+			{
+				if (QR_GUI_SliderInt (label, &value, (int)qre_params[p].min, (int)qre_params[p].max))
+					QRE_SetInt (g, p, value);
+			}
+			break;
+		}
+		case QRE_T_BOOL:
+		{
+			int value = QRE_GetBool (m, p) ? 1 : 0;
+			if (QR_GUI_Checkbox (label, &value))
+				QRE_SetBool (g, p, value != 0);
+			break;
+		}
+		case QRE_T_COLOR:
+		{
+			qboolean enabled;
+			float    rgb[3];
+			float    old_rgb[3];
+			int      en;
+			int      c;
+
+			QRE_GetColor (m, p, &enabled, rgb);
+			VectorCopy (rgb, old_rgb);
+			en = enabled ? 1 : 0;
+
+			if (QR_GUI_ColorHex (label, rgb, &en))
+			{
+				if (!en)
 				{
-					qre.rows[r].kind = ROW_CR + c;
-					qre.rows[r].mat = g;
-					qre.rows[r].param = p;
-					qre.rows[r].sub = c;
-					r++;
+					QRE_SetColorEnabled (g, p, false);
 				}
-				qre.rows[r].kind = ROW_CHEX;
-				qre.rows[r].mat = g;
-				qre.rows[r].param = p;
-				qre.rows[r].sub = 3;
-				r++;
-			}
-		}
-	}
-
-	qre.rows_count = r;
-}
-
-static float QRE_ContentHeight (void)
-{
-	float h = 0;
-	int   i;
-
-	for (i = 0; i < qre.rows_count; i++)
-		h += QRE_RowHeight (&qre.rows[i]);
-	return h;
-}
-
-// The row under a canvas y coordinate, or -1.
-static int QRE_RowAt (float y)
-{
-	float cy = QRE_CONTENT_TOP - qre.scroll;
-	int   i;
-
-	for (i = 0; i < qre.rows_count; i++)
-	{
-		float h = QRE_RowHeight (&qre.rows[i]);
-		if (y >= cy && y < cy + h)
-			return i;
-		cy += h;
-	}
-	return -1;
-}
-
-// ---------------------------------------------------------------------------
-// Panel: drawing
-// ---------------------------------------------------------------------------
-
-static void QRE_DrawButton (cb_context_t *cbx, int x, int y, int w, int h, const char *text)
-{
-	const float bg[4] = { 0.16f, 0.18f, 0.24f, 1.0f };
-	const float border[4] = { 0.4f, 0.42f, 0.5f, 1.0f };
-	const RgFloat4D textc = QRE_Rgba (1, 1, 1, 1);
-
-	Draw_FillRGBA (cbx, x, y, w, h, bg);
-	Draw_FillRGBA (cbx, x, y, w, 1, border);
-	Draw_FillRGBA (cbx, x, y + h - 1, w, 1, border);
-	Draw_FillRGBA (cbx, x, y, 1, h, border);
-	Draw_FillRGBA (cbx, x + w - 1, y, 1, h, border);
-	Draw_StringScaled (cbx, x + (int)((w - 8.0f * strlen (text)) / 2.0f), y + 2, text, 1.0f, &textc);
-}
-
-// value is already in slider units (param value for floats/ints, 0..255 for RGB)
-static void QRE_DrawSlider (cb_context_t *cbx, const qre_row_t *row, float x, float y, float trackw, float value)
-{
-	const float track[4] = { 0.22f, 0.23f, 0.3f, 1.0f };
-	const float fill[4] = { 0.5f, 0.55f, 0.65f, 1.0f };
-	const float knob[4] = { 0.95f, 0.95f, 1.0f, 1.0f };
-	float       f;
-
-	if (row->kind == ROW_CR || row->kind == ROW_CG || row->kind == ROW_CB)
-		f = value / 255.0f;
-	else
-		f = (value - qre_params[row->param].min) / (qre_params[row->param].max - qre_params[row->param].min);
-	f = CLAMP (0.0f, f, 1.0f);
-
-	Draw_FillRGBA (cbx, (int)x, (int)(y + 4), (int)trackw, 3, track);
-	if (f > 0.001f)
-		Draw_FillRGBA (cbx, (int)x, (int)(y + 4), (int)(trackw * f), 3, fill);
-	Draw_FillRGBA (cbx, (int)(x + trackw * f - 1), (int)(y + 2), 2, 7, knob);
-}
-
-static void QRE_DrawCursor (cb_context_t *cbx)
-{
-	const float c[4] = { 1.0f, 1.0f, 1.0f, 0.95f };
-	const float d[4] = { 0.0f, 0.0f, 0.0f, 0.7f };
-	int x = (int)qre.mouse_x;
-	int y = (int)qre.mouse_y;
-
-	Draw_FillRGBA (cbx, x, y - 1, 9, 2, d);
-	Draw_FillRGBA (cbx, x - 1, y, 2, 9, d);
-	Draw_FillRGBA (cbx, x, y, 7, 1, c);
-	Draw_FillRGBA (cbx, x, y, 1, 7, c);
-}
-
-static void QRE_DrawPanelUI (cb_context_t *cbx)
-{
-	const float H = QRE_CanvasHeight ();
-	const float bg[4] = { 0.05f, 0.05f, 0.08f, 0.94f };
-	const float border[4] = { 0.32f, 0.34f, 0.42f, 1.0f };
-	const RgFloat4D titlec = QRE_Rgba (1.0f, 0.85f, 0.35f, 1.0f);
-	const RgFloat4D namec = QRE_Rgba (0.85f, 0.9f, 1.0f, 1.0f);
-	char name_trunc[30];
-	int  i;
-	float y, content_h, maxscroll, view_h;
-
-	GL_SetCanvas (cbx, CANVAS_EDITOR);
-
-	Draw_FillRGBA (cbx, QRE_PANEL_X, 0, QRE_PANEL_W, (int)H, bg);
-	Draw_FillRGBA (cbx, QRE_PANEL_X, 0, 1, (int)H, border);
-	Draw_FillRGBA (cbx, QRE_PANEL_X, (int)H - 1, QRE_PANEL_W, 1, border);
-
-	Draw_StringScaled (cbx, QRE_LABEL_X, 4, "MATERIAL EDITOR", 1.0f, &titlec);
-	if (qre.pick_surf && qre.pick_surf->texinfo && qre.pick_surf->texinfo->texture)
-	{
-		q_snprintf (name_trunc, sizeof (name_trunc), "face: %s", qre.pick_surf->texinfo->texture->name);
-		QRE_Truncate (name_trunc, sizeof (name_trunc), name_trunc);
-		Draw_StringScaled (cbx, QRE_LABEL_X, 14, name_trunc, 1.0f, &namec);
-	}
-
-	QRE_DrawButton (cbx, 444, 24, 48, 12, "Apply");
-	QRE_DrawButton (cbx, 498, 24, 48, 12, "Cancel");
-	QRE_DrawButton (cbx, 552, 24, 48, 12, "Exit");
-
-	QRE_BuildRows ();
-
-	view_h = H - QRE_CONTENT_TOP - 4.0f;
-	content_h = QRE_ContentHeight ();
-	maxscroll = content_h > view_h ? content_h - view_h : 0.0f;
-	if (qre.scroll < 0.0f)
-		qre.scroll = 0.0f;
-	if (qre.scroll > maxscroll)
-		qre.scroll = maxscroll;
-
-	y = QRE_CONTENT_TOP - qre.scroll;
-	for (i = 0; i < qre.rows_count; i++)
-	{
-		const qre_row_t *row = &qre.rows[i];
-		rt_material_t   *m = qre.group[row->mat];
-		const float      rh = QRE_RowHeight (row);
-		char             val[64];
-
-		if (y + rh <= QRE_CONTENT_TOP || y >= QRE_CONTENT_TOP + view_h)
-		{
-			y += rh;
-			continue;
-		}
-
-		switch (row->kind)
-		{
-		case ROW_HEADER:
-		{
-			const float hbg[4] = { 0.11f, 0.13f, 0.18f, 1.0f };
-			const RgFloat4D hc = QRE_Rgba (0.5f, 0.85f, 1.0f, 1.0f);
-			char header[28];
-
-			Draw_FillRGBA (cbx, QRE_PANEL_X, (int)y, QRE_PANEL_W, (int)rh, hbg);
-			QRE_Truncate (header, sizeof (header), m->name);
-			Draw_StringScaled (cbx, QRE_LABEL_X, (int)(y + 2), header, 1.0f, &hc);
-			break;
-		}
-		case ROW_FLOAT:
-		case ROW_INT:
-		{
-			const RgFloat4D lc = QRE_Rgba (0.75f, 0.78f, 0.85f, 1.0f);
-			const RgFloat4D vc = QRE_Rgba (1, 1, 1, 1);
-			float value, value_start;
-
-			QRE_FormatValue (m, row, val, sizeof (val));
-			Draw_StringScaled (cbx, QRE_LABEL_X, (int)(y + 1), qre_params[row->param].label, 1.0f, &lc);
-			value_start = QRE_WIDGET_MAX - 8.0f * strlen (val);
-			if (value_start < QRE_WIDGET_X + 40.0f)
-				value_start = QRE_WIDGET_X + 40.0f;
-			if (i == qre.active_text_row)
-			{
-				if (qre.text_buf[0])
-					Draw_StringScaled (cbx, (int)value_start, (int)(y + 1), qre.text_buf, 1.0f, &vc);
-			}
-			else
-				Draw_StringScaled (cbx, (int)value_start, (int)(y + 1), val, 1.0f, &vc);
-
-			value = (row->kind == ROW_FLOAT) ? QRE_GetFloat (m, row->param) : (float)QRE_GetInt (m, row->param);
-			QRE_DrawSlider (cbx, row, QRE_WIDGET_X + 1.0f, y, value_start - 6.0f - (QRE_WIDGET_X + 1.0f), value);
-			break;
-		}
-		case ROW_BOOL:
-		{
-			const RgFloat4D lc = QRE_Rgba (0.75f, 0.78f, 0.85f, 1.0f);
-			const RgFloat4D vc = QRE_Rgba (1, 1, 1, 1);
-			const qboolean on = QRE_GetBool (m, row->param);
-			char box[4];
-
-			QRE_FormatValue (m, row, val, sizeof (val));
-			Draw_StringScaled (cbx, QRE_LABEL_X, (int)(y + 1), qre_params[row->param].label, 1.0f, &lc);
-			q_snprintf (box, sizeof (box), "[%c]", on ? 'x' : ' ');
-			Draw_StringScaled (cbx, QRE_WIDGET_X, (int)(y + 1), box, 1.0f, &vc);
-			if (i == qre.active_text_row)
-			{
-				if (qre.text_buf[0])
-					Draw_StringScaled (cbx, (int)(QRE_WIDGET_MAX - 8.0f * strlen (qre.text_buf)), (int)(y + 1), qre.text_buf, 1.0f, &vc);
-			}
-			else
-				Draw_StringScaled (cbx, (int)(QRE_WIDGET_MAX - 8.0f * strlen (val)), (int)(y + 1), val, 1.0f, &vc);
-			break;
-		}
-		case ROW_TEXT:
-		{
-			const RgFloat4D lc = QRE_Rgba (0.75f, 0.78f, 0.85f, 1.0f);
-			const RgFloat4D vc = QRE_Rgba (0.9f, 0.93f, 1.0f, 1.0f);
-			const RgFloat4D bc = QRE_Rgba (0.7f, 0.75f, 0.85f, 1.0f);
-			char shown[28];
-
-			Draw_StringScaled (cbx, QRE_LABEL_X, (int)(y + 1), qre_params[row->param].label, 1.0f, &lc);
-			if (i == qre.active_text_row)
-			{
-				QRE_Truncate (shown, sizeof (shown), qre.text_buf);
-				if (shown[0])
-					Draw_StringScaled (cbx, QRE_LABEL_X, (int)(y + 11), shown, 1.0f, &vc);
-			}
-			else
-			{
-				QRE_FormatValue (m, row, val, sizeof (val));
-				QRE_Truncate (shown, sizeof (shown), val);
-				if (shown[0])
-					Draw_StringScaled (cbx, QRE_LABEL_X, (int)(y + 11), shown, 1.0f, &vc);
-			}
-			Draw_StringScaled (cbx, QRE_WIDGET_MAX - 24, (int)(y + 11), "...", 1.0f, &bc);
-			break;
-		}
-		case ROW_COLOR:
-		{
-			const RgFloat4D lc = QRE_Rgba (0.75f, 0.78f, 0.85f, 1.0f);
-			const RgFloat4D vc = QRE_Rgba (1, 1, 1, 1);
-			qboolean en;
-			float    rgb[3];
-			char     box[4];
-			float    sw[4];
-
-			QRE_GetColor (m, row->param, &en, rgb);
-			QRE_FormatValue (m, row, val, sizeof (val));
-
-			Draw_StringScaled (cbx, QRE_LABEL_X, (int)(y + 1), qre_params[row->param].label, 1.0f, &lc);
-			q_snprintf (box, sizeof (box), "[%c]", en ? 'x' : ' ');
-			Draw_StringScaled (cbx, QRE_WIDGET_X, (int)(y + 1), box, 1.0f, &vc);
-
-			sw[0] = en ? rgb[0] : 0.3f;
-			sw[1] = en ? rgb[1] : 0.3f;
-			sw[2] = en ? rgb[2] : 0.3f;
-			sw[3] = 1.0f;
-			Draw_FillRGBA (cbx, QRE_WIDGET_X + 22, (int)(y + 1), 8, 8, sw);
-
-			Draw_StringScaled (cbx, (int)(QRE_WIDGET_MAX - 8.0f * strlen (val)), (int)(y + 1), val, 1.0f, &vc);
-			break;
-		}
-		case ROW_CR:
-		case ROW_CG:
-		case ROW_CB:
-		{
-			const RgFloat4D lc = QRE_Rgba (0.75f, 0.78f, 0.85f, 1.0f);
-			const RgFloat4D vc = QRE_Rgba (1, 1, 1, 1);
-			const char *labels[3] = { "R", "G", "B" };
-			qboolean en;
-			float    rgb[3];
-			float    value_start;
-
-			QRE_GetColor (m, row->param, &en, rgb);
-			QRE_FormatValue (m, row, val, sizeof (val));
-
-			Draw_StringScaled (cbx, QRE_LABEL_X, (int)(y + 1), labels[row->sub], 1.0f, &lc);
-			value_start = QRE_WIDGET_MAX - 8.0f * strlen (val);
-			if (value_start < QRE_WIDGET_X + 40.0f)
-				value_start = QRE_WIDGET_X + 40.0f;
-			Draw_StringScaled (cbx, (int)value_start, (int)(y + 1), val, 1.0f, &vc);
-			QRE_DrawSlider (cbx, row, QRE_WIDGET_X + 1.0f, y, value_start - 6.0f - (QRE_WIDGET_X + 1.0f), rgb[row->sub] * 255.0f);
-			break;
-		}
-		case ROW_CHEX:
-		{
-			const RgFloat4D lc = QRE_Rgba (0.75f, 0.78f, 0.85f, 1.0f);
-			const RgFloat4D vc = QRE_Rgba (1, 1, 1, 1);
-
-			Draw_StringScaled (cbx, QRE_LABEL_X, (int)(y + 1), "hex", 1.0f, &lc);
-			if (i == qre.active_text_row)
-			{
-				if (qre.text_buf[0])
-					Draw_StringScaled (cbx, QRE_WIDGET_X, (int)(y + 1), qre.text_buf, 1.0f, &vc);
-			}
-			else
-			{
-				QRE_FormatValue (m, row, val, sizeof (val));
-				Draw_StringScaled (cbx, QRE_WIDGET_X, (int)(y + 1), val, 1.0f, &vc);
+				else
+				{
+					QRE_SetColorEnabled (g, p, true);
+					for (c = 0; c < 3; c++)
+						if (rgb[c] != old_rgb[c])
+							QRE_SetColorChannel (g, p, c, rgb[c]);
+				}
 			}
 			break;
 		}
 		default:
 			break;
 		}
-
-		y += rh;
 	}
+}
 
-	// scrollbar
-	if (maxscroll > 0.0f)
+static void QRE_BuildPanelGUI (void)
+{
+	int      panel_w = glwidth * 2 / 5;
+	int      g;
+	qboolean exit_requested = false;
+
+	if (panel_w > 460)
+		panel_w = 460;
+	if (panel_w < 320)
+		panel_w = 320;
+
+	QR_GUI_BeginPanel ("qr_material_editor", glwidth - panel_w, 0, panel_w, glheight);
+
+	QR_GUI_Label ("MATERIAL EDITOR");
+	if (qre.pick_surf && qre.pick_surf->texinfo && qre.pick_surf->texinfo->texture)
 	{
-		const float track[4] = { 0.12f, 0.12f, 0.16f, 1.0f };
-		const float thumb[4] = { 0.5f, 0.52f, 0.6f, 1.0f };
-		float thumb_h, thumb_y;
+		char buf[MAX_QPATH + 16];
 
-		thumb_h = view_h * view_h / content_h;
-		if (thumb_h < 16.0f)
-			thumb_h = 16.0f;
-		thumb_y = QRE_CONTENT_TOP + (qre.scroll / maxscroll) * (view_h - thumb_h);
+		q_snprintf (buf, sizeof (buf), "face: %s", qre.pick_surf->texinfo->texture->name);
+		QR_GUI_LabelDim (buf);
+	}
+	QR_GUI_Spacing ();
 
-		Draw_FillRGBA (cbx, QRE_SCROLL_X, QRE_CONTENT_TOP, QRE_SCROLL_W, (int)view_h, track);
-		Draw_FillRGBA (cbx, QRE_SCROLL_X + 1, (int)thumb_y, QRE_SCROLL_W - 2, (int)thumb_h, thumb);
+	if (QR_GUI_Button ("Apply"))
+		QRE_Apply ();
+	QR_GUI_SameLine ();
+	if (QR_GUI_Button ("Cancel"))
+		QRE_Cancel ();
+	QR_GUI_SameLine ();
+	if (QR_GUI_Button ("Exit"))
+		exit_requested = true;
+
+	QR_GUI_Separator ();
+	QR_GUI_BeginScroll ();
+
+	for (g = 0; g < qre.group_count; g++)
+	{
+		if (QR_GUI_Section (qre.group[g]->name, 1))
+			QRE_ParamWidgets (g);
 	}
 
-	QRE_DrawCursor (cbx);
+	QR_GUI_EndScroll ();
+	QR_GUI_EndPanel ();
+
+	if (exit_requested)
+		QRE_StopEditor (true);
 }
 
 static void QRE_DrawFlyingHint (cb_context_t *cbx)
@@ -1487,246 +1067,11 @@ static void QRE_DrawFlyingHint (cb_context_t *cbx)
 }
 
 // ---------------------------------------------------------------------------
-// Panel: interaction
-// ---------------------------------------------------------------------------
-
-static qboolean QRE_Hit (float x, float y, int rx, int ry, int rw, int rh)
-{
-	return x >= rx && x < rx + rw && y >= ry && y < ry + rh;
-}
-
-static void QRE_ScrollBy (float dy)
-{
-	const float H = QRE_CanvasHeight ();
-	const float view_h = H - QRE_CONTENT_TOP - 4.0f;
-	const float content_h = QRE_ContentHeight ();
-	const float maxscroll = content_h > view_h ? content_h - view_h : 0.0f;
-
-	qre.scroll += dy;
-	if (qre.scroll < 0.0f)
-		qre.scroll = 0.0f;
-	if (qre.scroll > maxscroll)
-		qre.scroll = maxscroll;
-}
-
-static void QRE_OpenTextField (int row)
-{
-	qre.active_text_row = row;
-	QRE_FormatValue (qre.group[qre.rows[row].mat], &qre.rows[row], qre.text_buf, sizeof (qre.text_buf));
-}
-
-static void QRE_SliderDrag (int row, float x)
-{
-	const qre_row_t *r = &qre.rows[row];
-	rt_material_t   *m = qre.group[r->mat];
-	float            value_start, track_x, track_w, f;
-	char             val[64];
-
-	if (r->kind != ROW_FLOAT && r->kind != ROW_INT && r->kind != ROW_CR && r->kind != ROW_CG && r->kind != ROW_CB)
-		return;
-
-	QRE_FormatValue (m, r, val, sizeof (val));
-	value_start = QRE_WIDGET_MAX - 8.0f * strlen (val);
-	if (value_start < QRE_WIDGET_X + 40.0f)
-		value_start = QRE_WIDGET_X + 40.0f;
-
-	track_x = QRE_WIDGET_X + 1.0f;
-	track_w = value_start - 6.0f - track_x;
-	if (track_w < 4.0f)
-		track_w = 4.0f;
-
-	f = (x - track_x) / track_w;
-	f = CLAMP (0.0f, f, 1.0f);
-
-	if (r->kind == ROW_CR || r->kind == ROW_CG || r->kind == ROW_CB)
-	{
-		QRE_SetColorChannel (r->mat, r->param, r->sub, f);
-	}
-	else if (r->kind == ROW_INT)
-	{
-		float step = qre_params[r->param].step;
-		float min = qre_params[r->param].min;
-		float max = qre_params[r->param].max;
-		int   v = (int)floorf (min + f * (max - min) + 0.5f);
-
-		v = ((int)(v / step)) * ((int)step);
-		QRE_SetInt (r->mat, r->param, v);
-	}
-	else
-	{
-		float step = qre_params[r->param].step;
-		float min = qre_params[r->param].min;
-		float max = qre_params[r->param].max;
-		float v = min + f * (max - min);
-
-		if (step > 0.0f)
-			v = floorf (v / step + 0.5f) * step;
-		QRE_SetFloat (r->mat, r->param, v);
-	}
-}
-
-static void QRE_PanelClick (void)
-{
-	const float mx = qre.mouse_x;
-	const float my = qre.mouse_y;
-	const float H = QRE_CanvasHeight ();
-	float       view_h, content_h, maxscroll;
-
-	// the buttons
-	if (QRE_Hit (mx, my, 444, 24, 48, 12))
-	{
-		QRE_Apply ();
-		return;
-	}
-	if (QRE_Hit (mx, my, 498, 24, 48, 12))
-	{
-		QRE_Cancel ();
-		return;
-	}
-	if (QRE_Hit (mx, my, 552, 24, 48, 12))
-	{
-		QRE_StopEditor (true);
-		return;
-	}
-
-	view_h = H - QRE_CONTENT_TOP - 4.0f;
-	content_h = QRE_ContentHeight ();
-	maxscroll = content_h > view_h ? content_h - view_h : 0.0f;
-
-	// the scrollbar
-	if (maxscroll > 0.0f && mx >= QRE_SCROLL_X && my >= QRE_CONTENT_TOP && my < QRE_CONTENT_TOP + view_h)
-	{
-		float thumb_h = view_h * view_h / content_h;
-		float thumb_y;
-
-		if (thumb_h < 16.0f)
-			thumb_h = 16.0f;
-		thumb_y = QRE_CONTENT_TOP + (qre.scroll / maxscroll) * (view_h - thumb_h);
-
-		if (my >= thumb_y && my < thumb_y + thumb_h)
-		{
-			qre.drag_scroll = true;
-			qre.drag_scroll_grab = my - thumb_y;
-		}
-		else
-		{
-			qre.scroll = maxscroll * (my - QRE_CONTENT_TOP - thumb_h * 0.5f) / (view_h - thumb_h);
-			if (qre.scroll < 0.0f)
-				qre.scroll = 0.0f;
-			if (qre.scroll > maxscroll)
-				qre.scroll = maxscroll;
-		}
-		return;
-	}
-
-	// the rows
-	{
-		int row = QRE_RowAt (my);
-		const qre_row_t *r;
-		rt_material_t   *m;
-		char             val[64];
-		float            value_start;
-
-		if (row < 0)
-			return;
-		r = &qre.rows[row];
-		m = qre.group[r->mat];
-
-		switch (r->kind)
-		{
-		case ROW_BOOL:
-			QRE_SetBool (r->mat, r->param, !QRE_GetBool (m, r->param));
-			break;
-
-		case ROW_COLOR:
-			// [x] toggles the color, the swatch expands the color editor, the
-			// hex value becomes a text field
-			if (mx < QRE_WIDGET_X + 20)
-			{
-				qboolean en;
-				float    rgb[3];
-
-				QRE_GetColor (m, r->param, &en, rgb);
-				QRE_SetColorEnabled (r->mat, r->param, !en);
-			}
-			else if (mx >= QRE_WIDGET_X + 20 && mx < QRE_WIDGET_X + 32)
-			{
-				if (qre.color_expand_mat == r->mat && qre.color_expand_param == r->param)
-				{
-					qre.color_expand_mat = -1;
-					qre.color_expand_param = -1;
-				}
-				else
-				{
-					qre.color_expand_mat = r->mat;
-					qre.color_expand_param = r->param;
-				}
-			}
-			else
-			{
-				QRE_OpenTextField (row);
-			}
-			break;
-
-		case ROW_FLOAT:
-		case ROW_INT:
-			QRE_FormatValue (m, r, val, sizeof (val));
-			value_start = QRE_WIDGET_MAX - 8.0f * strlen (val);
-			if (value_start < QRE_WIDGET_X + 40.0f)
-				value_start = QRE_WIDGET_X + 40.0f;
-			if (mx >= value_start)
-			{
-				QRE_OpenTextField (row);
-			}
-			else if (mx >= QRE_WIDGET_X)
-			{
-				qre.drag_slider_row = row;
-				QRE_SliderDrag (row, mx);
-			}
-			break;
-
-		case ROW_CR:
-		case ROW_CG:
-		case ROW_CB:
-			qre.drag_slider_row = row;
-			QRE_SliderDrag (row, mx);
-			break;
-
-		case ROW_TEXT:
-			if (mx >= QRE_WIDGET_MAX - 24)
-			{
-				char buf[MAX_QPATH];
-
-				if (QRE_BrowseTexture (buf, sizeof (buf)))
-				{
-					QRE_SetText (r->mat, r->param, buf);
-					qre.active_text_row = -1;
-				}
-			}
-			else
-			{
-				QRE_OpenTextField (row);
-			}
-			break;
-
-		case ROW_CHEX:
-			QRE_OpenTextField (row);
-			break;
-
-		default:
-			break;
-		}
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Panel: frame bookkeeping
+// Panel: per-frame bookkeeping
 // ---------------------------------------------------------------------------
 
 static void QRE_Frame (void)
 {
-	int mx, my;
-
 	// the level went away under the editor: drop it (the material snapshot may
 	// be stale relative to a freshly loaded map list, so nothing is restored)
 	if (cls.state != ca_connected || !cl.worldmodel)
@@ -1735,48 +1080,8 @@ static void QRE_Frame (void)
 		return;
 	}
 
-	SDL_GetMouseState (&mx, &my);
-	qre.mouse_x = (float)mx * 640.0f / (float)glwidth;
-	qre.mouse_y = (float)my * QRE_CanvasHeight () / (float)glheight;
-
 	if (!qre.panel_open)
-	{
 		QRE_DoPick (false);
-	}
-	else
-	{
-		if (qre.drag_scroll && keydown[K_MOUSE1])
-		{
-			const float H = QRE_CanvasHeight ();
-			const float view_h = H - QRE_CONTENT_TOP - 4.0f;
-			const float content_h = QRE_ContentHeight ();
-			const float maxscroll = content_h > view_h ? content_h - view_h : 0.0f;
-			float thumb_h = view_h * view_h / content_h;
-
-			if (thumb_h < 16.0f)
-				thumb_h = 16.0f;
-			if (maxscroll > 0.0f)
-			{
-				qre.scroll = maxscroll * (qre.mouse_y - qre.drag_scroll_grab - QRE_CONTENT_TOP) / (view_h - thumb_h);
-				if (qre.scroll < 0.0f)
-					qre.scroll = 0.0f;
-				if (qre.scroll > maxscroll)
-					qre.scroll = maxscroll;
-			}
-		}
-		else
-		{
-			qre.drag_scroll = false;
-		}
-
-		if (qre.drag_slider_row >= 0)
-		{
-			if (keydown[K_MOUSE1])
-				QRE_SliderDrag (qre.drag_slider_row, qre.mouse_x);
-			else
-				qre.drag_slider_row = -1;
-		}
-	}
 
 	QRE_FlushDirty ();
 }
@@ -1788,10 +1093,19 @@ void QR_Editor_DrawPanel (cb_context_t *cbx)
 
 	QRE_Frame ();
 
-	if (qre.panel_open)
-		QRE_DrawPanelUI (cbx);
-	else
+	if (!qre.panel_open)
+	{
 		QRE_DrawFlyingHint (cbx);
+		return;
+	}
+
+	// SCR_UpdateScreen can run more than once per host frame
+	if (!QR_GUI_BeginFrame ((unsigned int)host_framecount, (float)host_frametime, glx, gly, glwidth, glheight, vid.height))
+		return;
+
+	QRE_BuildPanelGUI ();
+
+	QR_GUI_EndFrame ();
 }
 
 // ---------------------------------------------------------------------------
@@ -1803,65 +1117,11 @@ qboolean QR_Editor_KeyEvent (int key, qboolean down)
 	if (!qre.active)
 		return false;
 
+	// while the panel is open its events are consumed at the SDL level
+	// (QR_Editor_GuiProcessEvent); only the flying mode is left here
 	if (qre.panel_open)
-	{
-		if (!down)
-		{
-			if (key == K_MOUSE1)
-			{
-				qre.drag_slider_row = -1;
-				qre.drag_scroll = false;
-			}
-			return true;
-		}
+		return false;
 
-		switch (key)
-		{
-		case K_ESCAPE:
-			// close the panel, keep flying
-			qre.panel_open = false;
-			qre.pick_model = NULL;
-			qre.pick_surf = NULL;
-			qre.active_text_row = -1;
-			qre.drag_slider_row = -1;
-			qre.drag_scroll = false;
-			qre.color_expand_mat = -1;
-			qre.color_expand_param = -1;
-			IN_Activate ();
-			SDL_ShowCursor (SDL_ENABLE);
-			break;
-
-		case K_MOUSE1:
-			QRE_PanelClick ();
-			break;
-
-		case K_MWHEELUP:
-			QRE_ScrollBy (-32.0f);
-			break;
-
-		case K_MWHEELDOWN:
-			QRE_ScrollBy (32.0f);
-			break;
-
-		case K_BACKSPACE:
-			if (qre.active_text_row >= 0 && qre.text_buf[0])
-				qre.text_buf[strlen (qre.text_buf) - 1] = '\0';
-			break;
-
-		case K_ENTER:
-		case K_KP_ENTER:
-			if (qre.active_text_row >= 0)
-				QRE_CommitText ();
-			break;
-
-		default:
-			break;
-		}
-
-		return true;
-	}
-
-	// flying: ESC exits the editor instead of opening the menu
 	if (key == K_ESCAPE && down)
 	{
 		QRE_StopEditor (true);
@@ -1871,32 +1131,47 @@ qboolean QR_Editor_KeyEvent (int key, qboolean down)
 	return false;
 }
 
-qboolean QR_Editor_CharEvent (int key)
+// Called for every SDL event before the engine handles it.
+qboolean QR_Editor_GuiProcessEvent (const void *sdl_event)
 {
-	size_t len;
+	const SDL_Event *e = (const SDL_Event *)sdl_event;
 
-	if (!qre.active || !qre.panel_open || qre.active_text_row < 0)
-		return false;
-	if (key < 32 || key > 126)
+	if (!qre.active || !qre.panel_open)
 		return false;
 
-	len = strlen (qre.text_buf);
-	if (len + 1 < sizeof (qre.text_buf))
+	// ESC closes the panel, unless an ImGui text field is editing
+	if (e->type == SDL_KEYDOWN && e->key.keysym.sym == SDLK_ESCAPE && !QR_GUI_WantsKeyboard ())
 	{
-		qre.text_buf[len] = (char)key;
-		qre.text_buf[len + 1] = '\0';
+		QRE_ClosePanel ();
+		return true;
 	}
-	return true;
+
+	return QR_GUI_ProcessEvent (sdl_event) ? true : false;
 }
 
 qboolean QR_Editor_TextEntryActive (void)
 {
-	return qre.active && qre.panel_open && qre.active_text_row >= 0;
+	// while the panel is open SDL text input must stay on for ImGui fields
+	return qre.active && qre.panel_open;
 }
 
 // ---------------------------------------------------------------------------
 // Apply / Cancel / Exit
 // ---------------------------------------------------------------------------
+
+static void QRE_ClosePanel (void)
+{
+	if (!qre.panel_open)
+		return;
+
+	qre.panel_open = false;
+	qre.pick_model = NULL;
+	qre.pick_surf = NULL;
+
+	IN_Activate ();
+	SDL_ShowCursor (SDL_ENABLE);
+	QR_GUI_SetMouseCursor (0);
+}
 
 static void QRE_Apply (void)
 {
@@ -1908,10 +1183,6 @@ static void QRE_Apply (void)
 
 static void QRE_Cancel (void)
 {
-	qre.active_text_row = -1;
-	qre.drag_slider_row = -1;
-	qre.drag_scroll = false;
-
 	QRE_RestoreSnapshot ();
 	QRE_ReapplyTouched (); // put the yaml values back on screen
 
@@ -1927,13 +1198,12 @@ static void QRE_Cancel (void)
 		if (glt)
 		{
 			char texname[MAX_QPATH];
+			char *dot;
 
 			RT_MAT_NormalizeName (glt->name, texname, sizeof (texname));
-			{
-				char *dot = strrchr (texname, '.');
-				if (dot && !strchr (dot, ':'))
-					*dot = '\0';
-			}
+			dot = strrchr (texname, '.');
+			if (dot && !strchr (dot, ':'))
+				*dot = '\0';
 			QRE_ResolveGroup (texname);
 		}
 	}
@@ -2072,7 +1342,7 @@ typedef struct qre_save_group_s
 // (the map list and the global list both carry materials/<map>.yaml entries).
 static void QRE_SaveAdd (qre_save_group_t *groups, int *ngroups, const rt_material_t *m)
 {
-	const char      *file = m->source_file[0] ? m->source_file : "materials/materials.yaml";
+	const char       *file = m->source_file[0] ? m->source_file : "materials/materials.yaml";
 	qre_save_group_t *g = NULL;
 	int              i;
 
@@ -2221,9 +1491,6 @@ static void QRE_StopEditor (qboolean restore)
 	qre.pick_surf = NULL;
 	qre.hover_model = NULL;
 	qre.hover_surf = NULL;
-	qre.active_text_row = -1;
-	qre.drag_slider_row = -1;
-	qre.drag_scroll = false;
 
 	VectorCopy (qre.player_viewangles, cl.viewangles);
 
@@ -2231,6 +1498,7 @@ static void QRE_StopEditor (qboolean restore)
 
 	IN_Activate ();
 	SDL_ShowCursor (SDL_ENABLE);
+	QR_GUI_SetMouseCursor (0);
 
 	Con_Printf ("qr light editor: off\n");
 }
@@ -2268,6 +1536,7 @@ static void QR_Editor_Stop_f (void)
 void QR_Editor_Init (void)
 {
 	static qboolean qr_editor_registered = false;
+	char            font_path[MAX_OSPATH];
 
 	if (qr_editor_registered)
 		return;
@@ -2275,6 +1544,10 @@ void QR_Editor_Init (void)
 
 	Cmd_AddCommand ("qr_light_editor_start", QR_Editor_Start_f);
 	Cmd_AddCommand ("qr_light_editor_stop", QR_Editor_Stop_f);
+
+	// the font is deployed next to the executable by the build
+	q_snprintf (font_path, sizeof (font_path), "%s/fonts/Roboto-Regular.ttf", host_parms->basedir);
+	QR_GUI_Init (VID_GetWindow (), vulkan_globals.instance, font_path);
 }
 
 // ---------------------------------------------------------------------------
