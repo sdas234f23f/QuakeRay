@@ -39,6 +39,18 @@
 // points on it see.
 //
 
+// How much taller the noise is read than it is wide, over the depth of the layer:
+// the height of a point is divided by this before the noise is looked up, so that
+// a cloud stands twice as tall as it is broad rather than as flat as the slab it
+// sits in. What that is for: the noise is scaled by the thickness of the layer, so
+// with this at 1 a layer of 900 units carries shape octaves of 450, 225 and 112
+// units along every axis, which is two to eight floors of cloud across the depth of
+// it -- each floor a flat mass of its own, and the parallax of a moving eye slides
+// one over another, so that a cloud is read as a stack of separate layers. Stood on
+// end, the same noise is a body a couple of towers deep, which is what a sky looked
+// at from below is made of.
+const float CLOUD_VERTICAL_STRETCH = 2.0;
+
 // The noise is scaled by the thickness of the layer: the size of a cloud is then
 // a fraction of the layer's depth, and a taller layer is a deeper one rather than
 // one whose clouds are bigger.
@@ -235,7 +247,7 @@ float cloudDensity(CloudLayer layer, vec3 p, bool detail)
     vec2 wind = vec2(layer.time * layer.speed * 30.0, layer.time * layer.speed * 12.0);
     float frequency = CLOUD_FREQUENCY / layer.thickness;
 
-    float shape = cloudShape(vec3(p.xy + wind, p.z) * frequency, CLOUD_OCTAVES);
+    float shape = cloudShape(vec3(p.xy + wind, p.z / CLOUD_VERTICAL_STRETCH) * frequency, CLOUD_OCTAVES);
 
     float d = (shape - layer.coverage) / max(1.0 - layer.coverage, 1.0e-3);
     d = pow(clamp(d, 0.0, 1.0), CLOUD_SHAPE_POWER);
@@ -249,7 +261,7 @@ float cloudDensity(CloudLayer layer, vec3 p, bool detail)
         // The fine noise is subtracted from the shape rather than multiplied into
         // it, which is what takes the cloud's edge apart and gives its silhouette
         // the ragged look of a real one.
-        vec3 q = vec3(p.xy + wind * 1.7, p.z * 0.75) * frequency * CLOUD_DETAIL_FREQUENCY;
+        vec3 q = vec3(p.xy + wind * 1.7, p.z * 0.75 / CLOUD_VERTICAL_STRETCH) * frequency * CLOUD_DETAIL_FREQUENCY;
         float erosion = layer.detail * cloudShape(q, CLOUD_DETAIL_OCTAVES);
         d = clamp((d - erosion) / max(1.0 - erosion, 1.0e-3), 0.0, 1.0);
     }

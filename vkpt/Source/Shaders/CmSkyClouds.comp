@@ -105,16 +105,18 @@ const float CLOUD_MAX_MARCH_SPAN = 12.0;
 const int CLOUD_UPDATE_QUARTERS = 2;
 const int CLOUD_UPDATE_FRAMES = CLOUD_UPDATE_QUARTERS * CLOUD_UPDATE_QUARTERS;
 
-// The quarter a frame marches is taken in square tiles of this many texels a side
-// rather than in a checkerboard of single texels. Both cover a quarter of the map
-// and both rotate through the four frames, but the two paths of this pass -- the
-// march and the copy -- diverge at the texel, and a warp of a checkerboard holds a
-// quarter of its lanes on the march and three quarters on the copy: it runs both
-// paths, so the march, which is what this pass costs, is paid for four times over.
-// A tile of one whole local group (16 texels) puts every warp of the dispatch on
-// one path or the other; what the copy reads around a marched tile is the same
-// kind of neighbourhood a checkerboard left it.
-const int CLOUD_UPDATE_TILE = 16;
+// The quarter a frame marches is taken in pairs of rows of texels, a quarter of
+// them apart around the cycle, rather than in single texels. The two paths of this
+// pass -- the march and the copy of the frame before -- diverge at the texel, and a
+// warp of the dispatch is two rows of sixteen texels: taken in single texels a warp
+// holds a quarter of its lanes on each path and runs both, which is the march, the
+// dearest thing in the pass, run four times over, while a pair of rows is exactly
+// one warp and puts every warp of the dispatch on one path or the other. What a
+// pattern of the kind leaves behind is the age of a texel against its neighbour's,
+// and that is a dither of two rows here -- a pixel of the map at the top of the
+// ladder. A tile of the whole local group would leave a square of the age of one
+// frame against another's, which is the mark the eye picks out of a cloud.
+const int CLOUD_UPDATE_ROWS = 2;
 
 // Henyey-Greenstein, normalized so that isotropic scattering gives 1.
 float henyeyGreenstein(float mu, float g)
