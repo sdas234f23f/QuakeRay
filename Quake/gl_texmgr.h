@@ -149,4 +149,8 @@ void TexMgr_RT_SpecialEnd (void);
 // data become visible without a map reload. Returns the number of reloaded textures.
 int TexMgr_ReloadImagesForMaterial (const char *materialName);
 
+// RT: reloads the textures carrying the given normalized texture name whether or not
+// a material resolves to them (Cancel/Exit drop a material the editor had created).
+int TexMgr_ReloadImagesForTextureName (const char *texname);
+
 #endif /* _GL_TEXMAN_H */

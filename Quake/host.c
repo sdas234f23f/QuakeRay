@@ -25,6 +25,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "quakedef.h"
 #include "bgmusic.h"
 #include "tasks.h"
+#include "qr_editor.h"
 #include <setjmp.h>
 
 /*
@@ -1157,6 +1158,8 @@ void Host_Shutdown (void)
 
 	// keep Con_Printf from trying to update the screen
 	scr_disabled_for_loading = true;
+
+	QR_Editor_Shutdown (); // releases the ImGui context and the font material
 
 	Host_WriteConfiguration ();
 

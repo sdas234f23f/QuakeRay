@@ -311,14 +311,27 @@ static void FullbrightToRME (unsigned width, unsigned height, byte *fullbright)
 
 static void TexMgr_RT_SpecialFullbright (unsigned width, unsigned height, uint32_t *fullbright)
 {
+	uint32_t *resized = NULL;
+
 	assert (rtspecial_target != NULL && rtspecial_info_albedoAlpha != NULL);
 	assert (rtspecial_info.size.width > 0 && rtspecial_info.size.height > 0);
 
 	if (rtspecial_info.size.width != width || rtspecial_info.size.height != height)
 	{
-		Con_DWarning ("Ignoring fullbright of \"%s\", as it has different size with albedo", rtspecial_info_pRelativePath);
-		assert (0);
-		return;
+		/* A hand-authored mask may be of another resolution than its base. The
+		   base's albedo decides the size, so the mask is resampled to it instead
+		   of being dropped (which used to abort a Debug build as well). */
+		Con_DWarning ("Resizing fullbright of \"%s\": %ux%u against albedo %ux%u\n",
+		              rtspecial_info_pRelativePath, width, height,
+		              rtspecial_info.size.width, rtspecial_info.size.height);
+
+		resized = (uint32_t *)Mem_Alloc ((size_t)rtspecial_info.size.width * rtspecial_info.size.height * 4);
+		stbir_resize_uint8 ((byte *)fullbright, (int)width, (int)height, 0,
+		                    (byte *)resized, (int)rtspecial_info.size.width, (int)rtspecial_info.size.height, 0, 4);
+
+		fullbright = resized;
+		width = rtspecial_info.size.width;
+		height = rtspecial_info.size.height;
 	}
 
 	rtspecial_foundfullbright = true;
@@ -328,7 +341,11 @@ static void TexMgr_RT_SpecialFullbright (unsigned width, unsigned height, uint32
 	if (rtspecial_target->rtmaterial != RG_NULL_HANDLE)
 	{
 		if (TexMgr_ApplyMaterialFromMat (rtspecial_target, (unsigned *)rtspecial_info_albedoAlpha, (byte *)fullbright))
+		{
+			if (resized)
+				Mem_Free (resized);
 			return;
+		}
 	}
 
 	{
@@ -364,6 +381,9 @@ static void TexMgr_RT_SpecialFullbright (unsigned width, unsigned height, uint32
 	RgResult r = rgCreateMaterial (vulkan_globals.instance, &rtspecial_info, &rtspecial_target->rtmaterial);
 	RG_CHECK (r);
 	SDL_UnlockMutex (rtspecial_mutex);
+
+	if (resized)
+		Mem_Free (resized);
 }
 
 void TexMgr_RT_SpecialEnd ()
@@ -1086,6 +1106,9 @@ static void TexMgr_LoadImage32 (gltexture_t *glt, unsigned *data)
 static char     texmgr_dumped[QRE_DUMPED_MAX][MAX_QPATH];
 static int      texmgr_dumped_count = 0;
 static qboolean texmgr_dump_dir_checked = false;
+// Set only while the editor re-synthesizes a material: the dump is for a live
+// reload, not for the map load (which applies every material anyway).
+static qboolean texmgr_dumping_reload = false;
 
 static qboolean TexMgr_AlreadyDumped (const char *name)
 {
@@ -1151,9 +1174,7 @@ static void TexMgr_DumpReloadTGA (const char *suffix, const char *name, int w, i
 	fclose (f);
 }
 
-/* A texel is part of the glow extents above this emission; below it the mask is noise. The
-   extents are computed once per texture, at load, so this cannot be a live cvar. */
-#define RT_EMIS_GLOW_THRESHOLD 0.02f/* Below this area fraction the extents are a proper part of the texture and the light is built
+/* Below this area fraction the extents are a proper part of the texture and the light is built
    as polygons over them; at or above it the whole surface glows and stays a single light. */
 #define RT_EMIS_GLOW_FULL 0.999f
 
@@ -1473,7 +1494,7 @@ static qboolean TexMgr_ApplyMaterialFromMat (gltexture_t *glt, unsigned *albedoF
 		            glt->rtemissiveglowtex ? 1 : 0);
 	}
 
-	if (!TexMgr_AlreadyDumped (mat->name))
+	if (texmgr_dumping_reload && !TexMgr_AlreadyDumped (mat->name))
 	{
 		Con_Printf ("qr editor dump: material '%s' tex '%s' %dx%d base='%s' emis='%s' gloss='%s' norm='%s' light=%d\n",
 		            mat->name, glt->name, tw, th,
@@ -1512,11 +1533,11 @@ static qboolean TexMgr_ApplyMaterialFromMat (gltexture_t *glt, unsigned *albedoF
 	RgMaterial newMaterial = RG_NULL_HANDLE;
 	SDL_LockMutex (rtspecial_mutex);
 	RgResult r = rgCreateMaterial (vulkan_globals.instance, &info, &newMaterial);
+	if (oldMaterial)
+		rgDestroyMaterial (vulkan_globals.instance, oldMaterial);
 	SDL_UnlockMutex (rtspecial_mutex);
 	RG_CHECK (r);
 
-	if (oldMaterial)
-		rgDestroyMaterial (vulkan_globals.instance, oldMaterial);
 	glt->rtmaterial = newMaterial;
 
 	Mem_Free (albedo);
@@ -1729,11 +1750,21 @@ void TexMgr_ReloadImage (gltexture_t *glt, int shirt, int pants)
 	if (glt->source_file[0] && glt->source_offset)
 	{
 		// lump inside file
-		FILE *f;
+		FILE *f = NULL;
 		COM_FOpenFile (glt->source_file, &f, NULL);
-		if (!f)
+		if (!f || glt->source_offset > (src_offset_t)0x7fffffff)
+		{
+			if (f)
+				fclose (f);
 			goto invalid;
-		fseek (f, glt->source_offset, SEEK_CUR);
+		}
+		if (fseek (f, (long)glt->source_offset, SEEK_CUR) != 0)
+		{
+			Con_DWarning ("TexMgr_ReloadImage: seek to %llu failed in %s\n",
+			              (unsigned long long)glt->source_offset, glt->source_file);
+			fclose (f);
+			goto invalid;
+		}
 		size = glt->source_width * glt->source_height;
 		/* should be SRC_INDEXED, but no harm being paranoid:  */
 		if (glt->source_format == SRC_RGBA)
@@ -1744,9 +1775,23 @@ void TexMgr_ReloadImage (gltexture_t *glt, int shirt, int pants)
 		{
 			size *= LIGHTMAP_BYTES;
 		}
+		/* A texture whose recorded offset lies outside the file cannot be read
+		   back; say so instead of turning unrelated file bytes into a texture. */
+		if (glt->source_offset + (src_offset_t)size > (src_offset_t)com_filesize)
+		{
+			Con_DWarning ("TexMgr_ReloadImage: %s + %llu (%d bytes) is outside %s (%d bytes)\n",
+			              glt->name, (unsigned long long)glt->source_offset, size, glt->source_file, com_filesize);
+			fclose (f);
+			goto invalid;
+		}
 		allocated = data = (byte *)Mem_Alloc (size);
 		if (fread (data, 1, size, f) != size)
+		{
+			fclose (f);
+			Mem_Free (allocated);
+			allocated = NULL;
 			goto invalid;
+		}
 		fclose (f);
 	}
 	else if (glt->source_file[0] && !glt->source_offset)
@@ -1940,6 +1985,54 @@ void TexMgr_ReloadAllImages (void)
 
 /*
 ================
+TexMgr_ReloadOne
+
+Reloads one texture together with its glow/luma sidecar, in the same two-pass
+sequence a full reload uses: the base pass stores the albedo, the fullbright
+pass turns the sidecar into the emission mask of that albedo (see
+TexMgr_RT_SpecialFullbright). Both are needed, or the reload would drop the mask
+and the surfaces using it would lose their emission.
+================
+*/
+static void TexMgr_ReloadOne (gltexture_t *glt)
+{
+	gltexture_t *fullbright = TexMgr_FindFullbrightTexture (glt);
+
+	if (!fullbright)
+	{
+		TexMgr_ReloadImage (glt, -1, -1);
+		return;
+	}
+
+	TexMgr_RT_SpecialStart (CVAR_TO_FLOAT (rt_brush_rough), CVAR_TO_FLOAT (rt_brush_metal));
+	TexMgr_ReloadImage (glt, -1, -1);
+	if (rtspecial_target != NULL)
+		TexMgr_ReloadImage (fullbright, -1, -1);
+	TexMgr_RT_SpecialEnd ();
+}
+
+// A texture whose pixels can be read back: lightmaps, surface indices and the
+// sidecars are skipped, as are textures that have no durable source.
+static qboolean TexMgr_ReloadableSource (const gltexture_t *glt)
+{
+	if (glt->flags & TEXPREF_RT_IS_EMISSIVE)
+		return false;
+	if (glt->source_format != SRC_INDEXED && glt->source_format != SRC_RGBA)
+		return false;
+	if (!glt->source_file[0] && !glt->source_offset)
+		return false;
+	return true;
+}
+
+static void TexMgr_LogReloaded (const gltexture_t *glt)
+{
+	Con_Printf ("qr editor:   tex '%s' %ux%u fmt=%d off=%llu src='%s' flags=0x%x\n",
+	            glt->name, glt->width, glt->height, (int)glt->source_format,
+	            (unsigned long long)glt->source_offset, glt->source_file, glt->flags);
+}
+
+/*
+================
 TexMgr_ReloadImagesForMaterial
 
 Like TexMgr_ReloadAllImages, but only for the textures whose material is the named
@@ -1950,48 +2043,78 @@ together with it, exactly as a full reload would.
 */
 int TexMgr_ReloadImagesForMaterial (const char *materialName)
 {
-	gltexture_t *glt, *fullbright;
+	gltexture_t *glt;
 	int          count = 0;
 
 	if (!materialName || !materialName[0])
 		return 0;
 
 	Con_Printf ("qr editor: reload material '%s'\n", materialName);
+	texmgr_dumping_reload = true;
 
 	for (glt = active_gltextures; glt; glt = glt->next)
 	{
 		rt_material_t *mat;
 
-		if (glt->flags & TEXPREF_RT_IS_EMISSIVE)
-			continue;
-		if (glt->source_format != SRC_INDEXED && glt->source_format != SRC_RGBA)
-			continue;
-		if (!glt->source_file[0] && !glt->source_offset)
+		if (!TexMgr_ReloadableSource (glt))
 			continue;
 
 		mat = RT_MAT_Find (glt->name);
 		if (!mat || strcmp (mat->name, materialName))
 			continue;
 
-		Con_Printf ("qr editor:   tex '%s' %ux%u fmt=%d src='%s'+%u flags=0x%x\n",
-		            glt->name, glt->width, glt->height, (int)glt->source_format,
-		            glt->source_file, (unsigned)glt->source_offset, glt->flags);
-
-		fullbright = TexMgr_FindFullbrightTexture (glt);
-		if (!fullbright)
-		{
-			TexMgr_ReloadImage (glt, -1, -1);
-			count++;
-			continue;
-		}
-
-		TexMgr_RT_SpecialStart (CVAR_TO_FLOAT (rt_brush_rough), CVAR_TO_FLOAT (rt_brush_metal));
-		TexMgr_ReloadImage (glt, -1, -1);
-		if (rtspecial_target != NULL)
-			TexMgr_ReloadImage (fullbright, -1, -1);
-		TexMgr_RT_SpecialEnd ();
+		TexMgr_LogReloaded (glt);
+		TexMgr_ReloadOne (glt);
 		count++;
 	}
+
+	texmgr_dumping_reload = false;
+
+	return count;
+}
+
+/*
+================
+TexMgr_ReloadImagesForTextureName
+
+Reloads the textures that carry the given normalized texture name even when no
+material resolves to them any more: Cancel/Exit drop a material the editor had
+created for a texture, and that texture still has to be re-synthesized (without
+the material this time).
+================
+*/
+int TexMgr_ReloadImagesForTextureName (const char *texname)
+{
+	gltexture_t *glt;
+	int          count = 0;
+
+	if (!texname || !texname[0])
+		return 0;
+
+	Con_Printf ("qr editor: reload texture '%s'\n", texname);
+	texmgr_dumping_reload = true;
+
+	for (glt = active_gltextures; glt; glt = glt->next)
+	{
+		char  n[MAX_QPATH];
+		char *dot;
+
+		if (!TexMgr_ReloadableSource (glt))
+			continue;
+
+		RT_MAT_NormalizeName (glt->name, n, sizeof (n));
+		dot = strrchr (n, '.');
+		if (dot && !strchr (dot, ':'))
+			*dot = '\0';
+		if (q_strcasecmp (n, texname))
+			continue;
+
+		TexMgr_LogReloaded (glt);
+		TexMgr_ReloadOne (glt);
+		count++;
+	}
+
+	texmgr_dumping_reload = false;
 
 	return count;
 }
@@ -2015,7 +2138,9 @@ static void GL_DeleteTexture (gltexture_t *texture)
 
 	if (texture->rtmaterial != RG_NO_MATERIAL)
 	{
+		SDL_LockMutex (rtspecial_mutex);
 		RgResult r = rgDestroyMaterial (vulkan_globals.instance, texture->rtmaterial);
+		SDL_UnlockMutex (rtspecial_mutex);
 		RG_CHECK (r);
 
 		texture->rtmaterial = RG_NO_MATERIAL;

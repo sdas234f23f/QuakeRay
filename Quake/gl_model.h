@@ -97,6 +97,10 @@ typedef struct texture_s
 	char                name[16];
 	unsigned            width, height;
 	unsigned            shift;                    // Q64
+	// File offset of the miptex pixel data inside the source file (the same as
+	// src_offset_t; gl_texmgr.h is not visible here). The texture loader must not
+	// derive it from the in-memory copy: only TexMgr_ReloadImage reads it back.
+	uintptr_t           source_offset;
 	struct gltexture_s *gltexture;                // johnfitz -- pointer to gltexture
 	struct gltexture_s *fullbright;               // johnfitz -- fullbright mask texture; RT -- not used
 	struct gltexture_s *warpimage;                // johnfitz -- for water animation

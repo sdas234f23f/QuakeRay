@@ -35,4 +35,11 @@ qboolean QR_Editor_KeyEvent (int key, qboolean down);      // true = the key was
 qboolean QR_Editor_GuiProcessEvent (const void *sdl_event); // ImGui panel event routing
 qboolean QR_Editor_TextEntryActive (void);                 // SDL text input wanted
 
+// Called from R_NewMap: closes the editor without restoring (the snapshot and
+// the picks belong to the world that is being replaced).
+void QR_Editor_OnNewMap (void);
+
+// Releases the ImGui context and the font material (Host_Shutdown).
+void QR_Editor_Shutdown (void);
+
 #endif /* QR_EDITOR_H */

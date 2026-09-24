@@ -302,7 +302,10 @@ static void QRE_MarkDirty (rt_material_t *m)
 		if (qre.touched_count < QRE_TOUCHED_MAX)
 			q_strlcpy (qre.touched[qre.touched_count++], m->name, MAX_QPATH);
 		else if (!warned)
+		{
+			warned = true;
 			QRE_Notify ("too many materials edited at once; some will not be re-applied");
+		}
 	}
 
 	if (!QRE_NameInList (qre.dirty, qre.dirty_count, m->name))
@@ -310,7 +313,10 @@ static void QRE_MarkDirty (rt_material_t *m)
 		if (qre.dirty_count < QRE_DIRTY_MAX)
 			q_strlcpy (qre.dirty[qre.dirty_count++], m->name, MAX_QPATH);
 		else
+		{
 			warned = true;
+			QRE_Notify ("too many materials edited at once; some will not be previewed");
+		}
 	}
 }
 
@@ -349,7 +355,9 @@ static void QRE_ReapplyTouched (void)
 	qre.dirty_count = 0;
 	for (i = 0; i < qre.touched_count; i++)
 	{
-		TexMgr_ReloadImagesForMaterial (qre.touched[i]);
+		// by texture name: Cancel/Exit drop a material the editor had created,
+		// and the texture still has to be re-synthesized without it
+		TexMgr_ReloadImagesForTextureName (qre.touched[i]);
 	}
 	qre.touched_count = 0;
 
@@ -368,6 +376,10 @@ static void QRE_EnsureLive (int g)
 	{
 		qre.tmp_appended = true;
 		qre.group[g] = RT_MAT_GetList (RT_MAT_LIST_GLOBAL, NULL) + idx;
+	}
+	else
+	{
+		QRE_Notify ("cannot create a material: the list is full");
 	}
 }
 
@@ -1136,6 +1148,11 @@ static void QRE_ParamWidgets (int g)
 		default:
 			break;
 		}
+
+		// materials.yaml defines these, but no renderer code reads them: the panel
+		// edits and saves them, so say what they are worth.
+		if (p == PARAM_KIND || p == PARAM_MASK || p == PARAM_BSPRAD || p == PARAM_DRAD)
+			QR_GUI_Tooltip ("not read by the renderer (stored in materials.yaml only)");
 	}
 }
 
@@ -1540,6 +1557,34 @@ static qboolean QRE_NameInGlobalFile (const rt_material_t *list, int count, cons
 	return false;
 }
 
+// A safety copy of a materials file before the editor rewrites it.
+static void QRE_BackupFile (const char *path)
+{
+	char   bak[MAX_OSPATH];
+	FILE  *in, *out;
+	char   buf[4096];
+	size_t n;
+
+	q_snprintf (bak, sizeof (bak), "%s.bak", path);
+
+	in = fopen (path, "rb");
+	if (!in)
+		return;
+
+	out = fopen (bak, "wb");
+	if (!out)
+	{
+		fclose (in);
+		return;
+	}
+
+	while ((n = fread (buf, 1, sizeof (buf), in)) > 0)
+		fwrite (buf, 1, n, out);
+
+	fclose (in);
+	fclose (out);
+}
+
 static void QRE_SaveMaterials (void)
 {
 	char           files[QRE_SAVE_FILES_MAX][MAX_QPATH];
@@ -1595,6 +1640,45 @@ static void QRE_SaveMaterials (void)
 		}
 	}
 
+	/* Only files that hold an edited material are rewritten: a file the user did
+	   not touch keeps its comments, formatting and keys the loader ignores. */
+	{
+		int kept = 0;
+
+		for (f = 0; f < nfiles; f++)
+		{
+			qboolean needed = false;
+
+			for (i = 0; i < gcount && !needed; i++)
+			{
+				if (glist[i].valid && QRE_SameFile (QRE_MaterialFile (&glist[i]), files[f]) &&
+				    QRE_NameInList (qre.touched, qre.touched_count, glist[i].name))
+					needed = true;
+			}
+			for (i = 0; i < mapcount && !needed; i++)
+			{
+				if (maplist[i].valid && QRE_SameFile (QRE_MaterialFile (&maplist[i]), files[f]) &&
+				    QRE_NameInList (qre.touched, qre.touched_count, maplist[i].name))
+					needed = true;
+			}
+
+			if (needed)
+			{
+				if (kept != f)
+					q_strlcpy (files[kept], files[f], MAX_QPATH);
+				kept++;
+			}
+		}
+
+		nfiles = kept;
+	}
+
+	if (nfiles == 0)
+	{
+		QRE_Notify ("nothing to save");
+		return;
+	}
+
 	for (f = 0; f < nfiles; f++)
 	{
 		char  path[MAX_OSPATH];
@@ -1602,6 +1686,8 @@ static void QRE_SaveMaterials (void)
 		int   written = 0;
 
 		q_snprintf (path, sizeof (path), "%s/%s", com_gamedir, files[f]);
+
+		QRE_BackupFile (path);
 
 		file = fopen (path, "w");
 		if (!file)
@@ -1690,7 +1776,7 @@ static qboolean QRE_BrowseTexture (char *out, size_t outsize)
 	{
 		// outside the gamedir the material loader cannot find the file
 		QRE_Notify ("the texture must be inside %s", com_gamedir);
-		q_strlcpy (out, result, outsize);
+		return false;
 	}
 
 	return true;
@@ -1811,4 +1897,18 @@ void QR_Editor_Pick (void)
 	if (!qre.active || qre.panel_open)
 		return;
 	QRE_DoPick (true);
+}
+
+void QR_Editor_OnNewMap (void)
+{
+	if (qre.active)
+	{
+		Con_Printf ("qr light editor: closed by a map change\n");
+		QRE_StopEditor (false);
+	}
+}
+
+void QR_Editor_Shutdown (void)
+{
+	QR_GUI_Shutdown ();
 }
