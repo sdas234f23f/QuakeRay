@@ -1,4 +1,6 @@
-# Properties that are deliberately different between a GLSL shader and its HLSL replacement.
+# Properties that are deliberately different between a GLSL shader and its HLSL replacement. The
+# compared properties include the SPIR-V capabilities and extensions a module declares, so a
+# compiler-created capability difference is allow-listed here like any other.
 #
 # Format: <fragment of "ShaderName propertyKey"> = <reason>
 #
@@ -11,3 +13,8 @@
 
 CmProceduralSky.comp descriptor set 0 binding 0 = HLSL has no writable cube texture type; the port writes the six faces through an RWTexture2DArray<float4> and the host binds a 2D-array view of the same layers (RenderCubemap.cpp: viewArray), which a cube view bound to an image2DArray descriptor could not be
 CmProceduralSky.comp descriptor set 0 binding 2 = the same cube-to-array difference as binding 0
+HLSL/RhiSkeleton.frag capability RuntimeDescriptorArray = glslang sizes a runtime array that is only indexed with the constant 0 down to array[1] and needs no capability for it, while dxc keeps OpTypeRuntimeArray, which SPIR-V gates behind RuntimeDescriptorArray. The device enables runtimeDescriptorArray (VulkanDevice_Init.cpp:661) and the shader samples table slot 0 only, so the capability is satisfied and the difference is a spelling of the same binding
+Probes/HitInfo.probe.comp capability ComputeDerivativeGroupQuadsKHR = dxc keeps an implicit-lod sample in a compute shader as OpImageSampleImplicitLod and gives the entry point the DerivativeGroupQuadsKHR execution mode, which requires this capability; glslang lowers the same texture() call to an explicit lod-0 sample and needs no mode. The probe calls getTextureSample() and is never loaded by the host
+Probes/HitInfo.probe.comp extension SPV_KHR_compute_shader_derivatives = the extension that carries the capability above, from the same implicit-lod sample
+Probes/ShaderCommonFunc.probe.comp capability ComputeDerivativeGroupQuadsKHR = same implicit-lod sample as in HitInfo.probe.comp (getTextureSample() in a compute shader); the probe is never loaded by the host
+Probes/ShaderCommonFunc.probe.comp extension SPV_KHR_compute_shader_derivatives = the extension that carries the capability above, from the same implicit-lod sample

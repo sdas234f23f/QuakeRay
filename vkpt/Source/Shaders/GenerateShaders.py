@@ -59,6 +59,28 @@ HLSL_PROFILES               = {
     ".rmiss":   "lib_6_3",
 }
 
+# dxc adds one of the two acceleration-structure providers to every module at module level, even
+# one that does not trace, and picks SPV_KHR_ray_query by default. Its own capability trim pass
+# was expected to remove the pair again, but the SPIR-V grammar lists RayQueryKHR among the
+# capabilities of OpTypeAccelerationStructureKHR, so every RT module (which has that type) reads
+# as a user of ray query and keeps the capability along with the extension, although no
+# OpRayQuery* instruction exists. The validation layer then rejects the blob on a device that does
+# not enable the ray query feature (VUID-VkShaderModuleCreateInfo-pCode-08740).
+# An explicit extension list replaces dxc's default choice; without SPV_KHR_ray_query dxc declares
+# SPV_KHR_ray_tracing instead, the extension these shaders really use (OpTraceRayKHR and
+# OpTypeAccelerationStructureKHR come from it). The list names every extension the sources need on
+# vulkan1.2: dxc fails the build with an explicit error if one of them starts needing an extension
+# that is missing here, so this is the only place the permitted set is maintained.
+# SPV_KHR_compute_shader_derivatives is on it for a compute shader that samples with an implicit
+# lod: dxc keeps the sample implicit and adds the derivative group execution mode, which requires
+# the capability the extension provides. No production compute shader samples that way today, but
+# the two probes CheckShaderProperties.py compiles do, and both tools pass the same list.
+SPIRV_EXTENSIONS            = [
+    "SPV_KHR_ray_tracing",
+    "SPV_EXT_descriptor_indexing",
+    "SPV_KHR_compute_shader_derivatives",
+]
+
 
 CACHE_FILE_DEPENDENCY_MAP_SEPARATOR_LINE = "DEPENDENCY\n"
 
@@ -137,7 +159,7 @@ def getCompileCommand(filename, outputFilename):
         "-spirv",
         "-T", HLSL_PROFILES[stage],
         "-fspv-target-env=vulkan1.2"
-        ] + getDependentFoldersProcArg() + [
+        ] + ["-fspv-extension=" + ext for ext in SPIRV_EXTENSIONS] + getDependentFoldersProcArg() + [
         filename,
         "-Fo", outputFilename]
 

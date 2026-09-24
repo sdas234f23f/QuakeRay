@@ -22,6 +22,10 @@ compared as text:
     directly into the block. The wrapper is stepped over on both sides.
   * dxc reports an image of unknown depth as depth 2 where glslang says 0 (not depth). A real
     depth image is 1 on both sides, so an unknown depth is compared as not-depth.
+  * dxc declares SPV_EXT_descriptor_indexing for the descriptor-indexing instructions it emits,
+    while glslang leaves the extension out at vulkan1.2, where descriptor indexing is core and
+    the capabilities it gates are declared by both compilers. An extension the target
+    environment has promoted to core is therefore not compared; the capabilities are.
   * a scalar followed by a vec2: GLSL uses std430 alignment, dxc uses HLSL packing. This is
     a real difference and it is reported, not normalized. Fix it in HLSL with [[vk::offset]].
 
@@ -29,7 +33,12 @@ Compared properties: entry point and execution model, workgroup size, specializa
 constants, descriptor set/binding assignment, resource kind and storage class (the kind of
 descriptor the host binds: a uniform buffer, a storage buffer, or a sampler/image/TLAS), the
 byte layout of every block (recursively, including nested structs and array strides),
-input/output locations and the builtins the entry point uses.
+input/output locations, the builtins the entry point uses, and the capabilities and extensions
+the module declares. The capability comparison exists because the host loads the *HLSL* blob:
+a capability there that the GLSL blob does not need (RayQueryKHR was the first) is a capability
+the device is not required to enable, and the validation layer rejects the module with
+VUID-VkShaderModuleCreateInfo-pCode-08740/08742. dxc has flags that change the capabilities it
+generates, which is why the comparison cannot be left to a source review.
 
 A header has no stage of its own and is therefore never compiled on its own, so a header is
 pinned by a probe: a shader that instantiates what the header declares and touches every
@@ -68,6 +77,22 @@ HLSL_PROFILES = {
     ".rchit":   "lib_6_3",
     ".rmiss":   "lib_6_3",
 }
+
+# The same extension allow-list GenerateShaders.py passes to dxc, so that the HLSL half is built
+# with the flags the host build uses. Without it dxc declares SPV_KHR_ray_query/RayQueryKHR for
+# every module that has an OpTypeAccelerationStructureKHR, even one that only calls OpTraceRayKHR,
+# which is what the capability comparison below is there to catch.
+SPIRV_EXTENSIONS = [
+    "SPV_KHR_ray_tracing",
+    "SPV_EXT_descriptor_indexing",
+    "SPV_KHR_compute_shader_derivatives",
+]
+
+# Extensions the target environment (vulkan1.2) has promoted to core. Both compilers are free to
+# declare or omit them, and the capabilities they gate are compared separately.
+SPIRV_CORE_EXTENSIONS = [
+    "SPV_EXT_descriptor_indexing",
+]
 
 TAB = "  "
 
@@ -133,6 +158,7 @@ class Module:
         self.names = {}
         self.entryPoints = []
         self.capabilities = []
+        self.extensions = []
         self.executionModes = {}
 
         for line in text.splitlines():
@@ -173,6 +199,8 @@ class Module:
             self.entryPoints.append((o[0], o[1], o[2].strip('"'), o[3:]))
         elif op == "OpCapability":
             self.capabilities.append(o[0])
+        elif op == "OpExtension":
+            self.extensions.append(o[0].strip('"'))
         elif op == "OpExecutionMode":
             self.executionModes.setdefault(o[0], []).append(o[1:])
 
@@ -548,6 +576,17 @@ class Module:
         for key, value in self.getInterfaceProperties().items():
             properties[key] = value
 
+        # The capabilities and extensions the module declares. They are compared like any other
+        # property, so the allow-list and the [MISMATCH] report cover them too. A capability is
+        # named in the property path ("capability RayQueryKHR"), which is what a validator error
+        # or an allow-list line refers to.
+        for capability in self.capabilities:
+            properties["capability " + capability] = "declared"
+        for extension in self.extensions:
+            if extension in SPIRV_CORE_EXTENSIONS:
+                continue
+            properties["extension " + extension] = "declared"
+
         return properties
 
 
@@ -558,8 +597,9 @@ def compileShader(sourcePath, outputPath, isHLSL):
         if profile is None:
             return False, sourcePath + " does not name a known shader stage"
 
-        command = ["dxc", "-spirv", "-T", HLSL_PROFILES[profile], "-fspv-target-env=vulkan1.2",
-            "-I", ".", "-I", "LPM", "-I", "CAS", "-I", "../Generated/", sourcePath, "-Fo", outputPath]
+        command = ["dxc", "-spirv", "-T", HLSL_PROFILES[profile], "-fspv-target-env=vulkan1.2"] + \
+            ["-fspv-extension=" + ext for ext in SPIRV_EXTENSIONS] + \
+            ["-I", ".", "-I", "LPM", "-I", "CAS", "-I", "../Generated/", sourcePath, "-Fo", outputPath]
     else:
         # -O on the golden side, so that both compilers are compared at their own full
         # optimization: dxc optimizes by default and drops the resources of dead code, while
