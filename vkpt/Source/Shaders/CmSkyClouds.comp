@@ -210,9 +210,11 @@ void main()
         return;
     }
 
+    // The quarter this frame marches: the pairs of rows of texels whose index is
+    // this one modulo the four frames, and nothing along x, because a warp of the
+    // dispatch spans a whole row of sixteen texels (CLOUD_UPDATE_ROWS above).
     const bool marched = wholeMap ||
-        (((ipos.x / CLOUD_UPDATE_TILE) % CLOUD_UPDATE_QUARTERS) == (quarter % CLOUD_UPDATE_QUARTERS) &&
-         ((ipos.y / CLOUD_UPDATE_TILE) % CLOUD_UPDATE_QUARTERS) == (quarter / CLOUD_UPDATE_QUARTERS));
+        (((ipos.y / CLOUD_UPDATE_ROWS) % CLOUD_UPDATE_FRAMES) == (quarter % CLOUD_UPDATE_FRAMES));
 
     int face = ipos.z;
     vec3 right   = params.faceBasis[face * 3 + 0].xyz;
