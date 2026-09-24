@@ -59,19 +59,27 @@ void QR_GUI_Spacing (void);
 void QR_GUI_SameLine (void);
 void QR_GUI_Tooltip (const char *text);
 
+// Every widget carries its parameter's tooltip (shown after the panel's hover
+// delay); pass NULL for widgets that have none.
 int  QR_GUI_Button (const char *label);
-int  QR_GUI_Checkbox (const char *label, int *value);
-int  QR_GUI_SliderFloat (const char *label, float *value, float min, float max);
-int  QR_GUI_SliderInt (const char *label, int *value, int min, int max);
+int  QR_GUI_Checkbox (const char *label, int *value, const char *tooltip);
+int  QR_GUI_SliderFloat (const char *label, float *value, float min, float max, const char *tooltip);
+int  QR_GUI_SliderInt (const char *label, int *value, int min, int max, const char *tooltip);
 // items are count NUL-terminated strings.
-int  QR_GUI_Combo (const char *label, int *value, const char *const *items, int count);
-int  QR_GUI_InputText (const char *label, char *buf, size_t capacity);
+int  QR_GUI_Combo (const char *label, int *value, const char *const *items, int count, const char *tooltip);
+int  QR_GUI_InputText (const char *label, char *buf, size_t capacity, const char *tooltip);
 // A path field with a "..." button: returns 1 when the text changed and 2 when
-// the browse button was pressed (both can be set: 3).
-int  QR_GUI_TexturePath (const char *label, char *buf, size_t capacity);
+// the browse button was pressed (both can be set: 3). An empty path shows NONE.
+int  QR_GUI_TexturePath (const char *label, char *buf, size_t capacity, const char *tooltip);
 // An enabled checkbox and a color editor with a hex field. Returns 1 if either
 // changed.
-int  QR_GUI_ColorHex (const char *label, float rgb[3], int *enabled);
+int  QR_GUI_ColorHex (const char *label, float rgb[3], int *enabled, const char *tooltip);
+// A square button with a circular arrow, right-aligned in the current row.
+// Returns 1 when pressed; drawn greyed out while enabled is 0.
+int  QR_GUI_ResetButton (const char *label, int enabled);
+// Greys out (and blocks) the widgets drawn between these two calls.
+void QR_GUI_PushDisabled (int disabled);
+void QR_GUI_PopDisabled (void);
 // Returns nonzero while the section is open.
 int  QR_GUI_Section (const char *label, int default_open);
 

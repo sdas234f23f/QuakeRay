@@ -38,17 +38,39 @@ std::vector<RgVertex> g_verts;
 std::vector<uint32_t> g_indices;
 
 // The label column of the panel: every widget is drawn next to its key name.
-constexpr float kLabelWidth = 158.0f;
+constexpr float kLabelWidth      = 158.0f;
+// The reset button every parameter row carries at its right edge, and the
+// browse button of a texture path.
+constexpr float kResetButtonSize = 24.0f;
+constexpr float kBrowseButtonW   = 26.0f;
+constexpr float kPi              = 3.14159265358979323846f;
 
 float ClampF (float v, float mn, float mx)
 {
 	return v < mn ? mn : (v > mx ? mx : v);
 }
 
-void LabelColumn (const char *label)
+// A tooltip for the item just drawn (SetItemTooltip applies the panel's hover
+// delay, see ApplyStyle).
+void ItemTooltip (const char *text)
+{
+	if (text && *text)
+		ImGui::SetItemTooltip ("%s", text);
+}
+
+// The width a row's main widget may take: the reset button and the spacing
+// before it are reserved at the right edge of the panel.
+float RowWidth (float extra)
+{
+	const ImGuiStyle &style = ImGui::GetStyle ();
+	return ImGui::GetContentRegionAvail ().x - kResetButtonSize - style.ItemSpacing.x - extra;
+}
+
+void LabelColumn (const char *label, const char *tooltip)
 {
 	ImGui::AlignTextToFramePadding ();
 	ImGui::TextUnformatted (label);
+	ItemTooltip (tooltip);
 	ImGui::SameLine (kLabelWidth);
 }
 
@@ -77,6 +99,13 @@ void ApplyStyle (void)
 	s.WindowPadding     = ImVec2 (14.0f, 12.0f);
 	s.ScrollbarSize     = 14.0f;
 	s.GrabMinSize       = 10.0f;
+
+	// A parameter's hint appears after a second of hovering, like every other
+	// tooltip of the panel (the disabled ones included: a locked roughness still
+	// says why it is locked).
+	s.HoverDelayNormal          = 1.0f;
+	s.HoverFlagsForTooltipMouse = ImGuiHoveredFlags_Stationary | ImGuiHoveredFlags_DelayNormal |
+	                              ImGuiHoveredFlags_AllowWhenDisabled;
 
 	const ImVec4 accent = ImVec4 (0.26f, 0.59f, 0.98f, 1.00f);
 
@@ -462,76 +491,94 @@ int QR_GUI_Button (const char *label)
 	return ImGui::Button (label) ? 1 : 0;
 }
 
-int QR_GUI_Checkbox (const char *label, int *value)
+int QR_GUI_Checkbox (const char *label, int *value, const char *tooltip)
 {
+	char id[192];
+	WidgetId (id, sizeof (id), label);
+
 	bool v = *value != 0;
-	bool changed = ImGui::Checkbox (label, &v);
+	bool changed;
+
+	LabelColumn (label, tooltip);
+	changed = ImGui::Checkbox (id, &v);
+	ItemTooltip (tooltip);
 	if (changed)
 		*value = v ? 1 : 0;
 	return changed ? 1 : 0;
 }
 
-int QR_GUI_SliderFloat (const char *label, float *value, float min, float max)
+int QR_GUI_SliderFloat (const char *label, float *value, float min, float max, const char *tooltip)
 {
 	char id[192];
 	WidgetId (id, sizeof (id), label);
 
-	LabelColumn (label);
-	ImGui::SetNextItemWidth (-FLT_MIN);
-	bool changed = ImGui::SliderFloat (id, value, min, max, "%.4g", ImGuiSliderFlags_AlwaysClamp);
-	if (ImGui::IsItemHovered ())
+	LabelColumn (label, tooltip);
+	ImGui::SetNextItemWidth (RowWidth (0.0f));
+	bool changed = ImGui::SliderFloat (id, value, min, max, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+	if (tooltip && *tooltip)
+		ImGui::SetItemTooltip ("%s\nCtrl+click to type a value", tooltip);
+	else
 		ImGui::SetItemTooltip ("Ctrl+click to type a value");
 	return changed ? 1 : 0;
 }
 
-int QR_GUI_SliderInt (const char *label, int *value, int min, int max)
+int QR_GUI_SliderInt (const char *label, int *value, int min, int max, const char *tooltip)
 {
 	char id[192];
 	WidgetId (id, sizeof (id), label);
 
-	LabelColumn (label);
-	ImGui::SetNextItemWidth (-FLT_MIN);
+	LabelColumn (label, tooltip);
+	ImGui::SetNextItemWidth (RowWidth (0.0f));
 	bool changed = ImGui::SliderInt (id, value, min, max, "%d", ImGuiSliderFlags_AlwaysClamp);
-	if (ImGui::IsItemHovered ())
+	if (tooltip && *tooltip)
+		ImGui::SetItemTooltip ("%s\nCtrl+click to type a value", tooltip);
+	else
 		ImGui::SetItemTooltip ("Ctrl+click to type a value");
 	return changed ? 1 : 0;
 }
 
-int QR_GUI_Combo (const char *label, int *value, const char *const *items, int count)
+int QR_GUI_Combo (const char *label, int *value, const char *const *items, int count, const char *tooltip)
 {
 	char id[192];
 	WidgetId (id, sizeof (id), label);
 
-	LabelColumn (label);
-	ImGui::SetNextItemWidth (-FLT_MIN);
-	return ImGui::Combo (id, value, items, count) ? 1 : 0;
+	LabelColumn (label, tooltip);
+	ImGui::SetNextItemWidth (RowWidth (0.0f));
+	int changed = ImGui::Combo (id, value, items, count) ? 1 : 0;
+	ItemTooltip (tooltip);
+	return changed;
 }
 
-int QR_GUI_InputText (const char *label, char *buf, size_t capacity)
+int QR_GUI_InputText (const char *label, char *buf, size_t capacity, const char *tooltip)
 {
 	char id[192];
 	WidgetId (id, sizeof (id), label);
 
-	LabelColumn (label);
-	ImGui::SetNextItemWidth (-FLT_MIN);
-	return ImGui::InputText (id, buf, capacity) ? 1 : 0;
+	LabelColumn (label, tooltip);
+	ImGui::SetNextItemWidth (RowWidth (0.0f));
+	int changed = ImGui::InputText (id, buf, capacity) ? 1 : 0;
+	ItemTooltip (tooltip);
+	return changed;
 }
 
-int QR_GUI_TexturePath (const char *label, char *buf, size_t capacity)
+int QR_GUI_TexturePath (const char *label, char *buf, size_t capacity, const char *tooltip)
 {
 	char id[192];
 	WidgetId (id, sizeof (id), label);
 
 	int result = 0;
 
-	LabelColumn (label);
-	ImGui::SetNextItemWidth (ImGui::GetContentRegionAvail ().x - 30.0f);
-	if (ImGui::InputText (id, buf, capacity))
+	LabelColumn (label, tooltip);
+	ImGui::SetNextItemWidth (RowWidth (kBrowseButtonW + ImGui::GetStyle ().ItemSpacing.x));
+	// An unauthored path is shown as NONE; the buffer stays empty, and typing
+	// NONE by hand commits as "no texture" as well.
+	if (ImGui::InputTextWithHint (id, "NONE", buf, capacity))
 		result |= 1;
+	ItemTooltip (tooltip);
 
 	ImGui::SameLine ();
 	ImGui::PushID (label);
-	if (ImGui::Button ("...", ImVec2 (26.0f, 0.0f)))
+	if (ImGui::Button ("...", ImVec2 (kBrowseButtonW, 0.0f)))
 		result |= 2;
 	ImGui::SetItemTooltip ("Browse for a file");
 	ImGui::PopID ();
@@ -539,11 +586,82 @@ int QR_GUI_TexturePath (const char *label, char *buf, size_t capacity)
 	return result;
 }
 
-int QR_GUI_ColorHex (const char *label, float rgb[3], int *enabled)
+// A square button with a circular arrow, right-aligned in its row: a parameter
+// reset the widget before it did not have. Greyed out while the parameter still
+// holds its original value.
+int QR_GUI_ResetButton (const char *label, int enabled)
+{
+	char id[192];
+	WidgetId (id, sizeof (id), label);
+
+	const float right = ImGui::GetWindowContentRegionMax ().x - kResetButtonSize;
+	const float after = ImGui::GetCursorPosX () + ImGui::GetStyle ().ItemSpacing.x;
+
+	ImGui::SameLine (right > after ? right : after);
+
+	if (!enabled)
+		ImGui::BeginDisabled ();
+
+	ImGui::PushStyleColor (ImGuiCol_Button, ImVec4 (0.16f, 0.17f, 0.21f, 0.85f));
+	const bool pressed = ImGui::Button (id, ImVec2 (kResetButtonSize, 0.0f));
+	ImGui::PopStyleColor ();
+
+	// The circular arrow is drawn, not a glyph: the panel font has no U+21BA.
+	const ImVec2 mn  = ImGui::GetItemRectMin ();
+	const ImVec2 mx  = ImGui::GetItemRectMax ();
+	const ImU32  col = ImGui::GetColorU32 (ImGuiCol_Text, enabled ? 1.0f : 0.45f);
+	ImDrawList  *dl  = ImGui::GetWindowDrawList ();
+
+	const ImVec2 c ((mn.x + mx.x) * 0.5f, (mn.y + mx.y) * 0.5f);
+	const float  r  = kResetButtonSize * 0.27f;
+	const float  a0 = kPi * 0.35f;
+	const float  a1 = kPi * 1.85f;
+
+	dl->PathArcTo (c, r, a0, a1, 24);
+	dl->PathStroke (col, 0, 1.5f);
+
+	const ImVec2 p (c.x + r * cosf (a1), c.y + r * sinf (a1));
+	const ImVec2 dir (cosf (a1), sinf (a1));
+	const ImVec2 tang (-dir.y, dir.x);
+	const float  head = 3.4f;
+
+	dl->AddTriangleFilled (ImVec2 (p.x + tang.x * head * 1.4f, p.y + tang.y * head * 1.4f),
+	                       ImVec2 (p.x + dir.x * head, p.y + dir.y * head),
+	                       ImVec2 (p.x - dir.x * head, p.y - dir.y * head), col);
+
+	ImGui::SetItemTooltip ("Reset to the original value");
+
+	if (!enabled)
+		ImGui::EndDisabled ();
+
+	return pressed ? 1 : 0;
+}
+
+static int g_disabled_depth = 0;
+
+void QR_GUI_PushDisabled (int disabled)
+{
+	if (!disabled)
+		return;
+
+	ImGui::BeginDisabled ();
+	++g_disabled_depth;
+}
+
+void QR_GUI_PopDisabled (void)
+{
+	if (g_disabled_depth <= 0)
+		return;
+
+	ImGui::EndDisabled ();
+	--g_disabled_depth;
+}
+
+int QR_GUI_ColorHex (const char *label, float rgb[3], int *enabled, const char *tooltip)
 {
 	int result = 0;
 
-	LabelColumn (label);
+	LabelColumn (label, tooltip);
 
 	ImGui::PushID (label);
 
@@ -560,7 +678,7 @@ int QR_GUI_ColorHex (const char *label, float rgb[3], int *enabled)
 	// The item needs an explicit width: with the default one its swatch lands
 	// past the right edge of the panel and can never be clicked, which is what
 	// made the picker unreachable.
-	ImGui::SetNextItemWidth (-FLT_MIN);
+	ImGui::SetNextItemWidth (RowWidth (0.0f));
 	if (ImGui::ColorEdit3 ("##color", rgb, ImGuiColorEditFlags_DisplayHex))
 	{
 		// editing the colour is what enables it; the checkbox above only shows
@@ -568,7 +686,10 @@ int QR_GUI_ColorHex (const char *label, float rgb[3], int *enabled)
 		*enabled = 1;
 		result = 1;
 	}
-	ImGui::SetItemTooltip ("Click the swatch to pick, type the hex value");
+	if (tooltip && *tooltip)
+		ImGui::SetItemTooltip ("%s\nClick the swatch to pick, type the hex value", tooltip);
+	else
+		ImGui::SetItemTooltip ("Click the swatch to pick, type the hex value");
 
 	ImGui::PopID ();
 

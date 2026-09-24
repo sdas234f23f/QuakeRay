@@ -271,15 +271,6 @@ void HSVtoRGB (const vec3_t hsv, vec3_t out_rgb)
 	out_rgb[1] = max (0.0f, G);
 	out_rgb[2] = max (0.0f, B);
 }
-static void ModifyColorValue (vec3_t inout_color, float target_value)
-{
-	vec3_t hsv;
-	RGBtoHSV (inout_color, hsv);
-
-	hsv[2] *= target_value;
-
-	HSVtoRGB (hsv, inout_color);
-}
 
 static void FullbrightToRME (unsigned width, unsigned height, byte *fullbright)
 {
@@ -1186,7 +1177,19 @@ static qboolean TexMgr_ApplyMaterialFromMat (gltexture_t *glt, unsigned *albedoF
 {
 	rt_material_t *mat = RT_MAT_Find (glt->name);
 	if (!mat)
+	{
+		// A material the editor dropped (Cancel/Exit of a texture that had none
+		// in yaml) must stop lighting at once: the reload is what notices it is
+		// gone, and the fields below are only ever set here.
+		glt->rtislight = false;
+		glt->rthaslightcolor = false;
+		glt->rtlightcolor[0] = glt->rtlightcolor[1] = glt->rtlightcolor[2] = 0.0f;
+		glt->rtemissive = false;
+		glt->rtemissivecolor[0] = glt->rtemissivecolor[1] = glt->rtemissivecolor[2] = 0.0f;
+		glt->rtemissivemean = 0.0f;
+		glt->rtemissivetex = false;
 		return false;
+	}
 
 	glt->rthasmaterial = true;
 
@@ -1197,8 +1200,13 @@ static qboolean TexMgr_ApplyMaterialFromMat (gltexture_t *glt, unsigned *albedoF
 	{
 		VectorCopy (mat->light_color, glt->rtlightcolor);
 		glt->rthaslightcolor = true;
-		if (mat->light_brightness != 1.0f)
-			ModifyColorValue (glt->rtlightcolor, mat->light_brightness);
+	}
+	else
+	{
+		// a light_color removed in the editor stops lighting now, not at the
+		// next map load
+		glt->rthaslightcolor = false;
+		glt->rtlightcolor[0] = glt->rtlightcolor[1] = glt->rtlightcolor[2] = 0.0f;
 	}
 	glt->rtupoffset = mat->light_upoffset;
 	glt->rtmirror = mat->mirror;
@@ -1276,8 +1284,12 @@ static qboolean TexMgr_ApplyMaterialFromMat (gltexture_t *glt, unsigned *albedoF
 		Con_Printf ("RT: material '%s': texture_emissive '%s' could not be loaded; using no emissive mask\n",
 		            mat->name, mat->filename_emissive);
 	const qboolean has_emis_mask = (emisBuf != NULL) || use_color_emissive;
-	const float emissScale = (isBrush && has_emis_mask && mat->is_light) ? mat->light_brightness : 1.0f;
-	const qboolean maskedTAL = (emissScale != 1.0f);
+	/* light_brightness: the visible emission is an 8-bit channel, so it can only
+	   be dimmed there; the emitted light is a float and takes the full value (the
+	   colour gain below). A brush TAL samples this same mask, so below 1 the mask
+	   already dims the light once and the gain must not count it twice. */
+	const float    brightVis      = (mat->light_brightness < 1.0f) ? mat->light_brightness : 1.0f;
+	const qboolean maskFeedsLight = isBrush && has_emis_mask;
 	/* Per-material rt_emis_blend override, packed into the alpha of the
 	   roughness-metallic-emission texture: 0 = not authored, so the global
 	   cvar applies; otherwise the authored mode plus one. */
@@ -1317,12 +1329,12 @@ static qboolean TexMgr_ApplyMaterialFromMat (gltexture_t *glt, unsigned *albedoF
 			albedo[i * 4 + 3] = 255;
 
 		float rough;
-		if (roughOverride > 0.0f)
+		if (glt->rtmirror)
+			rough = 0.0f; // mirror has the last word; the panel locks the override
+		else if (roughOverride > 0.0f)
 			rough = roughOverride;
 		else if (glossBuf)
 			rough = 1.0f - glossBuf[i * 4] / 255.0f;
-		else if (glt->rtmirror)
-			rough = 0.0f;
 		else if (baseHasAlpha && !engineAlpha)
 			rough = baseBuf[i * 4 + 3] / 255.0f;
 		else
@@ -1376,12 +1388,14 @@ static qboolean TexMgr_ApplyMaterialFromMat (gltexture_t *glt, unsigned *albedoF
 
 		emissMeanBase += emiss;
 
-		float emissOut = emiss * emissScale;
-		if (maskedTAL && emissOut > 1.0f)
+		float emissOut = emiss * brightVis;
+		if (emissOut > 1.0f)
 			emissOut = 1.0f;
 		emissMean += emissOut;
 
-		if (emissOut > RT_EMIS_GLOW_THRESHOLD)
+		/* The glow extents are the shape of the mask: brightness dims what it
+		   emits, it does not move the light. */
+		if (emiss > RT_EMIS_GLOW_THRESHOLD)
 		{
 			const int px = i % tw;
 			const int py = i / tw;
@@ -1444,14 +1458,20 @@ static qboolean TexMgr_ApplyMaterialFromMat (gltexture_t *glt, unsigned *albedoF
 
 		if (use_color_emissive)
 			glt->rtemissivetex = true;
+	}
 
-		if (maskedTAL && mat->light_brightness != 1.0f)
-		{
-			if (glt->rthaslightcolor)
-				ModifyColorValue (glt->rtlightcolor, 1.0f / mat->light_brightness);
-		}
-		else if (mat->light_brightness != 1.0f)
-			ModifyColorValue (glt->rtemissivecolor, mat->light_brightness);
+	if (mat->light_brightness != 1.0f)
+	{
+		/* The float gain of the emitted light, outside the emission block: a
+		   material can light from light_color alone, with no emissive mask at
+		   all. Above 1 the gain is the only thing that can brighten (the
+		   emission channel saturates); below 1 a mask the TAL samples already
+		   dims the light once, so the gain is skipped there. */
+		const float gain = (maskFeedsLight && mat->light_brightness < 1.0f) ? 1.0f : mat->light_brightness;
+
+		if (glt->rthaslightcolor)
+			VectorScale (glt->rtlightcolor, gain, glt->rtlightcolor);
+		VectorScale (glt->rtemissivecolor, gain, glt->rtemissivecolor);
 	}
 
 	glt->rtislight = mat->is_light;

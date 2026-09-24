@@ -105,33 +105,60 @@ static const struct qre_param_s
 	const char *label;
 	int         type;
 	float       min, max, step;
+	const char *tip;
 } qre_params[PARAM_COUNT] = {
-	[PARAM_BASE]     = { "texture_base",     QRE_T_TEXT,  0, 0, 0 },
-	[PARAM_NORMALS]  = { "texture_normals",  QRE_T_TEXT,  0, 0, 0 },
-	[PARAM_EMISSIVE] = { "texture_emissive", QRE_T_TEXT,  0, 0, 0 },
-	[PARAM_MASK]     = { "texture_mask",     QRE_T_TEXT,  0, 0, 0 },
-	[PARAM_GLOSS]    = { "texture_gloss",    QRE_T_TEXT,  0, 0, 0 },
-	[PARAM_BUMP]     = { "bump_scale",       QRE_T_FLOAT, 0, 4, 0.01f },
-	[PARAM_ROUGH]    = { "roughness_override", QRE_T_FLOAT, 0, 1, 0.01f },
-	[PARAM_METAL]    = { "metalness_factor", QRE_T_FLOAT, 0, 1, 0.01f },
-	[PARAM_EMISF]    = { "emissive_factor",  QRE_T_FLOAT, 0, 4, 0.01f },
-	[PARAM_SPEC]     = { "specular_factor",  QRE_T_FLOAT, 0, 4, 0.01f },
-	[PARAM_BASEF]    = { "base_factor",      QRE_T_FLOAT, 0, 4, 0.01f },
-	[PARAM_LBRIGHT]  = { "light_brightness", QRE_T_FLOAT, 0, 1, 0.001f },
-	[PARAM_LUPOFF]   = { "light_upoffset",   QRE_T_FLOAT, -64, 64, 0.5f },
-	[PARAM_ETHRESH]  = { "color_emissive_threshold", QRE_T_FLOAT, 0, 1, 0.001f },
-	[PARAM_DRAD]     = { "default_radiance", QRE_T_FLOAT, 0, 4, 0.01f },
-	[PARAM_EBLEND]   = { "emissive_blend",   QRE_T_INT,  -1, 5, 1 },
-	[PARAM_KIND]     = { "kind",             QRE_T_INT,   0, 10, 1 },
-	[PARAM_ISLIGHT]  = { "is_light",         QRE_T_BOOL,  0, 0, 0 },
-	[PARAM_LSTYLES]  = { "light_styles",     QRE_T_BOOL,  0, 0, 0 },
-	[PARAM_METALALPHA] = { "metalness_from_normal_alpha", QRE_T_BOOL, 0, 0, 0 },
-	[PARAM_BSPRAD]   = { "bsp_radiance",     QRE_T_BOOL,  0, 0, 0 },
-	[PARAM_MIRROR]   = { "mirror",           QRE_T_BOOL,  0, 0, 0 },
-	[PARAM_EXACTN]   = { "exact_normals",    QRE_T_BOOL,  0, 0, 0 },
-	[PARAM_FRAST]    = { "force_rasterize",  QRE_T_BOOL,  0, 0, 0 },
-	[PARAM_CEMIS]    = { "color_emissive",   QRE_T_COLOR, 0, 0, 0 },
-	[PARAM_LCOLOR]   = { "light_color",      QRE_T_COLOR, 0, 0, 0 },
+	[PARAM_BASE]     = { "texture_base",     QRE_T_TEXT,  0, 0, 0,
+	                     "Albedo texture. Empty (NONE) keeps the texture the engine picked for the face." },
+	[PARAM_NORMALS]  = { "texture_normals",  QRE_T_TEXT,  0, 0, 0,
+	                     "Normal map. Its alpha may drive metalness_from_normal_alpha." },
+	[PARAM_EMISSIVE] = { "texture_emissive", QRE_T_TEXT,  0, 0, 0,
+	                     "Emissive mask (luma). Overrides color_emissive." },
+	[PARAM_MASK]     = { "texture_mask",     QRE_T_TEXT,  0, 0, 0,
+	                     "not read by the renderer (stored in materials.yaml only)" },
+	[PARAM_GLOSS]    = { "texture_gloss",    QRE_T_TEXT,  0, 0, 0,
+	                     "Gloss map: roughness = 1 - gloss. Ignored while roughness_override is set." },
+	[PARAM_BUMP]     = { "bump_scale",       QRE_T_FLOAT, 0, 4, 0.01f,
+	                     "Strength of texture_normals; needs the normal map." },
+	[PARAM_ROUGH]    = { "roughness_override", QRE_T_FLOAT, 0, 1, 0.01f,
+	                     "Fixed roughness. 0 means not set; locked at 0 while mirror is on." },
+	[PARAM_METAL]    = { "metalness_factor", QRE_T_FLOAT, 0, 1, 0.01f,
+	                     "Metalness. With metalness_from_normal_alpha it scales the mask." },
+	[PARAM_EMISF]    = { "emissive_factor",  QRE_T_FLOAT, 0, 4, 0.01f,
+	                     "Multiplier of the emissive mask or colour." },
+	[PARAM_SPEC]     = { "specular_factor",  QRE_T_FLOAT, 0, 4, 0.01f,
+	                     "not read by the renderer (stored in materials.yaml only)" },
+	[PARAM_BASEF]    = { "base_factor",      QRE_T_FLOAT, 0, 4, 0.01f,
+	                     "Albedo multiplier." },
+	[PARAM_LBRIGHT]  = { "light_brightness", QRE_T_FLOAT, 0, 5, 0.01f,
+	                     "Gain of the emitted light, 0..5. Above 1 only the light brightens: the visible emission is an 8-bit channel and saturates." },
+	[PARAM_LUPOFF]   = { "light_upoffset",   QRE_T_FLOAT, -64, 64, 0.5f,
+	                     "Vertical offset of the emitted light (alias models)." },
+	[PARAM_ETHRESH]  = { "color_emissive_threshold", QRE_T_FLOAT, 0, 1, 0.01f,
+	                     "Colour distance around color_emissive that still counts as emissive." },
+	[PARAM_DRAD]     = { "default_radiance", QRE_T_FLOAT, 0, 4, 0.01f,
+	                     "not read by the renderer (stored in materials.yaml only)" },
+	[PARAM_EBLEND]   = { "emissive_blend",   QRE_T_INT,  -1, 5, 1,
+	                     "Emission blend mode override; cvar uses the global one." },
+	[PARAM_KIND]     = { "kind",             QRE_T_INT,   0, 10, 1,
+	                     "not read by the renderer (stored in materials.yaml only)" },
+	[PARAM_ISLIGHT]  = { "is_light",         QRE_T_BOOL,  0, 0, 0,
+	                     "Emissive area light (BSP faces). Models and sprites light from light_color instead." },
+	[PARAM_LSTYLES]  = { "light_styles",     QRE_T_BOOL,  0, 0, 0,
+	                     "Let the light styles of the surface dim this light." },
+	[PARAM_METALALPHA] = { "metalness_from_normal_alpha", QRE_T_BOOL, 0, 0, 0,
+	                     "Take metalness from the alpha of texture_normals." },
+	[PARAM_BSPRAD]   = { "bsp_radiance",     QRE_T_BOOL,  0, 0, 0,
+	                     "not read by the renderer (stored in materials.yaml only)" },
+	[PARAM_MIRROR]   = { "mirror",           QRE_T_BOOL,  0, 0, 0,
+	                     "Mirror surface: forces roughness_override to 0." },
+	[PARAM_EXACTN]   = { "exact_normals",    QRE_T_BOOL,  0, 0, 0,
+	                     "Exact per-vertex normals (alias models only)." },
+	[PARAM_FRAST]    = { "force_rasterize",  QRE_T_BOOL,  0, 0, 0,
+	                     "Force the rasterized path (alias models and sprites only)." },
+	[PARAM_CEMIS]    = { "color_emissive",   QRE_T_COLOR, 0, 0, 0,
+	                     "Emission tint for pixels close to this colour. Ignored while texture_emissive is set, even if that file fails to load." },
+	[PARAM_LCOLOR]   = { "light_color",      QRE_T_COLOR, 0, 0, 0,
+	                     "Colour of the emitted light. On BSP faces it needs is_light; models and sprites light by themselves." },
 };
 
 // ---------------------------------------------------------------------------
@@ -231,6 +258,24 @@ static void QRE_Notify (const char *fmt, ...)
 
 	QR_GUI_Notify (buf);
 	Con_Printf ("qr editor: %s\n", buf);
+}
+
+// The defaults of a material with no yaml entry: what the detached default is
+// built from, and what a parameter of a material the editor created resets to.
+static void QRE_InitDefault (rt_material_t *m, const char *name)
+{
+	memset (m, 0, sizeof (*m));
+	m->valid = true;
+	m->bump_scale = 1.0f;
+	m->emissive_factor = 1.0f;
+	m->emissive_blend = -1;
+	m->specular_factor = 1.0f;
+	m->base_factor = 1.0f;
+	m->light_brightness = 1.0f;
+	m->kind = RT_MAT_KIND_REGULAR;
+	m->light_styles = true;
+	m->color_emissive_threshold = 0.02f;
+	q_strlcpy (m->name, name, sizeof (m->name));
 }
 
 // ---------------------------------------------------------------------------
@@ -491,6 +536,9 @@ static void QRE_SetFloat (int g, int param, float value)
 	QRE_EnsureLive (g);
 	rt_material_t *m = qre.group[g];
 
+	// the panel shows two decimals; keep the stored value on that grid
+	value = roundf (value * 100.0f) / 100.0f;
+
 	switch (param)
 	{
 	case PARAM_BUMP:     m->bump_scale = value; break;
@@ -531,7 +579,11 @@ static void QRE_SetBool (int g, int param, qboolean value)
 	case PARAM_LSTYLES:    m->light_styles = value; break;
 	case PARAM_METALALPHA: m->metalness_from_normal_alpha = value; break;
 	case PARAM_BSPRAD:     m->bsp_radiance = value; break;
-	case PARAM_MIRROR:     m->mirror = value; break;
+	case PARAM_MIRROR:
+		m->mirror = value;
+		if (value)
+			m->roughness_override = 0.0f; // the panel locks the override while mirror is on
+		break;
 	case PARAM_EXACTN:     m->exact_normals = value; break;
 	case PARAM_FRAST:      m->force_rasterize = value; break;
 	default:               break;
@@ -616,18 +668,7 @@ static void QRE_ResolveGroup (const char *texname)
 	{
 		// no material authored for this texture: edit a detached default one
 		// that joins the global list on the first change
-		memset (&qre.tmp_mat, 0, sizeof (qre.tmp_mat));
-		qre.tmp_mat.valid = true;
-		qre.tmp_mat.bump_scale = 1.0f;
-		qre.tmp_mat.emissive_factor = 1.0f;
-		qre.tmp_mat.emissive_blend = -1;
-		qre.tmp_mat.specular_factor = 1.0f;
-		qre.tmp_mat.base_factor = 1.0f;
-		qre.tmp_mat.light_brightness = 1.0f;
-		qre.tmp_mat.kind = RT_MAT_KIND_REGULAR;
-		qre.tmp_mat.light_styles = true;
-		qre.tmp_mat.color_emissive_threshold = 0.02f;
-		q_strlcpy (qre.tmp_mat.name, groupbase, sizeof (qre.tmp_mat.name));
+		QRE_InitDefault (&qre.tmp_mat, groupbase);
 		qre.group[0] = &qre.tmp_mat;
 		qre.group_count = 1;
 	}
@@ -1041,16 +1082,127 @@ void QR_Editor_UpdateView (void)
 // Panel (Dear ImGui)
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Per-parameter reset
+// ---------------------------------------------------------------------------
+
+// The state a parameter is reset to: the snapshot taken on start (retaken by
+// Apply), or the defaults for a material the editor created in this session.
+static const rt_material_t *QRE_OriginalOf (const rt_material_t *m, rt_material_t *defbuf)
+{
+	int i;
+
+	for (i = 0; i < qre.snap_map_count; i++)
+	{
+		if (!strcmp (qre.snap_map[i].name, m->name))
+			return &qre.snap_map[i];
+	}
+	for (i = 0; i < qre.snap_global_count; i++)
+	{
+		if (!strcmp (qre.snap_global[i].name, m->name))
+			return &qre.snap_global[i];
+	}
+
+	QRE_InitDefault (defbuf, m->name);
+	return defbuf;
+}
+
+static qboolean QRE_ParamChanged (const rt_material_t *m, const rt_material_t *orig, int p)
+{
+	// the metalness checkbox is the factor's "authored" flag: it is a change
+	// by itself, even when the value happens to match
+	if (p == PARAM_METAL)
+		return m->has_metalness_factor != orig->has_metalness_factor ||
+		       m->metalness_factor != orig->metalness_factor;
+
+	switch (qre_params[p].type)
+	{
+	case QRE_T_FLOAT:  return QRE_GetFloat (m, p) != QRE_GetFloat (orig, p);
+	case QRE_T_INT:    return QRE_GetInt (m, p) != QRE_GetInt (orig, p);
+	case QRE_T_BOOL:   return QRE_GetBool (m, p) != QRE_GetBool (orig, p);
+	case QRE_T_TEXT:   return strcmp (QRE_GetText (m, p), QRE_GetText (orig, p)) != 0;
+	case QRE_T_COLOR:
+	{
+		qboolean e1, e2;
+		float    c1[3], c2[3];
+
+		QRE_GetColor (m, p, &e1, c1);
+		QRE_GetColor (orig, p, &e2, c2);
+		return e1 != e2 || c1[0] != c2[0] || c1[1] != c2[1] || c1[2] != c2[2];
+	}
+	default:
+		return false;
+	}
+}
+
+static void QRE_ResetParam (int g, int p, const rt_material_t *orig)
+{
+	rt_material_t *m;
+
+	if (p == PARAM_METAL && !orig->has_metalness_factor)
+	{
+		// QRE_SetFloat would author the factor; the original never had one
+		QRE_EnsureLive (g);
+		m = qre.group[g];
+		m->has_metalness_factor = false;
+		m->metalness_factor = orig->metalness_factor;
+		QRE_MarkDirty (m);
+		return;
+	}
+
+	switch (qre_params[p].type)
+	{
+	case QRE_T_FLOAT:
+		QRE_SetFloat (g, p, QRE_GetFloat (orig, p));
+		break;
+	case QRE_T_INT:
+		QRE_SetInt (g, p, QRE_GetInt (orig, p));
+		break;
+	case QRE_T_BOOL:
+		QRE_SetBool (g, p, QRE_GetBool (orig, p));
+		break;
+	case QRE_T_TEXT:
+		QRE_SetText (g, p, QRE_GetText (orig, p));
+		break;
+	case QRE_T_COLOR:
+	{
+		qboolean enabled;
+		float    rgb[3];
+		int      c;
+
+		QRE_GetColor (orig, p, &enabled, rgb);
+		QRE_SetColorEnabled (g, p, enabled);
+		if (enabled)
+		{
+			for (c = 0; c < 3; c++)
+				QRE_SetColorChannel (g, p, c, rgb[c]);
+		}
+		break;
+	}
+	default:
+		break;
+	}
+}
+
 static void QRE_ParamWidgets (int g)
 {
-	int p;
+	rt_material_t        defbuf;
+	const rt_material_t *orig = QRE_OriginalOf (qre.group[g], &defbuf);
+	int                  p;
 
 	for (p = 0; p < PARAM_COUNT; p++)
 	{
 		const char   *label = qre_params[p].label;
+		const char   *tip   = qre_params[p].tip;
 		// re-read every iteration: the first change of a material that has no
 		// yaml entry moves qre.group[g] into the live list (QRE_EnsureLive)
 		rt_material_t *m = qre.group[g];
+		// mirror drives roughness on its own (the synthesis gives it the last
+		// word): the override is meaningless there, and is locked at 0
+		const qboolean mirror_locks_rough = (p == PARAM_ROUGH && m->mirror);
+
+		if (mirror_locks_rough)
+			QR_GUI_PushDisabled (1);
 
 		switch (qre_params[p].type)
 		{
@@ -1061,9 +1213,14 @@ static void QRE_ParamWidgets (int g)
 			char file[MAX_QPATH];
 
 			q_strlcpy (buf, QRE_GetText (m, p), sizeof (buf));
-			res = QR_GUI_TexturePath (label, buf, sizeof (buf));
+			res = QR_GUI_TexturePath (label, buf, sizeof (buf), tip);
 			if ((res & 1) && strcmp (buf, QRE_GetText (m, p)))
+			{
+				// NONE typed by hand means "no texture", as an empty field does
+				if (!q_strcasecmp (buf, "NONE"))
+					buf[0] = '\0';
 				QRE_SetText (g, p, buf);
+			}
 			if (res & 2)
 			{
 				if (QRE_BrowseTexture (file, sizeof (file)))
@@ -1074,7 +1231,7 @@ static void QRE_ParamWidgets (int g)
 		case QRE_T_FLOAT:
 		{
 			float value = QRE_GetFloat (m, p);
-			if (QR_GUI_SliderFloat (label, &value, qre_params[p].min, qre_params[p].max))
+			if (QR_GUI_SliderFloat (label, &value, qre_params[p].min, qre_params[p].max, tip))
 				QRE_SetFloat (g, p, value);
 			break;
 		}
@@ -1091,19 +1248,19 @@ static void QRE_ParamWidgets (int g)
 				int index = value - 1;
 				if (index < 0 || index >= (int)countof (kinds))
 					index = 0;
-				if (QR_GUI_Combo (label, &index, kinds, (int)countof (kinds)))
+				if (QR_GUI_Combo (label, &index, kinds, (int)countof (kinds), tip))
 					QRE_SetInt (g, p, index + 1);
 			}
 			else if (p == PARAM_EBLEND)
 			{
 				static const char *const blends[] = { "cvar", "0", "1", "2", "3", "4", "5" };
 				int index = value + 1;
-				if (QR_GUI_Combo (label, &index, blends, (int)countof (blends)))
+				if (QR_GUI_Combo (label, &index, blends, (int)countof (blends), tip))
 					QRE_SetInt (g, p, index - 1);
 			}
 			else
 			{
-				if (QR_GUI_SliderInt (label, &value, (int)qre_params[p].min, (int)qre_params[p].max))
+				if (QR_GUI_SliderInt (label, &value, (int)qre_params[p].min, (int)qre_params[p].max, tip))
 					QRE_SetInt (g, p, value);
 			}
 			break;
@@ -1111,7 +1268,7 @@ static void QRE_ParamWidgets (int g)
 		case QRE_T_BOOL:
 		{
 			int value = QRE_GetBool (m, p) ? 1 : 0;
-			if (QR_GUI_Checkbox (label, &value))
+			if (QR_GUI_Checkbox (label, &value, tip))
 				QRE_SetBool (g, p, value != 0);
 			break;
 		}
@@ -1127,7 +1284,7 @@ static void QRE_ParamWidgets (int g)
 			VectorCopy (rgb, old_rgb);
 			en = enabled ? 1 : 0;
 
-			if (QR_GUI_ColorHex (label, rgb, &en))
+			if (QR_GUI_ColorHex (label, rgb, &en, tip))
 			{
 				if (!en)
 				{
@@ -1141,32 +1298,28 @@ static void QRE_ParamWidgets (int g)
 							QRE_SetColorChannel (g, p, c, rgb[c]);
 				}
 			}
-
-			if (p == PARAM_CEMIS && m->filename_emissive[0])
-				QR_GUI_Tooltip ("color_emissive is ignored while texture_emissive is set");
 			break;
 		}
 		default:
 			break;
 		}
 
-		// materials.yaml defines these, but no renderer code reads them: the panel
-		// edits and saves them, so say what they are worth.
-		if (p == PARAM_KIND || p == PARAM_MASK || p == PARAM_BSPRAD || p == PARAM_DRAD)
-			QR_GUI_Tooltip ("not read by the renderer (stored in materials.yaml only)");
+		// Reset one parameter to the state it had when the editor started
+		// (or to the defaults, for a material the editor created itself).
+		m = qre.group[g];
+		if (QR_GUI_ResetButton (label, !mirror_locks_rough && QRE_ParamChanged (m, orig, p)))
+			QRE_ResetParam (g, p, orig);
+
+		if (mirror_locks_rough)
+			QR_GUI_PopDisabled ();
 	}
 }
 
 static void QRE_BuildPanelGUI (void)
 {
-	int      panel_w = glwidth * 11 / 25; // two fifths, plus a tenth
+	int      panel_w = glwidth / 4; // a quarter of the screen wide, as asked
 	int      g;
 	qboolean exit_requested = false;
-
-	if (panel_w > 506)
-		panel_w = 506;
-	if (panel_w < 352)
-		panel_w = 352;
 
 	QR_GUI_BeginPanel ("qr_material_editor", glwidth - panel_w, 0, panel_w, glheight);
 
