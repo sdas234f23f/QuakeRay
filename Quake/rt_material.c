@@ -201,7 +201,6 @@ byte *RT_MAT_LoadTexture(const rt_material_t *mat, int which, int *outWidth, int
         case RT_MAT_TEX_BASE:     base = mat->filename_base; break;
         case RT_MAT_TEX_NORMALS:  base = mat->filename_normals; break;
         case RT_MAT_TEX_EMISSIVE: base = mat->filename_emissive; break;
-        case RT_MAT_TEX_MASK:     base = mat->filename_mask; break;
         case RT_MAT_TEX_GLOSS:    base = mat->filename_gloss; break;
         default: return NULL;
     }
@@ -299,27 +298,10 @@ static void rt_mat_reset(rt_material_t *mat)
     mat->metalness_factor = 0.0f;
     mat->emissive_factor = 1.0f;
     mat->emissive_blend = -1;
-    mat->specular_factor = 1.0f;
     mat->base_factor = 1.0f;
     mat->light_brightness = 1.0f;
-    mat->kind = RT_MAT_KIND_REGULAR;
     mat->light_styles = true;
     mat->color_emissive_threshold = 0.02f;
-}
-
-static int rt_mat_parse_kind(const char *kindname)
-{
-    if (!q_strcasecmp(kindname, "REGULAR"))   return RT_MAT_KIND_REGULAR;
-    if (!q_strcasecmp(kindname, "CHROME"))    return RT_MAT_KIND_CHROME;
-    if (!q_strcasecmp(kindname, "WATER"))     return RT_MAT_KIND_WATER;
-    if (!q_strcasecmp(kindname, "LAVA"))      return RT_MAT_KIND_LAVA;
-    if (!q_strcasecmp(kindname, "SLIME"))     return RT_MAT_KIND_SLIME;
-    if (!q_strcasecmp(kindname, "GLASS"))     return RT_MAT_KIND_GLASS;
-    if (!q_strcasecmp(kindname, "SKY"))       return RT_MAT_KIND_SKY;
-    if (!q_strcasecmp(kindname, "INVISIBLE")) return RT_MAT_KIND_INVISIBLE;
-    if (!q_strcasecmp(kindname, "SCREEN"))    return RT_MAT_KIND_SCREEN;
-    if (!q_strcasecmp(kindname, "CAMERA"))    return RT_MAT_KIND_CAMERA;
-    return RT_MAT_KIND_REGULAR;
 }
 
 static qboolean rt_mat_parse_bool(const char *value)
@@ -376,8 +358,6 @@ static void rt_mat_set_attribute(rt_material_t *mat, const char *key, const char
     }
     else if (!q_strcasecmp(key, "emissive_factor"))
         mat->emissive_factor = (float)atof(value);
-    else if (!q_strcasecmp(key, "specular_factor"))
-        mat->specular_factor = (float)atof(value);
     else if (!q_strcasecmp(key, "base_factor"))
         mat->base_factor = (float)atof(value);
     else if (!q_strcasecmp(key, "emissive_blend"))
@@ -394,16 +374,10 @@ static void rt_mat_set_attribute(rt_material_t *mat, const char *key, const char
             mat->emissive_blend = v;
         }
     }
-    else if (!q_strcasecmp(key, "kind"))
-        mat->kind = rt_mat_parse_kind(value);
     else if (!q_strcasecmp(key, "is_light"))
         mat->is_light = rt_mat_parse_bool(value);
     else if (!q_strcasecmp(key, "light_styles"))
         mat->light_styles = rt_mat_parse_bool(value);
-    else if (!q_strcasecmp(key, "bsp_radiance"))
-        mat->bsp_radiance = rt_mat_parse_bool(value);
-    else if (!q_strcasecmp(key, "default_radiance"))
-        mat->default_radiance = (float)atof(value);
     else if (!q_strcasecmp(key, "color_emissive"))
         mat->has_color_emissive = rt_mat_parse_hex_color(value, mat->color_emissive);
     else if (!q_strcasecmp(key, "color_emissive_threshold"))
@@ -426,8 +400,6 @@ static void rt_mat_set_attribute(rt_material_t *mat, const char *key, const char
         q_strlcpy(mat->filename_normals, value, sizeof(mat->filename_normals));
     else if (!q_strcasecmp(key, "texture_emissive"))
         q_strlcpy(mat->filename_emissive, value, sizeof(mat->filename_emissive));
-    else if (!q_strcasecmp(key, "texture_mask"))
-        q_strlcpy(mat->filename_mask, value, sizeof(mat->filename_mask));
     else if (!q_strcasecmp(key, "texture_gloss"))
         q_strlcpy(mat->filename_gloss, value, sizeof(mat->filename_gloss));
     else
@@ -806,24 +778,6 @@ const char *RT_MAT_CurrentMap(void)
     return rt_current_map;
 }
 
-const char *RT_MAT_KindName(int kind)
-{
-    switch (kind)
-    {
-        case RT_MAT_KIND_REGULAR:   return "REGULAR";
-        case RT_MAT_KIND_CHROME:    return "CHROME";
-        case RT_MAT_KIND_WATER:     return "WATER";
-        case RT_MAT_KIND_LAVA:      return "LAVA";
-        case RT_MAT_KIND_SLIME:     return "SLIME";
-        case RT_MAT_KIND_GLASS:     return "GLASS";
-        case RT_MAT_KIND_SKY:       return "SKY";
-        case RT_MAT_KIND_INVISIBLE: return "INVISIBLE";
-        case RT_MAT_KIND_SCREEN:    return "SCREEN";
-        case RT_MAT_KIND_CAMERA:    return "CAMERA";
-        default:                    return NULL;
-    }
-}
-
 qboolean RT_MAT_Enabled(void)
 {
     return rt_materials.value != 0;
@@ -845,15 +799,14 @@ void RT_MAT_Cmd(void)
         return;
     }
 
-    Con_Printf("material '%s': base=%s normals=%s emissive=%s gloss=%s mask=%s kind=%d "
-               "bump=%.2f rough=%.2f metal=%.2f emiss=%.2f spec=%.2f base=%.2f emis_blend=%d\n",
+    Con_Printf("material '%s': base=%s normals=%s emissive=%s gloss=%s "
+               "bump=%.2f rough=%.2f metal=%.2f emiss=%.2f base=%.2f emis_blend=%d\n",
                m->name,
                m->filename_base[0] ? m->filename_base : "-",
                m->filename_normals[0] ? m->filename_normals : "-",
                m->filename_emissive[0] ? m->filename_emissive : "-",
                m->filename_gloss[0] ? m->filename_gloss : "-",
-               m->filename_mask[0] ? m->filename_mask : "-",
-               m->kind, m->bump_scale, m->roughness_override,
-               m->metalness_factor, m->emissive_factor, m->specular_factor, m->base_factor,
+               m->bump_scale, m->roughness_override,
+               m->metalness_factor, m->emissive_factor, m->base_factor,
                m->emissive_blend);
 }

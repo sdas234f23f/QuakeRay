@@ -74,24 +74,19 @@ enum
 	PARAM_BASE,     // texture_base
 	PARAM_NORMALS,  // texture_normals
 	PARAM_EMISSIVE, // texture_emissive
-	PARAM_MASK,     // texture_mask
 	PARAM_GLOSS,    // texture_gloss
 	PARAM_BUMP,
 	PARAM_ROUGH,
 	PARAM_METAL,
 	PARAM_EMISF,
-	PARAM_SPEC,
 	PARAM_BASEF,
 	PARAM_LBRIGHT,
 	PARAM_LUPOFF,
 	PARAM_ETHRESH,
-	PARAM_DRAD,
 	PARAM_EBLEND,
-	PARAM_KIND,
 	PARAM_ISLIGHT,
 	PARAM_LSTYLES,
 	PARAM_METALALPHA,
-	PARAM_BSPRAD,
 	PARAM_MIRROR,
 	PARAM_EXACTN,
 	PARAM_FRAST,
@@ -113,8 +108,6 @@ static const struct qre_param_s
 	                     "Normal map. Its alpha may drive metalness_from_normal_alpha." },
 	[PARAM_EMISSIVE] = { "texture_emissive", QRE_T_TEXT,  0, 0, 0,
 	                     "Emissive mask (luma). Overrides color_emissive." },
-	[PARAM_MASK]     = { "texture_mask",     QRE_T_TEXT,  0, 0, 0,
-	                     "not read by the renderer (stored in materials.yaml only)" },
 	[PARAM_GLOSS]    = { "texture_gloss",    QRE_T_TEXT,  0, 0, 0,
 	                     "Gloss map: roughness = 1 - gloss. Ignored while roughness_override is set." },
 	[PARAM_BUMP]     = { "bump_scale",       QRE_T_FLOAT, 0, 4, 0.01f,
@@ -125,8 +118,6 @@ static const struct qre_param_s
 	                     "Metalness. With metalness_from_normal_alpha it scales the mask." },
 	[PARAM_EMISF]    = { "emissive_factor",  QRE_T_FLOAT, 0, 4, 0.01f,
 	                     "Multiplier of the emissive mask or colour." },
-	[PARAM_SPEC]     = { "specular_factor",  QRE_T_FLOAT, 0, 4, 0.01f,
-	                     "not read by the renderer (stored in materials.yaml only)" },
 	[PARAM_BASEF]    = { "base_factor",      QRE_T_FLOAT, 0, 4, 0.01f,
 	                     "Albedo multiplier." },
 	[PARAM_LBRIGHT]  = { "light_brightness", QRE_T_FLOAT, 0, 5, 0.01f,
@@ -135,20 +126,14 @@ static const struct qre_param_s
 	                     "Vertical offset of the emitted light (alias models)." },
 	[PARAM_ETHRESH]  = { "color_emissive_threshold", QRE_T_FLOAT, 0, 1, 0.01f,
 	                     "Colour distance around color_emissive that still counts as emissive." },
-	[PARAM_DRAD]     = { "default_radiance", QRE_T_FLOAT, 0, 4, 0.01f,
-	                     "not read by the renderer (stored in materials.yaml only)" },
 	[PARAM_EBLEND]   = { "emissive_blend",   QRE_T_INT,  -1, 5, 1,
 	                     "Emission blend mode override; cvar uses the global one." },
-	[PARAM_KIND]     = { "kind",             QRE_T_INT,   0, 10, 1,
-	                     "not read by the renderer (stored in materials.yaml only)" },
 	[PARAM_ISLIGHT]  = { "is_light",         QRE_T_BOOL,  0, 0, 0,
 	                     "Emissive area light (BSP faces). Models and sprites light from light_color instead." },
 	[PARAM_LSTYLES]  = { "light_styles",     QRE_T_BOOL,  0, 0, 0,
 	                     "Let the light styles of the surface dim this light." },
 	[PARAM_METALALPHA] = { "metalness_from_normal_alpha", QRE_T_BOOL, 0, 0, 0,
 	                     "Take metalness from the alpha of texture_normals." },
-	[PARAM_BSPRAD]   = { "bsp_radiance",     QRE_T_BOOL,  0, 0, 0,
-	                     "not read by the renderer (stored in materials.yaml only)" },
 	[PARAM_MIRROR]   = { "mirror",           QRE_T_BOOL,  0, 0, 0,
 	                     "Mirror surface: forces roughness_override to 0." },
 	[PARAM_EXACTN]   = { "exact_normals",    QRE_T_BOOL,  0, 0, 0,
@@ -269,10 +254,8 @@ static void QRE_InitDefault (rt_material_t *m, const char *name)
 	m->bump_scale = 1.0f;
 	m->emissive_factor = 1.0f;
 	m->emissive_blend = -1;
-	m->specular_factor = 1.0f;
 	m->base_factor = 1.0f;
 	m->light_brightness = 1.0f;
-	m->kind = RT_MAT_KIND_REGULAR;
 	m->light_styles = true;
 	m->color_emissive_threshold = 0.02f;
 	q_strlcpy (m->name, name, sizeof (m->name));
@@ -484,12 +467,10 @@ static float QRE_GetFloat (const rt_material_t *m, int param)
 	case PARAM_ROUGH:    return m->roughness_override;
 	case PARAM_METAL:    return m->metalness_factor;
 	case PARAM_EMISF:    return m->emissive_factor;
-	case PARAM_SPEC:     return m->specular_factor;
 	case PARAM_BASEF:    return m->base_factor;
 	case PARAM_LBRIGHT:  return m->light_brightness;
 	case PARAM_LUPOFF:   return m->light_upoffset;
 	case PARAM_ETHRESH:  return m->color_emissive_threshold;
-	case PARAM_DRAD:     return m->default_radiance;
 	default:             return 0.0f;
 	}
 }
@@ -498,8 +479,6 @@ static int QRE_GetInt (const rt_material_t *m, int param)
 {
 	if (param == PARAM_EBLEND)
 		return m->emissive_blend;
-	if (param == PARAM_KIND)
-		return m->kind;
 	return 0;
 }
 
@@ -510,7 +489,6 @@ static qboolean QRE_GetBool (const rt_material_t *m, int param)
 	case PARAM_ISLIGHT:    return m->is_light;
 	case PARAM_LSTYLES:    return m->light_styles;
 	case PARAM_METALALPHA: return m->metalness_from_normal_alpha;
-	case PARAM_BSPRAD:     return m->bsp_radiance;
 	case PARAM_MIRROR:     return m->mirror;
 	case PARAM_EXACTN:     return m->exact_normals;
 	case PARAM_FRAST:      return m->force_rasterize;
@@ -525,7 +503,6 @@ static const char *QRE_GetText (const rt_material_t *m, int param)
 	case PARAM_BASE:     return m->filename_base;
 	case PARAM_NORMALS:  return m->filename_normals;
 	case PARAM_EMISSIVE: return m->filename_emissive;
-	case PARAM_MASK:     return m->filename_mask;
 	case PARAM_GLOSS:    return m->filename_gloss;
 	default:             return "";
 	}
@@ -542,12 +519,10 @@ static void QRE_SetFloat (int g, int param, float value)
 	case PARAM_ROUGH:    m->roughness_override = value; break;
 	case PARAM_METAL:    m->metalness_factor = value; m->has_metalness_factor = true; break;
 	case PARAM_EMISF:    m->emissive_factor = value; break;
-	case PARAM_SPEC:     m->specular_factor = value; break;
 	case PARAM_BASEF:    m->base_factor = value; break;
 	case PARAM_LBRIGHT:  m->light_brightness = value; break;
 	case PARAM_LUPOFF:   m->light_upoffset = value; break;
 	case PARAM_ETHRESH:  m->color_emissive_threshold = value; break;
-	case PARAM_DRAD:     m->default_radiance = value; break;
 	default:             break;
 	}
 	QRE_MarkDirty (m);
@@ -560,8 +535,6 @@ static void QRE_SetInt (int g, int param, int value)
 
 	if (param == PARAM_EBLEND)
 		m->emissive_blend = value;
-	else if (param == PARAM_KIND)
-		m->kind = value;
 	QRE_MarkDirty (m);
 }
 
@@ -575,7 +548,6 @@ static void QRE_SetBool (int g, int param, qboolean value)
 	case PARAM_ISLIGHT:    m->is_light = value; break;
 	case PARAM_LSTYLES:    m->light_styles = value; break;
 	case PARAM_METALALPHA: m->metalness_from_normal_alpha = value; break;
-	case PARAM_BSPRAD:     m->bsp_radiance = value; break;
 	case PARAM_MIRROR:
 		m->mirror = value;
 		if (value)
@@ -598,7 +570,6 @@ static void QRE_SetText (int g, int param, const char *value)
 	case PARAM_BASE:     q_strlcpy (m->filename_base, value, sizeof (m->filename_base)); break;
 	case PARAM_NORMALS:  q_strlcpy (m->filename_normals, value, sizeof (m->filename_normals)); break;
 	case PARAM_EMISSIVE: q_strlcpy (m->filename_emissive, value, sizeof (m->filename_emissive)); break;
-	case PARAM_MASK:     q_strlcpy (m->filename_mask, value, sizeof (m->filename_mask)); break;
 	case PARAM_GLOSS:    q_strlcpy (m->filename_gloss, value, sizeof (m->filename_gloss)); break;
 	default:             break;
 	}
@@ -1262,19 +1233,7 @@ static void QRE_ParamWidgets (int g)
 		{
 			int value = QRE_GetInt (m, p);
 
-			if (p == PARAM_KIND)
-			{
-				static const char *const kinds[] = {
-					"REGULAR", "CHROME", "WATER", "LAVA", "SLIME", "GLASS", "SKY", "INVISIBLE", "SCREEN", "CAMERA"
-				};
-				// RT_MAT_KIND_REGULAR is 1, so the combo index is kind - 1
-				int index = value - 1;
-				if (index < 0 || index >= (int)countof (kinds))
-					index = 0;
-				if (QR_GUI_Combo (label, &index, kinds, (int)countof (kinds), tip))
-					QRE_SetInt (g, p, index + 1);
-			}
-			else if (p == PARAM_EBLEND)
+			if (p == PARAM_EBLEND)
 			{
 				static const char *const blends[] = { "cvar", "0", "1", "2", "3", "4", "5" };
 				int index = value + 1;
@@ -1647,8 +1606,6 @@ static void QRE_WriteMaterial (FILE *f, const rt_material_t *m)
 		fprintf (f, "    texture_normals: %s\n", m->filename_normals);
 	if (m->filename_emissive[0])
 		fprintf (f, "    texture_emissive: %s\n", m->filename_emissive);
-	if (m->filename_mask[0])
-		fprintf (f, "    texture_mask: %s\n", m->filename_mask);
 	if (m->filename_gloss[0])
 		fprintf (f, "    texture_gloss: %s\n", m->filename_gloss);
 	if (m->bump_scale != 1.0f)
@@ -1665,24 +1622,12 @@ static void QRE_WriteMaterial (FILE *f, const rt_material_t *m)
 		fprintf (f, "    emissive_factor: %.6g\n", m->emissive_factor);
 	if (m->emissive_blend >= 0)
 		fprintf (f, "    emissive_blend: %d\n", m->emissive_blend);
-	if (m->specular_factor != 1.0f)
-		fprintf (f, "    specular_factor: %.6g\n", m->specular_factor);
 	if (m->base_factor != 1.0f)
 		fprintf (f, "    base_factor: %.6g\n", m->base_factor);
-	if (m->kind != RT_MAT_KIND_REGULAR)
-	{
-		const char *k = RT_MAT_KindName (m->kind);
-
-		fprintf (f, "    kind: %s\n", k ? k : "REGULAR");
-	}
 	if (m->is_light)
 		fprintf (f, "    is_light: true\n");
 	if (!m->light_styles)
 		fprintf (f, "    light_styles: false\n");
-	if (m->bsp_radiance)
-		fprintf (f, "    bsp_radiance: true\n");
-	if (m->default_radiance != 0.0f)
-		fprintf (f, "    default_radiance: %.6g\n", m->default_radiance);
 	if (m->has_color_emissive)
 		QRE_WriteColor (f, "color_emissive", m->color_emissive);
 	if (m->color_emissive_threshold != 0.02f)
