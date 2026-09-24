@@ -56,12 +56,12 @@ constexpr uint32_t CLOUDS_SIDE_SIZES[vkpt::RenderCubemap::QUALITY_LEVELS] = { 25
 // and not by the eye: every tap of the column is spread sideways around the sun by
 // CLOUD_LIGHT_CONE over the distance it has travelled, which is tens of world units
 // near the base of the layer and a couple of hundred at its top, so the tau the
-// volume holds has no detail finer than that and a texel of five or six units
-// already samples it tens of times per feature. A level doubles the texels a side
+// volume holds has no detail finer than that and a texel of a dozen or so units
+// already samples it several times per feature. A level doubles the texels a side
 // over the same CLOUD_SHADOW_EXTENT metres of ground -- four times the volume, and
 // four times the march filling it, which is the dearest pass the layer has -- from
-// a texel every eight metres at the bottom of the ladder to one every two metres at
-// the top, and four slices of two bytes per texel of memory.
+// a texel every thirty metres at the bottom of the ladder to one every eight at the
+// top, and four slices of two bytes per texel of memory.
 constexpr uint32_t CLOUD_SHADOW_SIZES[vkpt::RenderCubemap::QUALITY_LEVELS] = { 512, 1024, 1024, 2048, 2048 };
 
 // The slices the volume holds over the height of the layer, the base of the layer
@@ -71,7 +71,22 @@ constexpr uint32_t CLOUD_SHADOW_SIZES[vkpt::RenderCubemap::QUALITY_LEVELS] = { 5
 // read between two of them is the light of a cloud, which is a gradient rather than
 // a step.
 constexpr uint32_t CLOUD_SHADOW_SLICES = 4;
-constexpr float    CLOUD_SHADOW_EXTENT = 4000.0f;
+
+// How much of the world's horizontal plane the volume is laid out over, in world
+// units: the same whatever the level, so that a level buys the sharpness of the
+// shadow rather than the reach of it. What a texel of it costs to fill is a column
+// walked towards the sun and does not depend on this at all -- the texels a side are
+// the level's, and they are spread over more ground the wider the window is -- so
+// the reach is what has to cover what the eye can see rather than what can be
+// afforded. What it has to cover: a cloud's shadow is what the air, the ground and
+// the sky around the eye are lit by, and the edge of the window is a line a shadow
+// simply stops on. Sixteen thousand units is where that line is far enough out to
+// stop being findable -- the shadow thins out over the last four per cent of it --
+// and the price of it is the texel of a level spreading over four times the ground,
+// eight units across at the finest level, against a cone of light tens of units wide
+// at its narrowest. A quarter of this is where the shadow of a cloud was seen to end
+// over the sky and the ground.
+constexpr float    CLOUD_SHADOW_EXTENT = 16000.0f;
 
 // How far the eye may walk over the volume's window before the map is filled again
 // for it, in texels of the map (UpdateCloudShadow). The window follows the eye, but
