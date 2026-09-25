@@ -91,6 +91,7 @@ enum
 	PARAM_BASEF,
 	PARAM_LBRIGHT,
 	PARAM_LUPOFF,
+	PARAM_CEMIS,
 	PARAM_ETHRESH,
 	PARAM_EFEATHER,
 	PARAM_EBLEND,
@@ -100,7 +101,6 @@ enum
 	PARAM_MIRROR,
 	PARAM_EXACTN,
 	PARAM_FRAST,
-	PARAM_CEMIS,
 	PARAM_LCOLOR,
 	PARAM_COUNT,
 };
@@ -113,49 +113,49 @@ static const struct qre_param_s
 	const char *tip;
 } qre_params[PARAM_COUNT] = {
 	[PARAM_BASE]     = { "texture_base",     QRE_T_TEXT,  0, 0, 0,
-	                     "Albedo texture. Empty (NONE) keeps the texture the engine picked for the face." },
+	                     "The diffuse texture. NONE keeps the map's own; an authored file replaces it." },
 	[PARAM_NORMALS]  = { "texture_normals",  QRE_T_TEXT,  0, 0, 0,
-	                     "Normal map. Its alpha may drive metalness_from_normal_alpha." },
+	                     "Per-pixel bump direction. Its alpha channel can drive metalness_from_normal_alpha." },
 	[PARAM_EMISSIVE] = { "texture_emissive", QRE_T_TEXT,  0, 0, 0,
-	                     "Emissive mask (luma). Overrides color_emissive." },
+	                     "A luma mask image: what is bright in it is what the surface emits. Replaces color_emissive." },
 	[PARAM_GLOSS]    = { "texture_gloss",    QRE_T_TEXT,  0, 0, 0,
-	                     "Gloss map: roughness = 1 - gloss. Ignored while roughness_override is set." },
+	                     "White means mirror-smooth, black means rough (roughness = 1 - gloss). Ignored while roughness_override is set." },
 	[PARAM_BUMP]     = { "bump_scale",       QRE_T_FLOAT, 0, 4, 0.01f,
-	                     "Strength of texture_normals; needs the normal map." },
+	                     "How pronounced the normal map's bumps are. Needs texture_normals." },
 	[PARAM_ROUGH]    = { "roughness_override", QRE_T_FLOAT, 0, 1, 0.01f,
-	                     "Fixed roughness. 0 means not set; locked at 0 while mirror is on." },
+	                     "Ignore the gloss map and pin the roughness. 0 leaves it to the gloss; mirror forces 0." },
 	[PARAM_METAL]    = { "metalness_factor", QRE_T_FLOAT, 0, 1, 0.01f,
-	                     "Metalness. With metalness_from_normal_alpha it scales the mask." },
+	                     "How metal-like the surface is. With metalness_from_normal_alpha it scales that mask." },
 	[PARAM_EMISF]    = { "emissive_factor",  QRE_T_FLOAT, 0, 4, 0.01f,
-	                     "Multiplier of the emissive mask or colour." },
+	                     "Multiplies the emission of the mask (or of the colour entries)." },
 	[PARAM_BASEF]    = { "base_factor",      QRE_T_FLOAT, 0, 4, 0.01f,
-	                     "Albedo multiplier." },
+	                     "Multiplies the albedo: dims or lifts the whole texture." },
 	[PARAM_LBRIGHT]  = { "light_brightness", QRE_T_FLOAT, 0, 5, 0.01f,
-	                     "Gain of the emitted light, 0..5. Above 1 only the light brightens: the visible emission is an 8-bit channel and saturates." },
+	                     "How bright the light the surface casts is. Below 1 the glow dims with it; above 1 only the light grows (the visible glow is already at its maximum)." },
 	[PARAM_LUPOFF]   = { "light_upoffset",   QRE_T_FLOAT, -64, 64, 0.5f,
-	                     "Vertical offset of the emitted light (alias models)." },
-	[PARAM_ETHRESH]  = { "color_emissive_threshold", QRE_T_FLOAT, 0, 1, 0.01f,
-	                     "Colour distance around a color_emissive entry that still counts as emissive." },
-	[PARAM_EFEATHER] = { "color_emissive_feather", QRE_T_FLOAT, 0, 16, 1.0f,
-	                     "Pixels of growth around the pixels a colour matched: the neighbouring pixels join the mask without their colour being compared." },
-	[PARAM_EBLEND]   = { "emissive_blend",   QRE_T_INT,  -1, 5, 1,
-	                     "Emission blend mode override; cvar uses the global one." },
-	[PARAM_ISLIGHT]  = { "is_light",         QRE_T_BOOL,  0, 0, 0,
-	                     "Emissive area light (BSP faces). Models and sprites light from light_color instead." },
-	[PARAM_LSTYLES]  = { "light_styles",     QRE_T_BOOL,  0, 0, 0,
-	                     "Let the light styles of the surface dim this light." },
-	[PARAM_METALALPHA] = { "metalness_from_normal_alpha", QRE_T_BOOL, 0, 0, 0,
-	                     "Take metalness from the alpha of texture_normals." },
-	[PARAM_MIRROR]   = { "mirror",           QRE_T_BOOL,  0, 0, 0,
-	                     "Mirror surface: forces roughness_override to 0." },
-	[PARAM_EXACTN]   = { "exact_normals",    QRE_T_BOOL,  0, 0, 0,
-	                     "Exact per-vertex normals (alias models only)." },
-	[PARAM_FRAST]    = { "force_rasterize",  QRE_T_BOOL,  0, 0, 0,
-	                     "Force the rasterized path (alias models and sprites only)." },
+	                     "Lifts the cast light above the model's origin (alias models)." },
 	[PARAM_CEMIS]    = { "color_emissive",   QRE_T_BOOL,  0, 0, 0,
-	                     "Emission by colour: up to ten colours, each making the pixels that match it glow. Ignored while texture_emissive is set, even if that file fails to load." },
+	                     "Glow by colour: the pixels that match a colour below light up. \"+\" adds a colour, the preview's eyedropper picks one." },
+	[PARAM_ETHRESH]  = { "color_emissive_threshold", QRE_T_FLOAT, 0, 1, 0.01f,
+	                     "How far a pixel's colour may differ from a colour entry and still glow." },
+	[PARAM_EFEATHER] = { "color_emissive_feather", QRE_T_FLOAT, 0, 16, 1.0f,
+	                     "Softens the mask's edge over this many pixels, on both sides of it, without comparing colours." },
+	[PARAM_EBLEND]   = { "emissive_blend",   QRE_T_INT,  -1, 5, 1,
+	                     "How the glow is composited into the frame; 'cvar' follows the global rt_emis_blend." },
+	[PARAM_ISLIGHT]  = { "is_light",         QRE_T_BOOL,  0, 0, 0,
+	                     "The surface casts light into the scene, not only glows (BSP faces; models light from light_color)." },
+	[PARAM_LSTYLES]  = { "light_styles",     QRE_T_BOOL,  0, 0, 0,
+	                     "The map's light styles dim this light when ticked. Untick to ignore them (opt out)." },
+	[PARAM_METALALPHA] = { "metalness_from_normal_alpha", QRE_T_BOOL, 0, 0, 0,
+	                     "Read metalness from the normal map's alpha channel instead of a flat factor." },
+	[PARAM_MIRROR]   = { "mirror",           QRE_T_BOOL,  0, 0, 0,
+	                     "Mirror-smooth reflection; roughness is forced to 0." },
+	[PARAM_EXACTN]   = { "exact_normals",    QRE_T_BOOL,  0, 0, 0,
+	                     "Use the model's own vertex normals instead of generated ones (models only)." },
+	[PARAM_FRAST]    = { "force_rasterize",  QRE_T_BOOL,  0, 0, 0,
+	                     "Draw the model or sprite with the rasterizer instead of tracing it (models only)." },
 	[PARAM_LCOLOR]   = { "light_color",      QRE_T_COLOR, 0, 0, 0,
-	                     "Colour of the emitted light. On BSP faces it needs is_light; models and sprites light by themselves." },
+	                     "The colour of the light the surface casts (needs is_light on BSP faces; models light by themselves)." },
 };
 
 // ---------------------------------------------------------------------------
@@ -2054,11 +2054,90 @@ static void QRE_ResetParam (int g, int p, const rt_material_t *orig)
 	}
 }
 
+// The Emissive section of a material: the eyedropper preview, the colour list
+// and the "+" that adds one. The preview comes first so adding colours never
+// pushes it off the panel, and a click picks into the last colour — adding a
+// colour is the button's job.
+static void QRE_EmissiveEditor (int g)
+{
+	rt_material_t *m = qre.group[g];
+	const char    *tip = "Pixels matching one of these colours glow.";
+	qre_preview_t *slot;
+
+	slot = QRE_PreviewFor (m);
+	if (slot)
+	{
+		float u = 0.5f, v = 0.5f;
+
+		QR_GUI_LabelDim ("the eyedropper picks into the last colour");
+		if (QR_GUI_ImagePick ("##color_pick", (int64_t)slot->mat, slot->w, slot->h, &u, &v))
+		{
+			const int   px = CLAMP (0, (int)(u * (float)slot->w), slot->w - 1);
+			const int   py = CLAMP (0, (int)(v * (float)slot->h), slot->h - 1);
+			const byte *pix = slot->pixels + ((size_t)py * (size_t)slot->w + (size_t)px) * 4;
+
+			if (m->color_emissive_count > 0)
+			{
+				int target = m->color_emissive_count - 1;
+
+				m->color_emissive[target][0] = pix[0] / 255.0f;
+				m->color_emissive[target][1] = pix[1] / 255.0f;
+				m->color_emissive[target][2] = pix[2] / 255.0f;
+				QRE_MarkDirty (m);
+			}
+		}
+	}
+
+	{
+		int ci;
+
+		for (ci = 0; ci < m->color_emissive_count; ci++)
+		{
+			char id[32];
+			int  res;
+
+			q_snprintf (id, sizeof (id), "cemis%d", ci);
+			res = QR_GUI_ColorRow (id, m->color_emissive[ci], tip);
+			if (res & 1)
+				QRE_MarkDirty (m);
+			if (res & 2)
+			{
+				int k;
+
+				for (k = ci; k + 1 < m->color_emissive_count; k++)
+					VectorCopy (m->color_emissive[k + 1], m->color_emissive[k]);
+				m->color_emissive_count--;
+				if (m->color_emissive_count == 0)
+					m->has_color_emissive = false;
+				QRE_MarkDirty (m);
+				break;
+			}
+		}
+	}
+
+	if (m->color_emissive_count < RT_MAT_MAX_EMISSIVE_COLORS)
+	{
+		if (QR_GUI_Button ("+"))
+		{
+			QRE_EnsureLive (g);
+			m = qre.group[g];
+			m->color_emissive[m->color_emissive_count][0] = 1.0f;
+			m->color_emissive[m->color_emissive_count][1] = 0.0f;
+			m->color_emissive[m->color_emissive_count][2] = 0.0f;
+			m->color_emissive_count++;
+			m->has_color_emissive = true;
+			QRE_MarkDirty (m);
+		}
+		QR_GUI_Tooltip ("Add a colour to match (up to ten)");
+	}
+}
+
 static void QRE_ParamWidgets (int g)
 {
 	rt_material_t        defbuf;
 	const rt_material_t *orig = QRE_OriginalOf (qre.group[g], &defbuf);
 	int                  p;
+	qboolean             emissive_open = false;
 
 	for (p = 0; p < PARAM_COUNT; p++)
 	{
@@ -2073,6 +2152,18 @@ static void QRE_ParamWidgets (int g)
 
 		if (mirror_locks_rough)
 			QR_GUI_PushDisabled (1);
+
+		// The Emissive section: the eyedropper, the colour list and the tone
+		// controls sit under the color_emissive checkbox; without the checkbox
+		// there is no section and no rows.
+		if (p == PARAM_ETHRESH && m->has_color_emissive)
+		{
+			emissive_open = QR_GUI_Section ("Emissive", 1);
+			if (emissive_open)
+				QRE_EmissiveEditor (g);
+		}
+		if (p >= PARAM_ETHRESH && p <= PARAM_EBLEND && (!m->has_color_emissive || !emissive_open))
+			continue;
 
 		switch (qre_params[p].type)
 		{
@@ -2175,90 +2266,6 @@ static void QRE_ParamWidgets (int g)
 		m = qre.group[g];
 		if (QR_GUI_ResetButton (label, !mirror_locks_rough && QRE_ParamChanged (m, orig, p)))
 			QRE_ResetParam (g, p, orig);
-
-		// The emissive colour list: up to ten colours, each making the pixels
-		// that match it glow, plus a preview the eyedropper takes colours from.
-		if (p == PARAM_CEMIS && m->has_color_emissive)
-		{
-			qre_preview_t *slot;
-			int            ci;
-
-			for (ci = 0; ci < m->color_emissive_count; ci++)
-			{
-				char id[32];
-				int  res;
-
-				q_snprintf (id, sizeof (id), "cemis%d", ci);
-				res = QR_GUI_ColorRow (id, m->color_emissive[ci], tip);
-				if (res & 1)
-					QRE_MarkDirty (m);
-				if (res & 2)
-				{
-					int k;
-
-					for (k = ci; k + 1 < m->color_emissive_count; k++)
-						VectorCopy (m->color_emissive[k + 1], m->color_emissive[k]);
-					m->color_emissive_count--;
-					if (m->color_emissive_count == 0)
-						m->has_color_emissive = false;
-					QRE_MarkDirty (m);
-					break;
-				}
-			}
-
-			if (m->color_emissive_count < RT_MAT_MAX_EMISSIVE_COLORS)
-			{
-				if (QR_GUI_Button ("Add color"))
-				{
-					QRE_EnsureLive (g);
-					m = qre.group[g];
-					m->color_emissive[m->color_emissive_count][0] = 1.0f;
-					m->color_emissive[m->color_emissive_count][1] = 0.0f;
-					m->color_emissive[m->color_emissive_count][2] = 0.0f;
-					m->color_emissive_count++;
-					m->has_color_emissive = true;
-					QRE_MarkDirty (m);
-				}
-			}
-
-			slot = QRE_PreviewFor (m);
-			if (slot)
-			{
-				float u = 0.5f, v = 0.5f;
-				int   pick;
-
-				QR_GUI_LabelDim ("the eyedropper adds a colour; drag to adjust the last one");
-				pick = QR_GUI_ImagePick ("##color_pick", (int64_t)slot->mat, slot->w, slot->h, &u, &v);
-				if (pick)
-				{
-					const int   px = CLAMP (0, (int)(u * (float)slot->w), slot->w - 1);
-					const int   py = CLAMP (0, (int)(v * (float)slot->h), slot->h - 1);
-					const byte *pix = slot->pixels + ((size_t)py * (size_t)slot->w + (size_t)px) * 4;
-					int         target;
-
-					QRE_EnsureLive (g);
-					m = qre.group[g];
-
-					if (pick == 2 && m->color_emissive_count < RT_MAT_MAX_EMISSIVE_COLORS)
-					{
-						target = m->color_emissive_count; // a press takes a new colour
-						m->color_emissive_count++;
-					}
-					else
-					{
-						if (m->color_emissive_count == 0)
-							m->color_emissive_count = 1;
-						target = m->color_emissive_count - 1; // dragging adjusts the last
-					}
-
-					m->has_color_emissive = true;
-					m->color_emissive[target][0] = pix[0] / 255.0f;
-					m->color_emissive[target][1] = pix[1] / 255.0f;
-					m->color_emissive[target][2] = pix[2] / 255.0f;
-					QRE_MarkDirty (m);
-				}
-			}
-		}
 
 		if (mirror_locks_rough)
 			QR_GUI_PopDisabled ();

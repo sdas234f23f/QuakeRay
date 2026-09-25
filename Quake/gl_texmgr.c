@@ -1177,68 +1177,74 @@ static void TexMgr_DumpReloadTGA (const char *suffix, const char *name, int w, i
 ================
 TexMgr_FeatherEmissive
 
-Grows an emission map into the neighbours of its non-zero pixels: `feather`
-steps over the 8-neighbourhood, each step dimming by 1/(feather+1), without
-looking at the colours themselves. The pixels a colour threshold picked keep
-their own values; the pixels around them join the mask.
+Softens an emission map: a box blur of the given radius over the map, so the
+mask's edge fades on both sides of the threshold's selection (inwards as well as
+outwards), without looking at the colours themselves. Two separable passes, each
+a running sum, so the cost does not depend on the radius.
 ================
 */
-static void TexMgr_FeatherEmissive (float *emiss, int w, int h, int feather)
+static void TexMgr_FeatherEmissive (float *emiss, int w, int h, int radius)
 {
-	byte  *spread;
-	float  decay;
-	int    i, step;
+	float *tmp;
+	int    x, y, i;
+	const int window = radius * 2 + 1;
 
-	if (feather <= 0 || w <= 0 || h <= 0)
+	if (radius <= 0 || w <= 0 || h <= 0)
 		return;
 
-	spread = (byte *)Mem_Alloc ((size_t)w * (size_t)h);
-	memset (spread, 0xFF, (size_t)w * (size_t)h);
+	tmp = (float *)Mem_Alloc ((size_t)w * (size_t)h * sizeof (float));
 
-	for (i = 0; i < w * h; i++)
+	// horizontal
+	for (y = 0; y < h; y++)
 	{
-		if (emiss[i] > 0.0f)
-			spread[i] = 0;
-	}
+		const float *row = emiss + (size_t)y * w;
+		float       *out = tmp + (size_t)y * w;
+		float        sum = 0.0f;
 
-	decay = 1.0f - 1.0f / (float)(feather + 1);
-
-	for (step = 1; step <= feather; step++)
-	{
-		int x, y;
-
-		for (y = 0; y < h; y++)
+		for (i = -radius; i <= radius; i++)
 		{
-			for (x = 0; x < w; x++)
+			int sx = i < 0 ? 0 : (i >= w ? w - 1 : i);
+
+			sum += row[sx];
+		}
+		for (x = 0; x < w; x++)
+		{
+			out[x] = sum / (float)window;
 			{
-				const int n = y * w + x;
-				int       dx, dy;
+				int add = x + radius + 1;
+				int sub = x - radius;
 
-				if (spread[n] != step - 1 || emiss[n] <= 0.0f)
-					continue;
-
-				for (dy = -1; dy <= 1; dy++)
-				{
-					const int ny = y + dy;
-
-					if (ny < 0 || ny >= h)
-						continue;
-					for (dx = -1; dx <= 1; dx++)
-					{
-						const int nx = x + dx;
-						const int ni = ny * w + nx;
-
-						if (nx < 0 || nx >= w || spread[ni] != 0xFF)
-							continue;
-						spread[ni] = (byte)step;
-						emiss[ni] = emiss[n] * decay;
-					}
-				}
+				sum += row[add >= w ? w - 1 : add];
+				sum -= row[sub < 0 ? 0 : sub];
 			}
 		}
 	}
 
-	Mem_Free (spread);
+	// vertical
+	for (x = 0; x < w; x++)
+	{
+		float sum = 0.0f;
+
+		for (i = -radius; i <= radius; i++)
+		{
+			int sy = i < 0 ? 0 : (i >= h ? h - 1 : i);
+
+			sum += tmp[(size_t)sy * w + x];
+		}
+		for (y = 0; y < h; y++)
+		{
+			emiss[(size_t)y * w + x] = sum / (float)window;
+			{
+				int add = y + radius + 1;
+				int sub = y - radius;
+
+				sum += tmp[(size_t)(add >= h ? h - 1 : add) * w + x];
+				sum -= tmp[(size_t)(sub < 0 ? 0 : sub) * w + x];
+			}
+		}
+	}
+
+	Mem_Free (tmp);
 }
 
 static qboolean TexMgr_ApplyMaterialFromMat (gltexture_t *glt, unsigned *albedoFallback, byte *fullbrightOverride)

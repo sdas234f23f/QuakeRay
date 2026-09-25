@@ -38,7 +38,8 @@ std::vector<RgVertex> g_verts;
 std::vector<uint32_t> g_indices;
 
 // The label column of the panel: every widget is drawn next to its key name.
-constexpr float kLabelWidth      = 158.0f;
+// (10% wider than the first cut: the material keys are long.)
+constexpr float kLabelWidth      = 174.0f;
 // The reset button every parameter row carries at its right edge, and the
 // browse button of a texture path.
 constexpr float kResetButtonSize = 24.0f;
@@ -796,10 +797,9 @@ int QR_GUI_ImagePick (const char *id, int64_t texture, int tex_w, int tex_h, flo
 		if (out_v)
 			*out_v = v;
 
-		if (ImGui::IsMouseClicked (ImGuiMouseButton_Left))
-			result = 2; // the press: the list takes a new colour
-		else if (ImGui::IsMouseDown (ImGuiMouseButton_Left))
-			result = 1; // dragging: update the one last taken
+		// the press takes effect at once and the drag keeps following it
+		if (ImGui::IsMouseDown (ImGuiMouseButton_Left))
+			result = 1;
 
 		ImGui::SetMouseCursor (ImGuiMouseCursor_Hand);
 	}
