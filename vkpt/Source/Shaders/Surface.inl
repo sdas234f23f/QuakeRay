@@ -70,7 +70,10 @@ Surface fetchGbufferSurface(const ivec2 pix)
     }
     s.normalGeom                = texelFetchNormalGeometry(pix);
     s.normal                    = texelFetchNormal(pix);
-    s.toViewerDir               = -texelFetch(framebufViewDirection_Sampled, pix, 0).xyz;
+    // Read the view direction through the storage image, not the sampled view: the direct raygen
+    // also writes framebufViewDirection, and binding both views of one image in one set makes the
+    // SRV and the UAV disagree about the image layout (A4.2a).
+    s.toViewerDir               = -imageLoad(framebufViewDirection, pix).xyz;
     s.cluster                   = texelFetch(framebufQ2Cluster_Sampled, pix, 0).r;
     return s;
 }

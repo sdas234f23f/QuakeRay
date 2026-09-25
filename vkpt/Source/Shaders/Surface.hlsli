@@ -44,6 +44,11 @@
 //   * vec3(1.0) and vec3(0.0) became (float3)1.0 and (float3)0.0, as HLSL does not broadcast a
 //     scalar into a constructor
 //
+// One read is deliberately not the sampled one on either side: the view direction is read through
+// the storage image (imageLoad / .Load), because the direct raygen writes the same image and one
+// descriptor set cannot bind both views of it without making the two descriptors disagree about
+// the image layout (A4.2a). The GLSL fixture carries the same change.
+//
 // What did not change: the four way compile time gating, the early return of the sky branch (and
 // the members it leaves uninitialized, which stay uninitialized here for the same reason), the
 // order in which the members are filled in, the swizzles, and the comment about the albedo layout.
@@ -99,7 +104,10 @@ Surface fetchGbufferSurface(const int2 pix)
     }
     s.normalGeom                = texelFetchNormalGeometry(pix);
     s.normal                    = texelFetchNormal(pix);
-    s.toViewerDir               = -framebufViewDirection_Sampled.Load(int3(pix, 0)).xyz;
+    // Read the view direction through the storage image, not the sampled view: the direct raygen
+    // also writes framebufViewDirection, and binding both views of one image in one set makes the
+    // SRV and the UAV disagree about the image layout (A4.2a).
+    s.toViewerDir               = -framebufViewDirection.Load(pix).xyz;
     s.cluster                   = framebufQ2Cluster_Sampled.Load(int3(pix, 0)).r;
     return s;
 }

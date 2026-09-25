@@ -96,6 +96,45 @@ public:
     VkDescriptorSetLayout GetDescSetLayout();
     VkDescriptorSet GetDescSet(uint32_t frameIndex);
 
+    /* The engine buffers the light-source descriptor set binds, as the RHI pass wraps them: the
+       device-local buffer of every item it declares. The statistics buffer is cut into rotating
+       slots, but it is one buffer and is bound whole, as the engine set binds it. */
+    struct Buffers
+    {
+        VkBuffer lights;        // device-local, 4096 * sizeof(ShLightEncoded)
+        VkBuffer listOffsets;
+        VkBuffer listLights;
+        VkBuffer lightStats;
+        VkBuffer clusterSkyVis;
+    };
+
+    // One copy the RHI has to record itself: the frame's staging buffer and the byte count to
+    // copy from it.
+    struct Copy
+    {
+        VkBuffer staging;       // AutoBuffer::GetStaging(frame)
+        VkDeviceSize size;      // 0 == nothing pending this frame
+    };
+
+    struct FrameCopies
+    {
+        Copy lights;
+        Copy listOffsets;
+        Copy listLights;
+        Copy clusterSkyVis;
+    };
+
+    Buffers GetBuffers() const;
+
+    /* Mirrors what CopyFromStaging uploads for the frame: the light-array prefix is copied every
+       frame and always holds the sun slot, while each list buffer is copied only while its
+       publication or sky visibility update is pending. The prefix size is
+       (LIGHT_ARRAY_REGULAR_LIGHTS_OFFSET + GetLightCount()) * sizeof(ShLightEncoded), the sun
+       prefix being what GetLightCount() alone would drop, and the list-word count is
+       publishedListWords[frame], the word count the publication of this slot recorded, not the
+       count of the frame being recorded. */
+    FrameCopies GetFrameCopies(uint32_t frame) const;
+
 private:
     /* What one frame has registered so far. A light is looked up once per frame it survives in and
        inserted once, and a hash map pays a node indirection for each of those, so the table is

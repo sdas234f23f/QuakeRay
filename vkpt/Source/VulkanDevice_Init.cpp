@@ -35,6 +35,7 @@
 #include "RHI/NvrhiRequirements.h"
 #include "RHI/RhiAccelStructs.h"
 #include "RHI/RhiDebugTracePass.h"
+#include "RHI/RhiRtDirectPass.h"
 #include "RHI/RhiRtPrimaryPass.h"
 #include "RHI/RhiFrameContext.h"
 #include "RHI/RhiSkyPass.h"
@@ -425,6 +426,24 @@ VulkanDevice::VulkanDevice( const RgInstanceCreateInfo* info )
                     rhiRtPrimaryPass.reset();
                     Print("Warning: RHI: the primary ray-tracing pass is unavailable, the legacy renderer is kept");
                 }
+
+                // The direct-lighting pass of A4.2 (RHI/RhiRtDirectPass.h), created only with the
+                // primary: it borrows the primary's shared layout handles, so it must be destroyed
+                // before it, and the light-source buffers it wraps come from the scene's light
+                // manager. A failure leaves the pointer null: with the flag on the skeleton then
+                // refuses to be available and the legacy renderer keeps the frame.
+                if (rhiRtPrimaryPass != nullptr)
+                {
+                    rhiRtDirectPass = std::make_shared<RhiRtDirectPass>();
+                    if (!rhiRtDirectPass->Create(nvrhi->GetDevice(), rhiFrameContext.get(),
+                                                 rhiTextureTable.get(), scene->GetLightManager().get(),
+                                                 rhiRtPrimaryPass.get(), info->pShaderFolderPath,
+                                                 [this](const char *pMessage) { Print(pMessage); }))
+                    {
+                        rhiRtDirectPass.reset();
+                        Print("Warning: RHI: the direct ray-tracing pass is unavailable, the legacy renderer is kept");
+                    }
+                }
             }
 
             // The pass binds the shared RHI texture table (its slot 0 holds the engine's empty
@@ -444,7 +463,7 @@ VulkanDevice::VulkanDevice( const RgInstanceCreateInfo* info )
             NvrhiFrameSkeleton::FrameMode frameMode = NvrhiFrameSkeleton::FrameMode::Rasterized;
             if (libconfig.rhiRayTracing)
             {
-                frameMode = NvrhiFrameSkeleton::FrameMode::PrimaryTrace;
+                frameMode = NvrhiFrameSkeleton::FrameMode::Traced;
             }
             else if (libconfig.rhiDebugTrace)
             {
@@ -460,6 +479,7 @@ VulkanDevice::VulkanDevice( const RgInstanceCreateInfo* info )
                 rhiAccelStructs.get(),
                 rhiDebugTracePass.get(),
                 rhiRtPrimaryPass.get(),
+                rhiRtDirectPass.get(),
                 frameMode,
                 [this](const char *pMessage) { Print(pMessage); });
 
@@ -537,10 +557,11 @@ VulkanDevice::~VulkanDevice()
     // be released before both of them
     nvrhiFrameSkeleton.reset();
 
-    // The skeleton references all of them, so they follow it immediately; all three wrap engine
+    // The skeleton references all of them, so they follow it immediately; all four wrap engine
     // buffers/images and quote the RHI device, so they precede the table/context and the device
-    // below.
+    // below. The direct pass borrows the primary's layout handles, so it goes before the primary.
     rhiDebugTracePass.reset();
+    rhiRtDirectPass.reset();
     rhiRtPrimaryPass.reset();
     rhiAccelStructs.reset();
 

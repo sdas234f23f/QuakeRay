@@ -72,6 +72,7 @@ namespace vkpt
 class NvrhiContext;
 class NvrhiFrameSkeleton;
 class RhiDebugTracePass;
+class RhiRtDirectPass;
 class RhiRtPrimaryPass;
 struct NvrhiRequirements;
 
@@ -283,6 +284,12 @@ private:
     // the flag is off or the creation failed; with the flag on and no pass the skeleton stays
     // unavailable and the legacy renderer is kept.
     std::shared_ptr<RhiRtPrimaryPass>       rhiRtPrimaryPass;
+    // The RHI direct-lighting ray-tracing pass (RHI/RhiRtDirectPass.h): the light term of the traced
+    // chain (A4.2), created next to the primary pass - it borrows the primary's shared layout
+    // handles, so it has to be destroyed before it - and referenced by the skeleton. Null when the
+    // flag is off or the creation failed; with the flag on and no pair the skeleton stays
+    // unavailable and the legacy renderer is kept.
+    std::shared_ptr<RhiRtDirectPass>        rhiRtDirectPass;
     // The RHI frame skeleton: the first frame pass that is recorded through the
     // RHI layer. Null unless 'rhiframe' is set in vkpt.txt.
     std::shared_ptr<NvrhiFrameSkeleton>     nvrhiFrameSkeleton;

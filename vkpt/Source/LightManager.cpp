@@ -68,31 +68,36 @@ vkpt::LightManager::LightManager(
         registryGeneration[i] = 1;
     }
 
+    // The five buffers the RHI layer wraps for the direct-lighting pass (RHI/RhiRtDirectPass.cpp)
+    // carry VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT: NVRHI's native-buffer wrap queries the
+    // device address of every buffer when the device has BDA unconditionally
+    // (vulkan-buffer.cpp:215-220), which VUID-VkBufferDeviceAddressInfo-buffer-02601 forbids
+    // without the bit. AutoBuffer propagates the bit to the staging buffer from its owner's usage.
     lightsBuffer    = std::make_shared<AutoBuffer>(device, _allocator);
-    lightsBuffer->Create(sizeof(ShLightEncoded) * LIGHT_ARRAY_MAX_SIZE, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT, "Lights buffer");
+    lightsBuffer->Create(sizeof(ShLightEncoded) * LIGHT_ARRAY_MAX_SIZE, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, "Lights buffer");
 
     lightsBuffer_Prev.Init(_allocator, sizeof(ShLightEncoded) * LIGHT_ARRAY_MAX_SIZE, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, "Lights buffer - prev");
 
     lightListOffsets = std::make_shared<AutoBuffer>(device, _allocator);
     lightListOffsets->Create(sizeof(uint32_t) * (Q2_MAX_CLUSTERS + 1),
-        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
         "Q2 light list offsets");
 
     lightListLights = std::make_shared<AutoBuffer>(device, _allocator);
     lightListLights->Create(sizeof(uint32_t) * Q2_MAX_CLUSTERS * Q2_LIGHT_LIST_MAX_PER_CELL,
-        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
         "Q2 light list lights");
 
     lightStats.Init(_allocator,
         sizeof(uint32_t) * Q2_MAX_CLUSTERS * Q2_LIGHT_LIST_MAX_PER_CELL * Q2_LIGHT_LIST_STATS_SIDES * 2 * Q2_LIGHT_LIST_STATS_BUFFERS,
-        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, "Q2 light stats");
 
     /* One bit per cluster: whether a sun ray from it can still reach the sky. The staging
        starts all-visible, so a frame before the first map upload traces as it always has. */
     clusterSkyVis = std::make_shared<AutoBuffer>(device, _allocator);
     clusterSkyVis->Create(sizeof(uint32_t) * CLUSTER_SKY_VIS_WORD_COUNT,
-        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
         "Q2 cluster sky visibility");
 
     for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
@@ -610,6 +615,64 @@ void vkpt::LightManager::CopyFromStaging(VkCommandBuffer cmd, uint32_t frameInde
         UpdateDescriptors(frameIndex);
         needDescSetUpdate[frameIndex] = false;
     }
+}
+
+vkpt::LightManager::Buffers vkpt::LightManager::GetBuffers() const
+{
+    return Buffers
+    {
+        lightsBuffer->GetDeviceLocal(),
+        lightListOffsets->GetDeviceLocal(),
+        lightListLights->GetDeviceLocal(),
+        lightStats.GetBuffer(),
+        clusterSkyVis->GetDeviceLocal(),
+    };
+}
+
+vkpt::LightManager::FrameCopies vkpt::LightManager::GetFrameCopies(uint32_t frame) const
+{
+    assert(frame < MAX_FRAMES_IN_FLIGHT);
+
+    FrameCopies copies = {};
+
+    /* The light-array prefix is the one item with no pending flag: the frame's staging always
+       holds it, and the sun sits in slot LIGHT_ARRAY_DIRECTIONAL_LIGHT_OFFSET, so the size is the
+       end of the array and not the count of the regular lights alone. */
+    copies.lights =
+    {
+        lightsBuffer->GetStaging(frame),
+        sizeof(ShLightEncoded) * GetLightArrayEnd(regLightCount, dirLightCount),
+    };
+
+    /* The list buffers are written only when a publication changed them, and the words to copy are
+       the ones the publication of this slot staged: publishedListWords[frame] is the count that
+       publication recorded, not the count of the frame being recorded. */
+    if (lightListCopyPending[frame])
+    {
+        copies.listOffsets =
+        {
+            lightListOffsets->GetStaging(frame),
+            sizeof(uint32_t) * (Q2_MAX_CLUSTERS + 1),
+        };
+        copies.listLights =
+        {
+            lightListLights->GetStaging(frame),
+            sizeof(uint32_t) * publishedListWords[frame],
+        };
+    }
+
+    /* Pending at construction too, so the all-visible table reaches the device before the first
+       map upload. */
+    if (clusterSkyVisCopyPending[frame])
+    {
+        copies.clusterSkyVis =
+        {
+            clusterSkyVis->GetStaging(frame),
+            sizeof(uint32_t) * CLUSTER_SKY_VIS_WORD_COUNT,
+        };
+    }
+
+    return copies;
 }
 
 void vkpt::LightManager::SetClusterLightLists(uint32_t frameIndex, uint32_t numClusters,

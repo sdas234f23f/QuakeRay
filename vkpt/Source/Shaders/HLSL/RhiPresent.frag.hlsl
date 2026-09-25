@@ -18,6 +18,7 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
+#include "Utils.hlsli"
 
 // HLSL counterpart of RhiPresent.frag, the present of the A2 "rhiframe" path: the host loads
 // RhiPresent.frag.spv, so the blob keeps its name and only the source changes.
@@ -39,28 +40,38 @@
 //     sampler of slot 0, and textureLod( sampler2D( albedoTexture, albedoTexture_Sampler ), vUV,
 //     0.0 ) becomes albedoTexture.SampleLevel( albedoTexture_Sampler, vUV, 0.0 ), the same
 //     explicit LOD 0
+//   * the golden's uimage2D at set 0, binding 384 - the packed unfiltered-direct image, read
+//     through the storage image so no sampled descriptor of it is declared - keeps that binding as
+//     RWTexture2D<uint4> with the r32ui format, NVRHI's offset for an unordered-access view of slot
+//     0; its packed value goes through Utils.hlsli's decodeE5B9G9R9, so this twin includes
+//     Utils.hlsli, as every other shader does
 //
-// Unlike RhiSkeleton.frag, the present has no bindless table and no set 1: it samples exactly one
-// image, the ALBEDO render target, so every resource it needs fits in set 0. The host loads this
-// blob and RhiSkeleton.vert.spv, the same fullscreen triangle that already feeds the skeleton.
+// Unlike RhiSkeleton.frag, the present has no bindless table and no set 1: it samples the ALBEDO
+// render target and reads the packed unfiltered-direct image, so every resource it needs fits in
+// set 0. The host loads this blob and RhiSkeleton.vert.spv, the same fullscreen triangle that
+// already feeds the skeleton.
 //
-// What did not change: the LOD-0 sample of the ALBEDO image, the exposure multiply, the
-// x / (1 + x) curve and the alpha of 1.0, with the golden's operand order.
+// The compose is the A4.2 diagnostic of the direct pass: the unpacked direct term is added to the
+// albedo - sky pixels have a zero direct value, so they keep their color - and the sum goes through
+// the same exposure multiply and x / (1 + x) curve. The A4.4 chain replaces this compose.
 
 struct RhiPresentParams_BT
 {
     // x = exposure multiplier applied before the curve; y = vertical mirror of the sample
-    // coordinate (0 or 1, set per frame mode); z and w are unused and keep the block one float4,
-    // the shape the skeleton's colour parameters have.
+    // coordinate (0 or 1, set per frame mode); z = non-zero enables the direct-lighting term of the
+    // traced chain; w unused. The block stays one float4, the shape the skeleton's colour
+    // parameters have.
     float4 exposure;
 };
 
-// Set 0 holds all three resources at the bindings NVRHI assigns to slot 0: the constant buffer at
-// 256, the texture at 0 and its sampler at 128.
+// Set 0 holds all four resources at the bindings NVRHI assigns to the slots: the constant buffer at
+// 256, the ALBEDO texture at 0 and its sampler at 128, the storage image at 384 (the offset of an
+// unordered-access view of slot 0).
 [[vk::binding(256, 0)]] ConstantBuffer<RhiPresentParams_BT> params;
 
 [[vk::binding(0, 0)]] Texture2D<float4> albedoTexture;
 [[vk::binding(128, 0)]] SamplerState albedoTexture_Sampler;
+[[vk::binding(384, 0), vk::image_format("r32ui")]] RWTexture2D<uint4> directTexture;
 
 float4 main( [[vk::location(0)]] float2 vUV : TEXCOORD0 ) : SV_Target0
 {
@@ -76,9 +87,30 @@ float4 main( [[vk::location(0)]] float2 vUV : TEXCOORD0 ) : SV_Target0
     // and an implicit LOD would make the presented image depend on the screen's derivative.
     const float3 albedo = albedoTexture.SampleLevel( albedoTexture_Sampler, uv, 0.0 ).rgb;
 
+    // The direct-lighting term of the traced chain: the image is checkerboard-packed, so this
+    // screen pixel's trace is addressed through the same mapping the raygens write with
+    // (getCheckerboardPix, ShaderCommonHLSLFunc.hlsli:299-307; the render width halves into the two
+    // fields). params.exposure.z is set while the direct pass runs; the raster and debug modes leave
+    // it zero and read nothing.
+    float3 direct = (float3)0.0;
+    if (params.exposure.z != 0.0)
+    {
+        uint width, height;
+        albedoTexture.GetDimensions( width, height );
+
+        const int2 p = clamp( int2( uv * float2( width, height ) ), int2( 0, 0 ), int2( width - 1, height - 1 ) );
+        const int sep = (int)width / 2;
+        const int odd = ( p.x + p.y % 2 ) % 2;
+        const int2 cb = int2( odd * sep + p.x / 2, p.y );
+
+        direct = decodeE5B9G9R9( directTexture.Load( cb ).r );
+    }
+
     // The exposure scales the linear HDR value, then the monotone x / (1 + x) curve folds the
-    // unbounded result into [0, 1) before it reaches the display attachment.
-    const float3 exposed = albedo * params.exposure.x;
+    // unbounded result into [0, 1) before it reaches the display attachment. The direct term is
+    // added to the albedo, the A4.2 diagnostic compose (sky pixels keep their color).
+    const float3 illuminated = albedo * ( 1.0 + direct );
+    const float3 exposed = illuminated * params.exposure.x;
     const float3 display = exposed / (1.0 + exposed);
 
     return float4( display, 1.0 );

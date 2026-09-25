@@ -20,6 +20,10 @@
 
 #version 460
 
+// The packed unfiltered-direct image is decoded with the shared helper, exactly as every other
+// shader that reads a packed framebuffer does.
+#include "Utils.h"
+
 layout(location = 0) in vec2 vUV;
 layout(location = 0) out vec4 oColor;
 
@@ -33,11 +37,13 @@ layout(location = 0) out vec4 oColor;
 layout(std140, set = 0, binding = 256) uniform RhiPresentParams
 {
     vec4 exposure; // x = exposure multiplier applied before the curve; y = vertical mirror of the
-                   // sample coordinate (0 or 1); z and w are unused
+                   // sample coordinate (0 or 1); z = non-zero enables the direct-lighting term of
+                   // the traced chain; w unused
 } params;
 
 layout(set = 0, binding = 0) uniform texture2D albedoTexture;
 layout(set = 0, binding = 128) uniform sampler albedoTexture_Sampler;
+layout(set = 0, binding = 384, r32ui) uniform uimage2D directTexture;
 
 void main()
 {
@@ -53,9 +59,29 @@ void main()
     // and an implicit LOD would make the presented image depend on the screen's derivative.
     const vec3 albedo = textureLod(sampler2D(albedoTexture, albedoTexture_Sampler), uv, 0.0).rgb;
 
+    // The direct-lighting term of the traced chain: the image is checkerboard-packed, so this
+    // screen pixel's trace is addressed through the same mapping the raygens write with
+    // (getCheckerboardPix, ShaderCommonGLSLFunc.h:332-341; the render width halves into the two
+    // fields). params.exposure.z is set while the direct pass runs; the raster and debug modes leave
+    // it zero and read nothing.
+    vec3 direct = vec3(0.0);
+    if (params.exposure.z != 0.0)
+    {
+        const ivec2 size = textureSize(sampler2D(albedoTexture, albedoTexture_Sampler), 0);
+
+        const ivec2 p = clamp( ivec2( uv * vec2(size) ), ivec2(0), size - ivec2(1) );
+        const int sep = size.x / 2;
+        const int odd = ( p.x + p.y % 2 ) % 2;
+        const ivec2 cb = ivec2( odd * sep + p.x / 2, p.y );
+
+        direct = decodeE5B9G9R9( imageLoad(directTexture, cb).r );
+    }
+
     // The exposure scales the linear HDR value, then the monotone x / (1 + x) curve folds the
-    // unbounded result into [0, 1) before it reaches the display attachment.
-    const vec3 exposed = albedo * params.exposure.x;
+    // unbounded result into [0, 1) before it reaches the display attachment. The direct term is
+    // added to the albedo, the A4.2 diagnostic compose (sky pixels keep their color).
+    const vec3 illuminated = albedo * ( 1.0 + direct );
+    const vec3 exposed = illuminated * params.exposure.x;
     const vec3 display = exposed / (1.0 + exposed);
 
     oColor = vec4(display, 1.0);

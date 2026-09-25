@@ -24,7 +24,9 @@
 
 #include "RhiAccelStructs.h"
 #include "RhiDebugTracePass.h"
+#include "RhiRtDirectPass.h"
 #include "RhiRtPrimaryPass.h"
+#include "RhiTextureSource.h"
 #include "RhiDescriptors.h"
 #include "RhiFrameContext.h"
 #include "RhiPipeline.h"
@@ -82,6 +84,7 @@ NvrhiFrameSkeleton::NvrhiFrameSkeleton(nvrhi::IDevice *pDevice,
                                        rhi::RhiAccelStructs *pAccelStructs,
                                        RhiDebugTracePass *pDebugTracePass,
                                        RhiRtPrimaryPass *pRtPrimaryPass,
+                                       RhiRtDirectPass *pRtDirectPass,
                                        FrameMode mode,
                                        PrintFunction pfnPrint)
     : device(dynamic_cast<nvrhi::vulkan::IDevice *>(pDevice))
@@ -90,6 +93,7 @@ NvrhiFrameSkeleton::NvrhiFrameSkeleton(nvrhi::IDevice *pDevice,
     , accelStructs(pAccelStructs)
     , debugTracePass(pDebugTracePass)
     , rtPrimaryPass(pRtPrimaryPass)
+    , rtDirectPass(pRtDirectPass)
     , frameMode(mode)
     , textureTable(pTextureTable)
     , frameContext(pFrameContext)
@@ -129,8 +133,9 @@ NvrhiFrameSkeleton::NvrhiFrameSkeleton(nvrhi::IDevice *pDevice,
         return;
     }
 
-    // The two ray-tracing passes are hard dependencies only of their own modes; a pass whose flag
-    // is off is not created by the host at all.
+    // The ray-tracing passes are hard dependencies only of their own modes; a pass whose flag is
+    // off is not created by the host at all. The traced chain needs both of its passes: they share
+    // the pipeline layouts and the per-slot sets, and one without the other is a half-wired frame.
     if (frameMode == FrameMode::DebugTrace && (debugTracePass == nullptr || !debugTracePass->IsCreated()))
     {
         print("Warning: RHI: the debug-traced frame needs the debug ray-tracing pass of the RHI layer");
@@ -138,9 +143,11 @@ NvrhiFrameSkeleton::NvrhiFrameSkeleton(nvrhi::IDevice *pDevice,
         return;
     }
 
-    if (frameMode == FrameMode::PrimaryTrace && (rtPrimaryPass == nullptr || !rtPrimaryPass->IsCreated()))
+    if (frameMode == FrameMode::Traced &&
+        (rtPrimaryPass == nullptr || !rtPrimaryPass->IsCreated() ||
+         rtDirectPass == nullptr || !rtDirectPass->IsCreated()))
     {
-        print("Warning: RHI: the primary-traced frame needs the primary ray-tracing pass of the RHI layer");
+        print("Warning: RHI: the traced frame needs the primary and the direct ray-tracing passes of the RHI layer");
         unavailable = true;
         return;
     }
@@ -360,6 +367,19 @@ bool NvrhiFrameSkeleton::Render(const Swapchain *pSwapchain, uint32_t frameIndex
             }
         }
 
+        // The A4.2 switches, forced for the traced chain until A4.4/A4.5 lift them:
+        //  - fltEnable[0] = 0 makes q2GetIsGradient return before reading the gradient-sample-
+        //    position image, which the traced chain never writes under `rhiframe` (the ASVGF chain
+        //    is A4.5);
+        //  - q2LightStatsMode = 0 makes the direct raygen skip the light-stats read and write, so
+        //    the engine's 144 MiB statistics buffer is bound but never accessed - the RHI path has
+        //    no clear or fill for it (the legacy ResetLightStats runs only from the bypassed path).
+        if (tracedFrame)
+        {
+            sky.uniform->GetData()->fltEnable[0] = 0.0f;
+            sky.uniform->GetData()->q2LightStatsMode = 0;
+        }
+
         rhi::writeBuffer(commandList, worldUniformBuffer, sky.uniform->GetData(), sizeof(ShGlobalUniform));
     }
 
@@ -409,7 +429,7 @@ bool NvrhiFrameSkeleton::Render(const Swapchain *pSwapchain, uint32_t frameIndex
             skyPass->RenderWorld(commandList, sky.worldDraws, sky.worldDrawCount, sky.applyVertexColorGamma);
         }
     }
-    else if (frameMode == FrameMode::PrimaryTrace && rtPrimaryPass != nullptr && sky.framebuffers != nullptr)
+    else if (frameMode == FrameMode::Traced && rtPrimaryPass != nullptr && sky.framebuffers != nullptr)
     {
         // The real ray-tracing first cut: the engine's primary-visibility raygen fills the slot's
         // checkerboard G-buffer images (ALBEDO included) over the TLAS the stream above built. The
@@ -440,6 +460,21 @@ bool NvrhiFrameSkeleton::Render(const Swapchain *pSwapchain, uint32_t frameIndex
             passVertexData,
             sky.framebuffers,
             sky.width, sky.height);
+
+        // The direct-lighting pass reads what the primary just wrote (the G-buffer, the Q2 cluster
+        // and the seed) and the frame's light buffers; it records on the same list right after the
+        // primary, the order the legacy frame uses (VulkanDevice.cpp:901 then :1039) and the order
+        // its state announcements and the present's direct read assume.
+        if (rtDirectPass != nullptr)
+        {
+            rtDirectPass->Render(
+                commandList, frameIndex,
+                accelStructs != nullptr ? accelStructs->GetTopLevel(frameIndex) : nullptr,
+                worldUniformBuffer.Get(),
+                passVertexData,
+                sky.framebuffers,
+                sky.width, sky.height);
+        }
     }
     else if (debugTracePass != nullptr && sky.framebuffers != nullptr)
     {
@@ -463,8 +498,12 @@ bool NvrhiFrameSkeleton::Render(const Swapchain *pSwapchain, uint32_t frameIndex
     }
 
     // The present samples the ALBEDO wrap of this slot. The pass is the only owner of the wrap, so
-    // the handle is borrowed and only valid until the pass re-wraps the slot.
+    // the handle is borrowed and only valid until the pass re-wraps the slot. The direct term's
+    // image is the skeleton's own wrap (ResolvePresentDirectTexture): every mode resolves it,
+    // because the layout's unordered-access item is always filled, but the shader reads it only
+    // while the traced chain runs (the params flag below).
     nvrhi::ITexture *albedo = skyPass != nullptr ? skyPass->GetAlbedoTexture(frameIndex) : nullptr;
+    nvrhi::ITexture *directTexture = albedo != nullptr ? ResolvePresentDirectTexture(frameIndex, sky) : nullptr;
 
     if (albedo == nullptr)
     {
@@ -477,20 +516,31 @@ bool NvrhiFrameSkeleton::Render(const Swapchain *pSwapchain, uint32_t frameIndex
             print("Warning: RHI: the present has no ALBEDO target, the swapchain image is left untouched");
         }
     }
-    else if (PreparePresentBindingSet(frameIndex, albedo))
+    else if (directTexture != nullptr && PreparePresentBindingSet(frameIndex, albedo, directTexture))
     {
         // The exposure of the present: the write takes the next version of the volatile buffer and,
         // as every volatile-buffer write, has to follow the list's open(), which BeginSlot did.
         // exposure.y is the mirror flag of the frame's mode: the engine-convention traced frames
         // need the present to flip the sample coordinate (RhiPresent.frag.hlsl:64-76), the raster
         // and debug-trace frames do not (the debug raygen flips its own store,
-        // RhiDebugTrace.rgen.hlsl:107-114).
+        // RhiDebugTrace.rgen.hlsl:107-114). exposure.z enables the direct-lighting term, which only
+        // the traced chain has.
+        const bool traced = frameMode == FrameMode::Traced;
         RhiPresentParams presentParams = PRESENT_PARAMS;
-        presentParams.exposure[1] = frameMode == FrameMode::PrimaryTrace ? 1.0f : 0.0f;
+        presentParams.exposure[1] = traced ? 1.0f : 0.0f;
+        presentParams.exposure[2] = traced ? 1.0f : 0.0f;
         rhi::writeBuffer(commandList, presentParamsBuffer, &presentParams, sizeof(presentParams));
 
         // The swapchain hands the image over in the present layout and expects it
         // back in the same layout, so the pass is wrapped into two transitions.
+        // The direct term is read through its storage image; a Texture_UAV binding requires the
+        // image's true state - UnorderedAccess, i.e. the GENERAL layout the engine leaves its
+        // framebuffer images in and the direct pass writes them in (RhiTextureSource.h:123-134). The
+        // announcement makes the first use of every list transition-free; nothing restores the
+        // state afterwards, because UnorderedAccess is exactly what the engine and the next frame's
+        // trace expect.
+        commandList->beginTrackingTextureState(directTexture, nvrhi::AllSubresources, nvrhi::ResourceStates::UnorderedAccess);
+
         commandList->beginTrackingTextureState(backBuffer, nvrhi::AllSubresources, nvrhi::ResourceStates::Present);
         commandList->setTextureState(backBuffer, nvrhi::AllSubresources, nvrhi::ResourceStates::RenderTarget);
 
@@ -650,15 +700,17 @@ bool NvrhiFrameSkeleton::LoadShader(const char *pFileName, nvrhi::ShaderType typ
 
 bool NvrhiFrameSkeleton::CreatePassResources()
 {
-    // The three bindings of the present, at the NVRHI slots whose Vulkan binding numbers the shader
+    // The four bindings of the present, at the NVRHI slots whose Vulkan binding numbers the shader
     // spells [[vk::binding(...)]] for: the constant buffer at 256, the ALBEDO texture at 0 and its
-    // sampler at 128 (the slot-to-binding rule is documented in RhiPipeline.h). The layout becomes
-    // descriptor set 0, the only set RhiPresent.frag declares.
+    // sampler at 128, and the storage image of the direct term at 384 - the default offset of an
+    // unordered-access view of slot 0 (nvrhi.h:2066-2072; the slot-to-binding rule is documented in
+    // RhiPipeline.h). The layout becomes descriptor set 0, the only set RhiPresent.frag declares.
     const nvrhi::BindingLayoutItem layoutItems[] =
     {
         nvrhi::BindingLayoutItem::VolatileConstantBuffer(0),
         nvrhi::BindingLayoutItem::Texture_SRV(0),
         nvrhi::BindingLayoutItem::Sampler(0),
+        nvrhi::BindingLayoutItem::Texture_UAV(0),
     };
 
     bindingLayout = rhi::createBindingLayout(device, layoutItems, "RhiPresent bindings");
@@ -706,15 +758,71 @@ bool NvrhiFrameSkeleton::CreatePassResources()
     return true;
 }
 
-bool NvrhiFrameSkeleton::PreparePresentBindingSet(uint32_t frameIndex, nvrhi::ITexture *albedo)
+nvrhi::ITexture *NvrhiFrameSkeleton::ResolvePresentDirectTexture(uint32_t frameIndex, const SkyFrameInputs &sky)
 {
     assert(frameIndex < MAX_FRAMES_IN_FLIGHT);
 
-    // The set references exactly one texture, so it follows the slot's wrap: the sky pass replaces
-    // the wrap when the engine re-creates its framebuffers and, with them, the ALBEDO images
-    // (Framebuffers::PrepareForSize), and a set built for the old wrap would sample an image that is
-    // on its way out.
-    if (presentBindingSets[frameIndex] != nullptr && presentAlbedoTextures[frameIndex].Get() == albedo)
+    if (sky.framebuffers == nullptr || sky.width == 0 || sky.height == 0)
+    {
+        return nullptr;
+    }
+
+    const auto [image, view, format] = sky.framebuffers->GetImageHandles(FB_IMAGE_INDEX_UNFILTERED_DIRECT, frameIndex);
+    const uint64_t handle = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(image));
+
+    if (handle == 0)
+    {
+        if (!warnedMissingDirect)
+        {
+            warnedMissingDirect = true;
+            print("Warning: RHI: the present has no direct-lighting image, the frame is left untouched");
+        }
+        return nullptr;
+    }
+
+    if (presentDirectTextures[frameIndex] == nullptr || presentDirectImageHandles[frameIndex] != handle)
+    {
+        // The image is new or the engine re-created its framebuffers (the same point at which the
+        // sky pass re-wraps ALBEDO): the previous wrap goes through the retire queue, and the new
+        // one is announced to the present's list by Render.
+        if (presentDirectTextures[frameIndex] != nullptr && frameContext != nullptr)
+        {
+            frameContext->Retire(presentDirectTextures[frameIndex]);
+        }
+
+        presentDirectTextures[frameIndex] = rhi::wrapEngineStorageImage(
+            device, handle,
+            static_cast<uint64_t>(reinterpret_cast<uintptr_t>(view)), format,
+            sky.width, sky.height,
+            "RhiPresent direct image frame " + std::to_string(frameIndex));
+        presentDirectImageHandles[frameIndex] = handle;
+
+        if (presentDirectTextures[frameIndex] == nullptr)
+        {
+            if (!warnedMissingDirect)
+            {
+                warnedMissingDirect = true;
+                print("Warning: RHI: failed to wrap the direct-lighting image, the frame is left untouched");
+            }
+            return nullptr;
+        }
+    }
+
+    return presentDirectTextures[frameIndex].Get();
+}
+
+bool NvrhiFrameSkeleton::PreparePresentBindingSet(uint32_t frameIndex, nvrhi::ITexture *albedo,
+                                                  nvrhi::ITexture *directTexture)
+{
+    assert(frameIndex < MAX_FRAMES_IN_FLIGHT);
+
+    // The set references the slot's ALBEDO wrap and its direct-term image, so it follows both: the
+    // sky pass replaces the ALBEDO wrap when the engine re-creates its framebuffers, and
+    // ResolvePresentDirectTexture replaces the direct wrap at the same point. A set built for a
+    // replaced wrap would sample an image that is on its way out.
+    if (presentBindingSets[frameIndex] != nullptr &&
+        presentAlbedoTextures[frameIndex].Get() == albedo &&
+        presentDirectSetTextures[frameIndex].Get() == directTexture)
     {
         return true;
     }
@@ -723,6 +831,7 @@ bool NvrhiFrameSkeleton::PreparePresentBindingSet(uint32_t frameIndex, nvrhi::IT
     setDesc.addItem(nvrhi::BindingSetItem::ConstantBuffer(0, presentParamsBuffer));
     setDesc.addItem(nvrhi::BindingSetItem::Texture_SRV(0, albedo));
     setDesc.addItem(nvrhi::BindingSetItem::Sampler(0, presentSampler));
+    setDesc.addItem(nvrhi::BindingSetItem::Texture_UAV(0, directTexture));
 
     nvrhi::BindingSetHandle bindingSet = device->createBindingSet(setDesc, bindingLayout);
     if (bindingSet == nullptr)
@@ -732,7 +841,7 @@ bool NvrhiFrameSkeleton::PreparePresentBindingSet(uint32_t frameIndex, nvrhi::IT
     }
 
     // Anything a recorded list may still reference has to go through the frame context's retire
-    // queue (RhiFrameContext.h): the old set and the texture handle it held are released only after
+    // queue (RhiFrameContext.h): the old set and the texture handles it held are released only after
     // the queue finished the submission that could still use them.
     if (frameContext != nullptr)
     {
@@ -745,10 +854,16 @@ bool NvrhiFrameSkeleton::PreparePresentBindingSet(uint32_t frameIndex, nvrhi::IT
         {
             frameContext->Retire(presentAlbedoTextures[frameIndex]);
         }
+
+        if (presentDirectSetTextures[frameIndex] != nullptr)
+        {
+            frameContext->Retire(presentDirectSetTextures[frameIndex]);
+        }
     }
 
     presentBindingSets[frameIndex] = std::move(bindingSet);
     presentAlbedoTextures[frameIndex] = albedo;
+    presentDirectSetTextures[frameIndex] = directTexture;
     return true;
 }
 
@@ -856,14 +971,26 @@ void NvrhiFrameSkeleton::DestroySwapchainResources()
         rtPrimaryPass->ReleaseTargets();
     }
 
-    // A present binding set references the ALBEDO wrap of one slot, so it goes with it; the next
-    // frame builds a set for the new wrap. Every caller runs after a device wait - the destructor
-    // and OnSwapchainDestroy wait themselves, and the swapchain's re-create waits before it
-    // notifies - so the handles can be dropped directly instead of through the retire queue.
+    // The direct-lighting pass wraps its twelve set-1 images kept alongside their light-buffer
+    // wraps, so it drops them here for the same reason. The light buffers themselves outlive a
+    // resize; the next Render re-wraps them.
+    if (rtDirectPass != nullptr)
+    {
+        rtDirectPass->ReleaseTargets();
+    }
+
+    // A present binding set references the ALBEDO wrap and the direct-term image of one slot, so it
+    // goes with them; the next frame builds a set for the new wraps. Every caller runs after a
+    // device wait - the destructor and OnSwapchainDestroy wait themselves, and the swapchain's
+    // re-create waits before it notifies - so the handles can be dropped directly instead of
+    // through the retire queue.
     for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
     {
         presentBindingSets[i] = nullptr;
         presentAlbedoTextures[i] = nullptr;
+        presentDirectSetTextures[i] = nullptr;
+        presentDirectTextures[i] = nullptr;
+        presentDirectImageHandles[i] = 0;
     }
 
     swapchainFramebuffers.clear();

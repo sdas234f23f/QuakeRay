@@ -155,6 +155,21 @@ public:
 
     bool IsCreated() const { return created; }
 
+    // The handles the direct-lighting sibling (RhiRtDirectPass, A4.2a) shares instead of building
+    // its own: the two pipelines cannot own equal-but-distinct layouts for the positions they share
+    // - the backend accepts a state's binding set only when it was created over the very layout
+    // handle the pipeline declared (validation-commandlist.cpp:509-520) - and the empty layout
+    // (bound at 5, 7, 8, 9 and 10 by the sibling) and the ray-stats layout/set (11) are cheap to
+    // hand over as they are. Read-only: the handles are owned here, stay valid while this object is
+    // created, and the sibling must not outlive it.
+    nvrhi::BindingLayoutHandle GetTlasLayout() const { return tlasLayout; }
+    nvrhi::BindingLayoutHandle GetUniformLayout() const { return uniformLayout; }
+    nvrhi::BindingLayoutHandle GetVertexDataLayout() const { return vertexDataLayout; }
+    nvrhi::BindingLayoutHandle GetHoleLayout() const { return holeLayout; }
+    nvrhi::BindingLayoutHandle GetRayStatsLayout() const { return rayStatsLayout; }
+    nvrhi::BindingSetHandle GetHoleSet() const { return holeSet; }
+    nvrhi::BindingSetHandle GetRayStatsSet() const { return rayStatsSet; }
+
     // One call per frame, on the frame context's open command list of 'frameIndex'. 'pTopLevel' is
     // the RHI acceleration-structure stream's top-level structure of the slot
     // (RhiAccelStructs::GetTopLevel); 'pUniformBuffer' is the engine's global uniform as a static

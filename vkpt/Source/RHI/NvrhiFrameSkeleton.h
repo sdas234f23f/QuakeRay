@@ -39,6 +39,7 @@ namespace vkpt
 class Framebuffers;
 class GlobalUniform;
 class RhiDebugTracePass;
+class RhiRtDirectPass;
 class RhiRtPrimaryPass;
 class RhiSkyPass;
 class Swapchain;
@@ -127,18 +128,19 @@ public:
     };
 
     // The frame mode of the whole run, chosen by the host from the library config flags:
-    //  - Rasterized:   'rhirt' and 'rhitrace' off - the raster sky and world sub-passes draw into
-    //                  ALBEDO and the present samples it;
-    //  - DebugTrace:   'rhitrace' - the A3.1 debug trace of the acceleration structures (the
-    //                  id-coloured image) replaces the raster sub-passes;
-    //  - PrimaryTrace: 'rhirt' - the real primary-visibility ray-tracing pass of A4.1 fills the
-    //                  engine's checkerboard G-buffer (ALBEDO included) and the present samples it.
+    //  - Rasterized: 'rhirt' and 'rhitrace' off - the raster sky and world sub-passes draw into
+    //                ALBEDO and the present samples it;
+    //  - DebugTrace: 'rhitrace' - the A3.1 debug trace of the acceleration structures (the
+    //                id-coloured image) replaces the raster sub-passes;
+    //  - Traced:     'rhirt' - the real ray-tracing chain of A4: the primary-visibility pass fills
+    //                the engine's checkerboard G-buffer and the direct-lighting pass (A4.2) adds
+    //                the light term, which the present composes as its diagnostic.
     // The host resolves 'rhirt' over 'rhitrace' when both are set.
     enum class FrameMode
     {
         Rasterized,
         DebugTrace,
-        PrimaryTrace,
+        Traced,
     };
 
     // 'pTextureTable' is the shared RHI texture table of the host (RHI/RhiTextureTable.h), bound by
@@ -157,9 +159,14 @@ public:
     // the raster chain would draw into - instead of the raster sky/world sub-passes. Not owned; a
     // null or not-created one with that mode makes the skeleton unavailable.
     // 'pRtPrimaryPass' is the host's primary-visibility ray-tracing pass (RhiRtPrimaryPass,
-    // RHI/RhiRtPrimaryPass.h): when 'mode' is PrimaryTrace, Render drives it - into the engine's
+    // RHI/RhiRtPrimaryPass.h): when 'mode' is Traced, Render drives it - into the engine's
     // checkerboard G-buffer images, ALBEDO included. Not owned; a null or not-created one with
     // that mode makes the skeleton unavailable.
+    // 'pRtDirectPass' is the host's direct-lighting ray-tracing pass (RhiRtDirectPass,
+    // RHI/RhiRtDirectPass.h): when 'mode' is Traced, Render drives it right after the primary - it
+    // borrows the primary's shared layout handles, so the primary has to outlive it and be
+    // destroyed after it. Not owned; a null or not-created one with that mode makes the skeleton
+    // unavailable.
     explicit NvrhiFrameSkeleton(nvrhi::IDevice *pDevice,
                                 const Swapchain *pSwapchain,
                                 const char *pShaderFolderPath,
@@ -168,6 +175,7 @@ public:
                                 rhi::RhiAccelStructs *pAccelStructs,
                                 RhiDebugTracePass *pDebugTracePass,
                                 RhiRtPrimaryPass *pRtPrimaryPass,
+                                RhiRtDirectPass *pRtDirectPass,
                                 FrameMode mode,
                                 PrintFunction pfnPrint);
     ~NvrhiFrameSkeleton() override;
@@ -194,9 +202,9 @@ public:
     //    swapchain image of the acquired index;
     //  - DebugTrace: the debug pass traces one primary ray per pixel over the acceleration
     //    structures into the slot's ALBEDO and the same present follows;
-    //  - PrimaryTrace: the engine's primary-visibility raygen writes the slot's checkerboard
-    //    G-buffer (ALBEDO included) over the same acceleration structures and the same present
-    //    follows.
+    //  - Traced: the engine's primary-visibility raygen writes the slot's checkerboard G-buffer
+    //    (ALBEDO included) and, from A4.2 on, the direct-lighting pass adds the light term; the
+    //    present composes the two and follows.
     // The raster sky/world sub-passes are not recorded in the two traced modes.
     // 'semaphoreToWait' is the semaphore the swapchain signals on acquire, 'semaphoreToSignal' is
     // the one the presentation engine waits on. Returns false if the pass is unavailable.
@@ -221,10 +229,19 @@ private:
     // frame slot and is built by PreparePresentBindingSet once the slot's ALBEDO wrap is known.
     bool CreatePassResources();
 
-    // Creates or reuses the present binding set of 'frameIndex' for the slot's ALBEDO wrap: a
-    // regular NVRHI binding set holds one texture, and the pass replaces that wrap when the engine
-    // re-creates its framebuffers, so the set follows it.
-    bool PreparePresentBindingSet(uint32_t frameIndex, nvrhi::ITexture *albedo);
+    // Creates or reuses the present binding set of 'frameIndex' for the slot's ALBEDO wrap and the
+    // slot's direct-term storage image: a regular NVRHI binding set holds one item per texture, and
+    // both wraps are replaced when the engine re-creates its framebuffers, so the set follows them.
+    bool PreparePresentBindingSet(uint32_t frameIndex, nvrhi::ITexture *albedo, nvrhi::ITexture *directTexture);
+
+    // The direct term's storage image of the slot: the wrap of the engine's unfiltered-direct
+    // framebuffer image, created on the first frame the framebuffers exist and replaced when the
+    // engine re-created them (the same point at which the sky pass re-wraps ALBEDO). Every mode
+    // resolves it, because the layout's unordered-access item is always filled, but the shader
+    // reads it only while the traced chain runs. Returns null when the image is unavailable; the
+    // caller skips the present then, as it does without ALBEDO. The wrap is the skeleton's, so it
+    // is released with the other swapchain resources.
+    nvrhi::ITexture *ResolvePresentDirectTexture(uint32_t frameIndex, const SkyFrameInputs &sky);
 
     // The one-time world setup, called by Render on the first frame that got past the sky's
     // Prepare: wraps the engine's uniform and tonemapping buffers (once - the engine never
@@ -264,9 +281,14 @@ private:
     RhiDebugTracePass *debugTracePass = nullptr;
 
     // The host's primary-visibility ray-tracing pass (RhiRtPrimaryPass, RHI/RhiRtPrimaryPass.h),
-    // driven instead of the raster sky/world chain when frameMode is PrimaryTrace. Not owned; null
-    // when the host's 'rhirt' flag is off.
+    // driven instead of the raster sky/world chain when frameMode is Traced. Not owned; null when
+    // the host's 'rhirt' flag is off.
     RhiRtPrimaryPass *rtPrimaryPass = nullptr;
+
+    // The host's direct-lighting ray-tracing pass (RhiRtDirectPass, RHI/RhiRtDirectPass.h), driven
+    // right after the primary when frameMode is Traced. It borrows the primary's layout handles, so
+    // the host destroys it before the primary. Not owned; null when the host's 'rhirt' flag is off.
+    RhiRtDirectPass *rtDirectPass = nullptr;
 
     // The frame mode of the whole run: which chain Render records into ALBEDO. The host picks it
     // once from 'rhirt'/'rhitrace' (VulkanDevice_Init.cpp) and it does not change while the
@@ -274,19 +296,28 @@ private:
     FrameMode frameMode = FrameMode::Rasterized;
 
     // Descriptor set 0 of the present: the constant buffer (binding 256), the ALBEDO texture
-    // (binding 0) and its sampler (binding 128), the numbers the shader declares with
-    // [[vk::binding(...)]]; RhiPresent.frag declares no other set. The texture moves into one of the
-    // per-slot binding sets below, so only the layout, the buffer and the sampler live here.
+    // (binding 0) and its sampler (binding 128), and the direct term's storage image (binding 384),
+    // the numbers the shader declares with [[vk::binding(...)]]; RhiPresent.frag declares no other
+    // set. The textures move into the per-slot binding sets below, so only the layout, the buffer
+    // and the sampler live here.
     nvrhi::BindingLayoutHandle bindingLayout;
     nvrhi::BufferHandle presentParamsBuffer;
     nvrhi::SamplerHandle presentSampler;
 
     // One present binding set per frame slot: it references that slot's ALBEDO wrap (ALBEDO is a
-    // ping-pong engine image), so it cannot be shared across slots, and it is rebuilt when the pass
-    // re-wraps the slot (a framebuffer re-create). presentAlbedoTextures is what the rebuild
-    // compares against, and it keeps the wrap the set references alive.
+    // ping-pong engine image) and that slot's direct-term image, so it cannot be shared across
+    // slots, and it is rebuilt when either wrap is replaced (a framebuffer re-create).
+    // presentAlbedoTextures and presentDirectSetTextures are what the rebuild compares against, and
+    // they keep the textures the set references alive.
     nvrhi::BindingSetHandle presentBindingSets[MAX_FRAMES_IN_FLIGHT] = {};
     nvrhi::TextureHandle presentAlbedoTextures[MAX_FRAMES_IN_FLIGHT];
+    nvrhi::TextureHandle presentDirectSetTextures[MAX_FRAMES_IN_FLIGHT];
+
+    // The direct term's storage image wraps, one per frame slot: the skeleton owns them (the sky
+    // pass owns only ALBEDO), the image handle records what each was wrapped from so a framebuffer
+    // re-create replaces it, and every replaced wrap goes through the frame context's retire queue.
+    nvrhi::TextureHandle presentDirectTextures[MAX_FRAMES_IN_FLIGHT];
+    uint64_t presentDirectImageHandles[MAX_FRAMES_IN_FLIGHT] = {};
 
     // The shared RHI texture table (RhiTextureTable.h, owned by the host): the sky pass binds it as
     // descriptor set 0 and its slot 0 holds the engine's empty texture. Render also asks it to
@@ -322,6 +353,8 @@ private:
 
     // Set after the one-time warning that there is no ALBEDO wrap to present.
     bool warnedMissingAlbedo = false;
+    // One-shot for a missing or unwrappable direct-lighting image of the traced chain.
+    bool warnedMissingDirect = false;
 
     // Valid only for the format the pipeline was created with: the swapchain can
     // switch between its formats when it is recreated.
