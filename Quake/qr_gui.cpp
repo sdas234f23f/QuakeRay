@@ -730,18 +730,12 @@ int QR_GUI_ImagePick (const char *id, int64_t texture, int tex_w, int tex_h, flo
 {
 	ImGui::PushID (id);
 
-	float w = 260.0f;
-	float h = 260.0f;
+	float w = ImGui::GetContentRegionAvail ().x;
+	float h;
 
-	if (tex_w > 0 && tex_h > 0)
-	{
-		h = 260.0f * (float)tex_h / (float)tex_w;
-		if (h > 260.0f)
-		{
-			h = 260.0f;
-			w = 260.0f * (float)tex_w / (float)tex_h;
-		}
-	}
+	if (w < 32.0f)
+		w = 32.0f;
+	h = (tex_w > 0 && tex_h > 0) ? w * (float)tex_h / (float)tex_w : w;
 
 	const ImVec2 pos = ImGui::GetCursorScreenPos ();
 	const ImVec2 size (w, h);

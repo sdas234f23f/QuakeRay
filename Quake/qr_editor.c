@@ -195,6 +195,10 @@ static struct
 	// the material group (animation frames) shown by the panel
 	rt_material_t *group[QRE_GROUP_MAX];
 	int            group_count;
+	// detached defaults for the animation frames a model pick shows before any
+	// of them has a yaml entry (each becomes a material on its first change)
+	rt_material_t  extra[QRE_GROUP_MAX];
+	int            extra_count;
 
 	// snapshot of both material lists for Cancel/Exit
 	rt_material_t *snap_global;
@@ -465,16 +469,28 @@ static void QRE_ReapplyTouched (void)
 }
 
 // A material created by the editor becomes part of the live global list on the
-// first change, so the synthesis (RT_MAT_Find) can see it.
+// first change, so the synthesis (RT_MAT_Find) can see it. The detached
+// defaults are qre.tmp_mat and the qre.extra frames of a model pick.
+static qboolean QRE_IsDetached (const rt_material_t *m)
+{
+	return m == &qre.tmp_mat || (m >= &qre.extra[0] && m < &qre.extra[QRE_GROUP_MAX]);
+}
+
 static void QRE_EnsureLive (int g)
 {
-	if (qre.group[g] != &qre.tmp_mat || qre.tmp_appended)
+	rt_material_t *m = qre.group[g];
+	int            idx;
+
+	if (!QRE_IsDetached (m))
+		return;
+	if (m == &qre.tmp_mat && qre.tmp_appended)
 		return;
 
-	int idx = RT_MAT_AppendGlobal (&qre.tmp_mat);
+	idx = RT_MAT_AppendGlobal (m);
 	if (idx >= 0)
 	{
-		qre.tmp_appended = true;
+		if (m == &qre.tmp_mat)
+			qre.tmp_appended = true;
 		qre.group[g] = RT_MAT_GetList (RT_MAT_LIST_GLOBAL, NULL) + idx;
 	}
 	else
@@ -665,6 +681,92 @@ static int QRE_CompareMats (const void *a, const void *b)
 	return strcmp (ma->name, mb->name);
 }
 
+// A detached default for one animation frame of a model: named exactly as the
+// engine names its skin texture, so the first change to it resolves to that
+// texture (the synthesis looks the texture's own name up).
+static void QRE_AddFrameDefault (const char *groupbase, gltexture_t *glt)
+{
+	char name[MAX_QPATH];
+	char *dot;
+	int   i;
+
+	if (!glt || !glt->name[0])
+		return;
+
+	RT_MAT_NormalizeName (glt->name, name, sizeof (name));
+	dot = strrchr (name, '.');
+	if (dot && !strchr (dot, ':'))
+		*dot = '\0';
+
+	// only the frames of the model that was picked
+	if (strncmp (name, groupbase, strlen (groupbase)) != 0)
+		return;
+
+	for (i = 0; i < qre.group_count; i++)
+	{
+		if (!strcmp (qre.group[i]->name, name))
+			return; // already shown (authored or added)
+	}
+
+	if (qre.extra_count >= QRE_GROUP_MAX)
+		return;
+
+	QRE_InitDefault (&qre.extra[qre.extra_count], name);
+	qre.group[qre.group_count++] = &qre.extra[qre.extra_count++];
+}
+
+// Every animation frame the picked model has, whether or not a material names
+// it. Without this a frame with no yaml entry opened a block named after the
+// model base -- a name no texture ever resolves to -- so editing it changed
+// nothing on screen.
+static void QRE_AddModelFrames (const char *groupbase)
+{
+	qmodel_t *model = qre.pick_model;
+	int       i, j;
+
+	if (!model || (model->type != mod_alias && model->type != mod_sprite))
+		return;
+
+	if (model->type == mod_alias)
+	{
+		aliashdr_t *hdr = (aliashdr_t *)Mod_Extradata (model);
+
+		if (!hdr)
+			return;
+
+		for (i = 0; i < hdr->numskins && qre.group_count < QRE_GROUP_MAX; i++)
+			for (j = 0; j < 4 && qre.group_count < QRE_GROUP_MAX; j++)
+				QRE_AddFrameDefault (groupbase, hdr->gltextures[i][j]);
+	}
+	else
+	{
+		msprite_t *psprite = (msprite_t *)model->extradata;
+
+		if (!psprite)
+			return;
+
+		for (i = 0; i < psprite->numframes && qre.group_count < QRE_GROUP_MAX; i++)
+		{
+			mspriteframe_t *frame = NULL;
+
+			if (psprite->frames[i].type == SPR_SINGLE)
+			{
+				frame = psprite->frames[i].frameptr;
+			}
+			else
+			{
+				mspritegroup_t *group = (mspritegroup_t *)psprite->frames[i].frameptr;
+
+				if (group && group->numframes > 0)
+					frame = group->frames[0];
+			}
+
+			if (frame)
+				QRE_AddFrameDefault (groupbase, frame->gltexture);
+		}
+	}
+}
+
 // Builds the group of materials for a texture name (all animation frames).
 static void QRE_ResolveGroup (const char *texname)
 {
@@ -674,6 +776,7 @@ static void QRE_ResolveGroup (const char *texname)
 	QRE_GroupBaseOf (texname, groupbase, sizeof (groupbase));
 
 	qre.group_count = 0;
+	qre.extra_count = 0;
 	qre.tmp_appended = false;
 
 	// the map list wins over the global list for duplicate names
@@ -703,6 +806,9 @@ static void QRE_ResolveGroup (const char *texname)
 			qre.group[qre.group_count++] = &list[i];
 		}
 	}
+
+	// the frames the model has but no material names yet get their own blocks
+	QRE_AddModelFrames (groupbase);
 
 	if (qre.group_count == 0)
 	{
