@@ -1013,6 +1013,9 @@ void _Host_Frame (double time)
 		Con_Printf ("%5.2f tot %5.2f server %5.2f gfx %5.2f snd\n", pass1 + pass2 + pass3, pass1, pass2, pass3);
 	}
 
+	if (RT_Bench_Active ())
+		RT_Bench_HostFrame (Sys_DoubleTime ());
+
 	host_framecount++;
 }
 

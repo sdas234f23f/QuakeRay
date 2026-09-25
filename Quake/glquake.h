@@ -737,5 +737,31 @@ void   RT_Prof_FrameStart (void);
 void   RT_Prof_FrameEnd (void);
 void   RT_Prof_Update (void);
 
+// rt_bench: the frame profiler summed over a demo run. CL_Bench_f starts the accumulation when
+// the timedemo clock starts and RT_Bench_Report appends the averages and maxima to
+// benchmark.log when the demo ends; the profiler is forced on for the run.
+typedef struct
+{
+	qboolean valid;
+	char     demo[MAX_QPATH];
+	int      frames;
+	double   seconds;
+	double   frameAvgMs, frameMinMs, frameMaxMs;
+	double   fpsAvg, fpsMin, fpsMax;
+} rt_bench_result_t;
+
+// Filled by RT_Bench_Report; the results screen of the benchmark menu reads it.
+extern rt_bench_result_t rt_bench_result;
+
+qboolean RT_Bench_Active (void);
+void     RT_Bench_Start (void);
+void     RT_Bench_Stop (void);
+// Marks a run that ended before its demo did (a map change, a disconnect): the report says so.
+void     RT_Bench_Interrupt (void);
+qboolean RT_Bench_Interrupted (void);
+// One whole host frame, from _Host_Frame: what the results screen's FPS and frametime mean.
+void     RT_Bench_HostFrame (double now);
+void     RT_Bench_Report (const char *demo);
+
 
 #endif /* GLQUAKE_H */

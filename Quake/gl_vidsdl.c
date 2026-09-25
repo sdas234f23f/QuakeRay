@@ -317,9 +317,118 @@ static double   rt_prof_window_start;
 static int      rt_prof_frames;
 static qboolean rt_prof_active;
 
+/* rt_bench: the same slots, summed over a whole demo run instead of maximized over a one
+   second window. The on-screen panel wants the worst frame of the window; a benchmark wants
+   the cost of an average frame, so every slot is added up and the longest one kept as well.
+   The run is started by CL_Bench_f when the timedemo clock starts and reported when the demo
+   ends, and the profiler is forced on for its duration whatever rt_stats asks for. */
+static qboolean rt_bench_active;
+static qboolean rt_bench_interrupted;
+static int      rt_bench_frames;
+static int      rt_bench_hostframes;
+static double   rt_bench_start_time;
+static double   rt_bench_frame_min;
+static double   rt_bench_host_last;
+static double   rt_bench_host_sum;
+static double   rt_bench_host_min;
+static double   rt_bench_host_max;
+static double   rt_bench_sum[RT_PROF_COUNT];
+static double   rt_bench_max[RT_PROF_COUNT];
+
+/* What the results screen of the benchmark menu shows, filled by RT_Bench_Report. */
+rt_bench_result_t rt_bench_result;
+
+qboolean RT_Bench_Active (void)
+{
+	return rt_bench_active;
+}
+
+void RT_Bench_Start (void)
+{
+	rt_bench_active = true;
+	rt_bench_interrupted = false;
+	rt_bench_frames = 0;
+	rt_bench_hostframes = 0;
+	rt_bench_start_time = Sys_DoubleTime ();
+	rt_bench_frame_min = 0.0;
+	rt_bench_host_last = 0.0;
+	rt_bench_host_sum = 0.0;
+	rt_bench_host_min = 0.0;
+	rt_bench_host_max = 0.0;
+	memset (rt_bench_sum, 0, sizeof (rt_bench_sum));
+	memset (rt_bench_max, 0, sizeof (rt_bench_max));
+	rt_cluster_cache_hits = 0;
+	rt_cluster_cache_misses = 0;
+	rt_cluster_miss_set = 0;
+	rt_cluster_miss_move = 0;
+	rt_cluster_miss_other = 0;
+}
+
+void RT_Bench_Stop (void)
+{
+	rt_bench_active = false;
+}
+
+void RT_Bench_Interrupt (void)
+{
+	if (rt_bench_active)
+		rt_bench_interrupted = true;
+}
+
+qboolean RT_Bench_Interrupted (void)
+{
+	return rt_bench_interrupted;
+}
+
+/*
+================
+RT_Bench_HostFrame
+
+The wall time of one whole host frame, sampled at the end of _Host_Frame. The profiler's frame
+slot brackets the screen update alone, which is what a CPU section report wants, but the FPS and
+the frametime the results screen shows are the frame the player watched, and the on-screen
+counter reads whole host frames.
+================
+*/
+void RT_Bench_HostFrame (double now)
+{
+	if (!rt_bench_active)
+		return;
+
+	if (rt_bench_host_last > 0.0)
+	{
+		const double ms = (now - rt_bench_host_last) * 1000.0;
+
+		if (ms > 0.0 && ms < 10000.0)
+		{
+			rt_bench_host_sum += ms;
+			if (rt_bench_hostframes == 0 || ms < rt_bench_host_min)
+				rt_bench_host_min = ms;
+			if (ms > rt_bench_host_max)
+				rt_bench_host_max = ms;
+			++rt_bench_hostframes;
+		}
+	}
+
+	rt_bench_host_last = now;
+}
+
+static void RT_Bench_Slot (int slot, double ms)
+{
+	if (!rt_bench_active)
+		return;
+
+	rt_bench_sum[slot] += ms;
+	if (ms > rt_bench_max[slot])
+		rt_bench_max[slot] = ms;
+
+	if (slot == RT_PROF_FRAME && (rt_bench_frames == 0 || ms < rt_bench_frame_min))
+		rt_bench_frame_min = ms;
+}
+
 double RT_Prof_Begin (void)
 {
-	return RT_StatsPanel (RT_STATS_PROFILE) ? Sys_DoubleTime () : 0.0;
+	return (RT_StatsPanel (RT_STATS_PROFILE) || rt_bench_active) ? Sys_DoubleTime () : 0.0;
 }
 
 void RT_Prof_End (int slot, double start)
@@ -328,19 +437,21 @@ void RT_Prof_End (int slot, double start)
 		return;
 
 	const double ms = (Sys_DoubleTime () - start) * 1000.0;
+	RT_Bench_Slot (slot, ms);
 	if (ms > rt_prof_ms[slot])
 		rt_prof_ms[slot] = ms;
 }
 
 void RT_Prof_Sample (int slot, double ms)
 {
+	RT_Bench_Slot (slot, ms);
 	if (ms > rt_prof_ms[slot])
 		rt_prof_ms[slot] = ms;
 }
 
 void RT_Prof_FrameStart (void)
 {
-	if (!RT_StatsPanel (RT_STATS_PROFILE))
+	if (!RT_StatsPanel (RT_STATS_PROFILE) && !rt_bench_active)
 		return;
 
 	rt_prof_frame_start = Sys_DoubleTime ();
@@ -349,10 +460,12 @@ void RT_Prof_FrameStart (void)
 
 void RT_Prof_FrameEnd (void)
 {
-	if (!RT_StatsPanel (RT_STATS_PROFILE))
+	if (!RT_StatsPanel (RT_STATS_PROFILE) && !rt_bench_active)
 		return;
 
 	RT_Prof_End (RT_PROF_FRAME, rt_prof_frame_start);
+	if (rt_bench_active)
+		++rt_bench_frames;
 }
 
 void RT_Prof_Update (void)
@@ -366,11 +479,14 @@ void RT_Prof_Update (void)
 		rt_prof_report.valid = false;
 		memset (rt_prof_ms, 0, sizeof (rt_prof_ms));
 		rt_prof_frames = 0;
-		rt_cluster_cache_hits = 0;
-		rt_cluster_cache_misses = 0;
-		rt_cluster_miss_set = 0;
-		rt_cluster_miss_move = 0;
-		rt_cluster_miss_other = 0;
+		if (!rt_bench_active)
+		{
+			rt_cluster_cache_hits = 0;
+			rt_cluster_cache_misses = 0;
+			rt_cluster_miss_set = 0;
+			rt_cluster_miss_move = 0;
+			rt_cluster_miss_other = 0;
+		}
 		return;
 	}
 
@@ -383,11 +499,15 @@ void RT_Prof_Update (void)
 		rt_prof_report.valid = false;
 		rt_prof_window_start = now;
 		rt_prof_frames = 0;
-		rt_cluster_cache_hits = 0;
-		rt_cluster_cache_misses = 0;
-		rt_cluster_miss_set = 0;
-		rt_cluster_miss_move = 0;
-		rt_cluster_miss_other = 0;
+		memset (rt_prof_ms, 0, sizeof (rt_prof_ms));
+		if (!rt_bench_active)
+		{
+			rt_cluster_cache_hits = 0;
+			rt_cluster_cache_misses = 0;
+			rt_cluster_miss_set = 0;
+			rt_cluster_miss_move = 0;
+			rt_cluster_miss_other = 0;
+		}
 		return;
 	}
 
@@ -422,13 +542,149 @@ void RT_Prof_Update (void)
 	rt_prof_report.clusterDropped = rt_cluster_last_dropped;
 	rt_prof_report.valid = true;
 
-	rt_cluster_cache_hits = 0;
-	rt_cluster_cache_misses = 0;
-	rt_cluster_miss_set = 0;
-	rt_cluster_miss_move = 0;
-	rt_cluster_miss_other = 0;
+	if (!rt_bench_active)
+	{
+		rt_cluster_cache_hits = 0;
+		rt_cluster_cache_misses = 0;
+		rt_cluster_miss_set = 0;
+		rt_cluster_miss_move = 0;
+		rt_cluster_miss_other = 0;
+	}
 	memset (rt_prof_ms, 0, sizeof (rt_prof_ms));
 	rt_prof_frames = 0;
+}
+
+/*
+================
+RT_Bench_Report
+
+Appends the accumulated profile of a demo run to benchmark.log in the game directory. The
+header names the demo, the frame count, the wall time and the settings that shape the host
+frame, so two runs can only differ in what the code does; every slot follows with its average
+and its longest time, and the cluster counters close the run. Play the same demo before and
+after a change and diff the two blocks, which is what the benchmark is for.
+================
+*/
+#define RT_BENCH_FILE "benchmark.log"
+
+static void RT_Bench_Setting (FILE *f, const char *name)
+{
+	const cvar_t *var = Cvar_FindVar (name);
+
+	// a name that no longer exists is marked instead of printed empty
+	fprintf (f, " %s=%s", name, var ? var->string : "?");
+}
+
+void RT_Bench_Report (const char *demo)
+{
+	char        path[MAX_OSPATH];
+	char        stamp[32];
+	time_t      now;
+	struct tm  *local;
+	FILE       *f;
+	const int    profiled = rt_bench_frames > 0 ? rt_bench_frames : 1;
+	const int    hostframes = rt_bench_hostframes;
+	const double seconds = (rt_bench_frames > 0 || hostframes > 0) ? (Sys_DoubleTime () - rt_bench_start_time) : 0.0;
+
+	if (!rt_bench_active)
+		return;
+
+	rt_bench_active = false;
+
+	/* The whole-frame numbers are the host frames, the ones the FPS counter and the player
+	   watched; the per-slot report below stays on the screen updates it sampled. */
+	const double frameAvg = hostframes > 0 ? rt_bench_host_sum / hostframes : rt_bench_sum[RT_PROF_FRAME] / profiled;
+	const double frameMin = hostframes > 0 ? rt_bench_host_min : (rt_bench_frame_min > 0.0 ? rt_bench_frame_min : frameAvg);
+	const double frameMax = hostframes > 0 ? rt_bench_host_max : rt_bench_max[RT_PROF_FRAME];
+	const int    frames = hostframes > 0 ? hostframes : rt_bench_frames;
+
+	rt_bench_result.valid = true;
+	q_strlcpy (rt_bench_result.demo, (demo && demo[0]) ? demo : "?", sizeof (rt_bench_result.demo));
+	rt_bench_result.frames = frames;
+	rt_bench_result.seconds = seconds;
+	rt_bench_result.frameAvgMs = frameAvg;
+	rt_bench_result.frameMinMs = frameMin;
+	rt_bench_result.frameMaxMs = frameMax;
+	rt_bench_result.fpsAvg = frameAvg > 0.0 ? 1000.0 / frameAvg : 0.0;
+	rt_bench_result.fpsMin = frameMax > 0.0 ? 1000.0 / frameMax : 0.0;
+	rt_bench_result.fpsMax = frameMin > 0.0 ? 1000.0 / frameMin : 0.0;
+
+	q_snprintf (path, sizeof (path), "%s/%s", com_gamedir, RT_BENCH_FILE);
+
+	now = time (NULL);
+	local = localtime (&now);
+	if (local)
+		strftime (stamp, sizeof (stamp), "%Y-%m-%d %H:%M:%S", local);
+	else
+		stamp[0] = 0;
+
+	f = fopen (path, "a");
+
+	if (!f)
+	{
+		Con_Printf ("rt_bench: could not write %s\n", path);
+		return;
+	}
+
+	fprintf (f, "# rt_bench %s demo=%s frames=%d seconds=%.2f fps=%.1f interrupted=%d\n", stamp,
+	         (demo && demo[0]) ? demo : "?", frames, seconds,
+	         seconds > 0.0 ? frames / seconds : 0.0, rt_bench_interrupted ? 1 : 0);
+
+	fprintf (f, "fps.host    %-17s avg=%.1f min=%.1f max=%.1f\n", "whole frame",
+	         rt_bench_result.fpsAvg, rt_bench_result.fpsMin, rt_bench_result.fpsMax);
+	fprintf (f, "frame.host  %-17s avg_ms=%.2f min_ms=%.2f max_ms=%.2f\n", "whole frame",
+	         frameAvg, frameMin, frameMax);
+
+	for (int i = 0; i < RT_PROF_COUNT; i++)
+		fprintf (f, "cpu.slot    %-17s avg_ms=%.2f max_ms=%.2f\n", RT_ProfSlotName (i),
+		         rt_bench_sum[i] / profiled, rt_bench_max[i]);
+
+	fprintf (f, "cpu.main    %-17s avg_ms=%.2f\n", "frame minus wait",
+	         (rt_bench_sum[RT_PROF_FRAME] - rt_bench_sum[RT_PROF_WAIT]) / profiled);
+
+	fprintf (f, "cpu.cluster %-17s hits=%d misses=%d set=%d move=%d other=%d\n", "lists",
+	         rt_cluster_cache_hits, rt_cluster_cache_misses, rt_cluster_miss_set,
+	         rt_cluster_miss_move, rt_cluster_miss_other);
+
+	fprintf (f, "settings");
+	RT_Bench_Setting (f, "rt_enable_pvs");
+	RT_Bench_Setting (f, "rt_truelight");
+	RT_Bench_Setting (f, "rt_world_batch_merge");
+	RT_Bench_Setting (f, "rt_wmodel_lights_batch");
+	RT_Bench_Setting (f, "rt_cluster_incremental");
+	RT_Bench_Setting (f, "rt_cluster_dlights");
+	RT_Bench_Setting (f, "rt_light_styles");
+	RT_Bench_Setting (f, "rt_model_lights");
+	RT_Bench_Setting (f, "rt_model_lights_max");
+	RT_Bench_Setting (f, "rt_model_lights_budget");
+	RT_Bench_Setting (f, "rt_shadowrays");
+	RT_Bench_Setting (f, "rt_godrays");
+	RT_Bench_Setting (f, "rt_godrays_intensity");
+	RT_Bench_Setting (f, "rt_physical_sky");
+	RT_Bench_Setting (f, "rt_sky_clouds");
+	RT_Bench_Setting (f, "rt_sky_cloud_coverage");
+	RT_Bench_Setting (f, "rt_sky_cloud_density");
+	RT_Bench_Setting (f, "rt_sky_cloud_speed");
+	RT_Bench_Setting (f, "rt_denoiser");
+	RT_Bench_Setting (f, "rt_gi_level");
+	RT_Bench_Setting (f, "rt_nee_samples");
+	RT_Bench_Setting (f, "rt_renderscale");
+	RT_Bench_Setting (f, "rt_upscale_fsr2");
+	RT_Bench_Setting (f, "rt_upscale_fsr31");
+	RT_Bench_Setting (f, "rt_upscale_dlss");
+	RT_Bench_Setting (f, "rt_stats_panels");
+	RT_Bench_Setting (f, "vid_vsync");
+	RT_Bench_Setting (f, "host_maxfps");
+	fprintf (f, " vid=%dx%d version=%s\n", vid.width, vid.height, ENGINE_VER_STRING);
+
+	fclose (f);
+
+	Con_Printf ("rt_bench: %d frames, %.2f s, %.1f fps -> %s\n", rt_bench_frames, seconds,
+	            seconds > 0.0 ? frames / seconds : 0.0, path);
+
+	for (int i = 0; i < RT_PROF_COUNT; i++)
+		Con_Printf ("  %-17s avg %.2f ms, max %.2f ms\n", RT_ProfSlotName (i),
+		            rt_bench_sum[i] / frames, rt_bench_max[i]);
 }
 
 

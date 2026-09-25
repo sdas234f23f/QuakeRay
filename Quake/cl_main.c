@@ -159,6 +159,9 @@ void CL_Disconnect (void)
 	if (key_dest == key_message)
 		Key_EndChat (); // don't get stuck in chat mode
 
+	// a benchmark this disconnect ends is a partial run, and the report says so
+	RT_Bench_Interrupt ();
+
 	// stop sounds (especially looping!)
 	S_StopAllSounds (true);
 	BGM_Stop ();
@@ -1297,6 +1300,7 @@ void CL_Init (void)
 	Cmd_AddCommand ("stop", CL_Stop_f);
 	Cmd_AddCommand ("playdemo", CL_PlayDemo_f);
 	Cmd_AddCommand ("timedemo", CL_TimeDemo_f);
+	Cmd_AddCommand ("rt_bench", CL_Bench_f);
 
 	Cmd_AddCommand ("tracepos", CL_Tracepos_f); // johnfitz
 	Cmd_AddCommand ("viewpos", CL_Viewpos_f);   // johnfitz

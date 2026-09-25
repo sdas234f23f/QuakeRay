@@ -1793,6 +1793,7 @@ void CL_ParseServerMessage (void)
 			break;
 
 		case svc_disconnect:
+			CL_DemoNaturalEnd ();
 			Host_EndGame ("Server disconnected\n");
 
 		case svc_print:

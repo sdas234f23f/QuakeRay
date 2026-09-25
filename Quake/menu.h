@@ -43,6 +43,8 @@ enum m_state_e
 	m_search,
 	m_slist,
 	m_mods,
+	m_benchmark,
+	m_bench_results,
 };
 
 extern enum m_state_e m_state;
@@ -63,6 +65,8 @@ void     M_ToggleMenu_f (void);
 void M_Menu_Main_f (void);
 void M_Menu_Options_f (void);
 void M_Menu_Quit_f (void);
+void M_Menu_Benchmark_f (void);
+void M_Menu_BenchmarkResults_f (void);
 
 void M_Print (cb_context_t *cbx, int cx, int cy, const char *str);
 void M_PrintWhite (cb_context_t *cbx, int cx, int cy, const char *str);

@@ -340,7 +340,7 @@ void M_Main_Key (int key)
 /* SINGLE PLAYER MENU */
 
 int m_singleplayer_cursor;
-#define SINGLEPLAYER_ITEMS 3
+#define SINGLEPLAYER_ITEMS 4
 
 void M_Menu_SinglePlayer_f (void)
 {
@@ -359,6 +359,7 @@ void M_SinglePlayer_Draw (cb_context_t *cbx)
 	p = Draw_CachePic ("gfx/ttl_sgl.lmp");
 	M_DrawPic (cbx, (320 - p->width) / 2, 4, p);
 	M_DrawTransPic (cbx, 72, 32, Draw_CachePic ("gfx/sp_menu.lmp"));
+	M_PrintWhite (cbx, 72, 32 + 3 * 20, "Benchmark");
 
 	f = (int)(realtime * 10) % 6;
 
@@ -413,6 +414,10 @@ void M_SinglePlayer_Key (int key)
 
 		case 2:
 			M_Menu_Save_f ();
+			break;
+
+		case 3:
+			M_Menu_Benchmark_f ();
 			break;
 		}
 	}
@@ -1854,6 +1859,190 @@ void M_Mods_Key (int key)
 }
 
 //=============================================================================
+/* BENCHMARK MENU */
+
+#define MAX_DEMOS_ON_SCREEN 12
+static int  num_demos = 0;
+static int  first_demo = 0;
+static int  demo_cursor = 0;
+static char bench_error[64];
+
+void M_Menu_Benchmark_f (void)
+{
+	IN_Deactivate (modestate == MS_WINDOWED);
+	key_dest = key_menu;
+	m_state = m_benchmark;
+	m_entersound = true;
+
+	// a demo recorded in this session is in the list too
+	DemoList_Rebuild ();
+
+	num_demos = 0;
+	for (filelist_item_t *item = demolist; item; item = item->next)
+		++num_demos;
+
+	first_demo = 0;
+	demo_cursor = 0;
+	bench_error[0] = 0;
+}
+
+void M_Benchmark_Draw (cb_context_t *cbx)
+{
+	M_DrawTransPic (cbx, 16, 4, Draw_CachePic ("gfx/qplaque.lmp"));
+	M_PrintWhite (cbx, 124, 8, "BENCHMARK");
+
+	if (num_demos <= 0)
+	{
+		M_Print (cbx, 105, 40, "no demos found");
+		return;
+	}
+
+	int demo_index = -first_demo;
+
+	for (filelist_item_t *item = demolist; item; item = item->next)
+	{
+		if (demo_index >= MAX_DEMOS_ON_SCREEN)
+			break;
+		if (demo_index >= 0)
+			M_Print (cbx, 105, 32 + demo_index * 8, item->name);
+		++demo_index;
+	}
+
+	M_DrawCharacter (cbx, 90, 32 + (demo_cursor - first_demo) * 8, 12 + ((int)(realtime * 4) & 1));
+	if (num_demos > MAX_DEMOS_ON_SCREEN)
+		M_DrawScrollbar (cbx, 220, 32 + 8, (float)(first_demo) / (float)(num_demos - MAX_DEMOS_ON_SCREEN), MAX_DEMOS_ON_SCREEN - 2);
+
+	if (bench_error[0])
+		M_PrintWhite (cbx, 40, 140, bench_error);
+}
+
+void M_Benchmark_Key (int key)
+{
+	int prev_demo_cursor = demo_cursor;
+	int demo_index = 0;
+
+	switch (key)
+	{
+	case K_ESCAPE:
+	case K_BBUTTON:
+		M_Menu_SinglePlayer_f ();
+		return;
+
+	case K_ENTER:
+	case K_KP_ENTER:
+	case K_ABUTTON:
+		for (filelist_item_t *item = demolist; item; item = item->next)
+		{
+			if (demo_index++ != demo_cursor)
+				continue;
+
+			if (!CL_BenchStart (item->name, true))
+			{
+				q_snprintf (bench_error, sizeof (bench_error), "could not open %s", item->name);
+				return;
+			}
+
+			m_state = m_none;
+			IN_Activate ();
+			key_dest = key_game;
+			return;
+		}
+		return;
+
+	case K_HOME:
+		demo_cursor = 0;
+		first_demo = 0;
+		break;
+
+	case K_END:
+		demo_cursor = num_demos - 1;
+		first_demo = q_max (0, num_demos - MAX_DEMOS_ON_SCREEN);
+		break;
+
+	case K_PGUP:
+		demo_cursor -= MAX_DEMOS_ON_SCREEN;
+		first_demo = q_max (0, first_demo - MAX_DEMOS_ON_SCREEN);
+		break;
+
+	case K_PGDN:
+		demo_cursor += MAX_DEMOS_ON_SCREEN;
+		first_demo = q_max (0, q_min (first_demo + MAX_DEMOS_ON_SCREEN, num_demos - 1 - MAX_DEMOS_ON_SCREEN));
+		break;
+
+	case K_UPARROW:
+		--demo_cursor;
+		break;
+
+	case K_DOWNARROW:
+		++demo_cursor;
+		break;
+	}
+
+	if (num_demos <= 0)
+		return;
+
+	demo_cursor = CLAMP (0, demo_cursor, num_demos - 1);
+	if (demo_cursor != prev_demo_cursor)
+		S_LocalSound ("misc/menu1.wav");
+	first_demo = q_max (0, CLAMP (demo_cursor - MAX_DEMOS_ON_SCREEN + 1, first_demo, demo_cursor));
+}
+
+//=============================================================================
+/* BENCHMARK RESULTS */
+
+void M_Menu_BenchmarkResults_f (void)
+{
+	IN_Deactivate (modestate == MS_WINDOWED);
+	key_dest = key_menu;
+	m_state = m_bench_results;
+	m_entersound = true;
+}
+
+void M_BenchmarkResults_Draw (cb_context_t *cbx)
+{
+	const rt_bench_result_t *r = &rt_bench_result;
+	char                     line[64];
+
+	M_DrawTransPic (cbx, 16, 4, Draw_CachePic ("gfx/qplaque.lmp"));
+	M_PrintWhite (cbx, 96, 8, "BENCHMARK RESULT");
+
+	if (!r->valid)
+	{
+		M_Print (cbx, 105, 48, "no result");
+		return;
+	}
+
+	M_Print (cbx, 40, 44, r->demo);
+	q_snprintf (line, sizeof (line), "%d frames, %.2f seconds", r->frames, r->seconds);
+	M_Print (cbx, 40, 56, line);
+
+	M_PrintWhite (cbx, 40, 76, "FPS");
+	q_snprintf (line, sizeof (line), "min %5.1f   max %5.1f   avg %5.1f", r->fpsMin, r->fpsMax, r->fpsAvg);
+	M_Print (cbx, 40, 86, line);
+
+	M_PrintWhite (cbx, 40, 102, "FRAMETIME, ms");
+	q_snprintf (line, sizeof (line), "min %5.2f   max %5.2f   avg %5.2f", r->frameMinMs, r->frameMaxMs, r->frameAvgMs);
+	M_Print (cbx, 40, 112, line);
+
+	M_PrintWhite (cbx, 88, 140, "Press ENTER to continue");
+}
+
+void M_BenchmarkResults_Key (int key)
+{
+	switch (key)
+	{
+	case K_ESCAPE:
+	case K_BBUTTON:
+	case K_ENTER:
+	case K_KP_ENTER:
+	case K_ABUTTON:
+		S_LocalSound ("misc/menu2.wav");
+		M_Menu_SinglePlayer_f ();
+		break;
+	}
+}
+
+//=============================================================================
 /* QUIT MENU */
 
 int            msgNumber;
@@ -2886,6 +3075,14 @@ void M_Draw (cb_context_t *cbx)
 		M_Mods_Draw (cbx);
 		break;
 
+	case m_benchmark:
+		M_Benchmark_Draw (cbx);
+		break;
+
+	case m_bench_results:
+		M_BenchmarkResults_Draw (cbx);
+		break;
+
 	case m_quit:
 		if (!fitzmode)
 		{ /* QuakeSpasm customization: */
@@ -2964,6 +3161,14 @@ void M_Keydown (int key)
 
 	case m_mods:
 		M_Mods_Key (key);
+		break;
+
+	case m_benchmark:
+		M_Benchmark_Key (key);
+		break;
+
+	case m_bench_results:
+		M_BenchmarkResults_Key (key);
 		break;
 
 	case m_keys:

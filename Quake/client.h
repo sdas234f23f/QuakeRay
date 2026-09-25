@@ -384,6 +384,10 @@ void CL_Stop_f (void);
 void CL_Record_f (void);
 void CL_PlayDemo_f (void);
 void CL_TimeDemo_f (void);
+void CL_Bench_f (void);
+qboolean CL_BenchStart (const char *demo, qboolean from_menu);
+// The demo's own stream ended (EOF or svc_disconnect), so a benchmark run that stops here is complete.
+void CL_DemoNaturalEnd (void);
 
 //
 // cl_parse.c
