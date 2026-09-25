@@ -90,26 +90,19 @@ const int CLOUD_SUN_STEPS_MAX = 64;
 // clouds as a square over the sky, so the count lives here rather than in a pass or
 // in the host.
 //
-// Sixteen of them, and what the count is for is the structure the noise has along
-// the column: the shape octaves are 450, 225 and 112 world units long, and a step of
-// this walk is the layer's depth over the height of the sun over this count -- 87
-// world units at a sun forty degrees up, which is 2.6 samples per period of the 225
-// unit octave. Eight steps leave that octave at 1.3, under the two a period needs,
-// and what eight leaves behind is per texel of the volume: the light of a cloud then
-// carries the grain of the shadow it was read from, worst where the cloud has an
-// edge, and the same walk is what sets the height a slice of it is read at, so the
-// grain comes out as a slab of the cloud rather than a speck of it.
-//
-// The walk is the dearest thing the layer does -- the sky pays for it at every step
-// of its own march that lands in a cloud, the volume at every texel of every slice
-// it is filled with -- and what it costs to run sixteen steps over is set against
-// where each of them pays: the volume covers most of the sky now that it is laid out
-// over 16000 units of it (RenderCubemap.cpp), so what the sky walks for itself is
-// the horizon and the samples beyond the window. A tap of the walk is spread
-// sideways around the sun by CLOUD_LIGHT_CONE over the distance it travelled -- tens
-// of world units near the base of the layer and a couple of hundred at its top -- so
-// it is the place of the tap along the column that this count has to resolve.
-const int CLOUD_SHADOW_STEPS = 16;
+// Thirty-two of them. What the count resolves is the noise along the column: the
+// shape octaves are 900, 450 and 225 world units long over the depth of the layer
+// (they are read with the height stretched, CLOUD_VERTICAL_STRETCH), and a step is
+// the layer's depth over the height of the sun over this count -- 49 units at a sun
+// forty degrees up. Measured against a walk of the same column 512 steps deep, the
+// light of a height between two of the volume's slices is off by 0.065 of tau at
+// sixteen steps and by 0.020 at thirty-two, which is the difference between a
+// ripple of about six per cent of the light of the layer, read as a layering of the
+// clouds, and one of two per cent. The walk is the dearest thing the layer does, but
+// what it costs is paid where the sky has no volume to read -- the horizon and the
+// samples beyond the window -- and by the fill of a few million texels, so the finer
+// walk is bought with a fraction of a millisecond rather than with memory.
+const int CLOUD_SHADOW_STEPS = 32;
 
 // The steps of the sequences the taps of a march are spread by, taken from the
 // golden ratio: successive taps land in different parts of the stretch they stand
