@@ -410,24 +410,19 @@ void main()
     // before, put where its cloud has moved to (historyDir): both name the same column
     // of the same cloud, and neither is mixed with anything -- a marched texel stores
     // what it marched, a copied one what it read.
+    //
+    // What a copy carries is the light of the cloud under the angle the eye had when
+    // that texel was marched, and the phase of the sun is a function of that angle.
+    // What it is wrong by is the phase over the few hundredths of a texel the eye has
+    // moved since -- an eye at thirty metres a second moves 0.15 units in a frame,
+    // against a texel of the map that is metres across. Scaling the copied value by
+    // the ratio of the two phases to take even that out was tried (013cfaf2) and
+    // taken back: the ratio multiplies the whole of the value, and the share of it
+    // that the sky lights -- skyLight * skyShield -- does not depend on the angle at
+    // all, so the correction cost more than the error it was for.
     if (!marched)
     {
-        // The light of the frame before, put where the cloud it holds has moved to
-        // (historyDir). What a value like that carries is the light of the cloud under
-        // the angle the eye had when its texel was marched, and the phase of the sun is
-        // a function of that angle: the sun's share of it is scaled to the angle this
-        // frame's texel has. That difference is the one part of the difference between a
-        // copy and a march that no dither of the ages can hide -- at the top of the
-        // ladder a texel is a pixel -- and it is what the eye reads as a checkerboard
-        // over the clouds; the rest of it, the parallax of a path that walked a few
-        // units between the two frames and the multiple scattering of the cloud, whose
-        // lobes are broad where the phase is sharp, is left as it is.
-        vec3 sunDir = normalize(params.sunDirection.xyz);
-        vec4 was = texture(cloudCubemapHistory, historyDir);
-        float wasPhase = cloudPhase(dot(historyDir, sunDir), phaseG);
-        float nowPhase = cloudPhase(dot(dir, sunDir), phaseG);
-        was.rgb *= nowPhase / max(wasPhase, 1.0e-4);
-        imageStore(cloudCubemapOut, ipos, was);
+        imageStore(cloudCubemapOut, ipos, texture(cloudCubemapHistory, historyDir));
     }
     else
     {

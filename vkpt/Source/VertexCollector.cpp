@@ -837,10 +837,13 @@ std::vector<VertexCollector::GeometryDrawInfo> VertexCollector::GetGeometryDrawI
     for (const auto &[filter, f] : filters)
     {
         // Sky geometry (RG_GEOMETRY_VISIBILITY_TYPE_SKY) lives in the PV_WORLD_2
-        // filter: it is excluded from the TLAS (rays miss it and sample the sky
-        // cubemap), so it must be excluded from the shadow map too. Otherwise the
-        // sky faces occlude the sun and the god rays stop exactly at the map's
-        // sky boundary instead of shining through the openings.
+        // filter. It is in the TLAS like the rest of the world -- the instance is
+        // flagged as sky (INSTANCE_CUSTOM_INDEX_FLAG_SKY, ASManager.cpp) and a ray
+        // that hits it is treated as if it had missed (doesPayloadContainHitInfo,
+        // RaygenCommon.h), because the sky is sampled by direction and not shaded off
+        // a surface. What it must not reach is the shadow map: there the sky faces
+        // would occlude the sun and the god rays would stop exactly at the map's sky
+        // boundary instead of shining through the openings.
         if (filter & (VertexCollectorFilterTypeFlags)VertexCollectorFilterTypeFlagBits::PV_WORLD_2)
         {
             continue;

@@ -902,7 +902,11 @@ void VulkanDevice::Render(VkCommandBuffer cmd, const RgDrawFrameInfo &drawInfo)
             {
                 Matrix::GetViewMatrix(view, origin, faceAngles[face][0], faceAngles[face][1], 0.0f);
 
-                // column-major columns of the view rotation: right, up, forward
+                // The rows of the view rotation, which are the camera's axes in the
+                // world -- right, up, forward of the face -- taken out of the flat
+                // column-major matrix. The code below is right and this comment was
+                // wrong once: view[0], view[4], view[8] are row 0, not column 0, and
+                // read as a column they do not name the camera's right at all.
                 p.faceBasis[face * 3 + 0][0] = view[0];  p.faceBasis[face * 3 + 0][1] = view[4];  p.faceBasis[face * 3 + 0][2] = view[8];
                 p.faceBasis[face * 3 + 1][0] = view[1];  p.faceBasis[face * 3 + 1][1] = view[5];  p.faceBasis[face * 3 + 1][2] = view[9];
                 p.faceBasis[face * 3 + 2][0] = view[2];  p.faceBasis[face * 3 + 2][1] = view[6];  p.faceBasis[face * 3 + 2][2] = view[10];
