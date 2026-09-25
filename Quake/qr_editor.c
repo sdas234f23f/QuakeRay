@@ -192,6 +192,10 @@ static struct
 	entity_t    *hover_ent;
 	gltexture_t *hover_glt;
 
+	// the picked texture's normalized material name (what the panel shows and
+	// the group was built from; the engine name carries a maps/<map>.bsp: prefix)
+	char         pick_name[MAX_QPATH];
+
 	// the material group (animation frames) shown by the panel
 	rt_material_t *group[QRE_GROUP_MAX];
 	int            group_count;
@@ -255,47 +259,16 @@ static qboolean QRE_BrowseTexture (char *out, size_t outsize);
 // ---------------------------------------------------------------------------
 
 // "textures/+3_med25" -> 3, "progs/flame.mdl:frame2" -> 2 (a model or sprite
-// skin frame), anything else -> -1
+// skin frame); the ring base and the digit live in rt_material.c, shared with
+// the renderer-side group enumeration.
 static int QRE_FrameDigit (const char *name)
 {
-	if (!q_strncasecmp (name, "textures/+", 10) && name[10] >= '0' && name[10] <= '9')
-		return name[10] - '0';
-
-	{
-		const char *p = strstr (name, ":frame");
-
-		if (p && p[6] >= '0' && p[6] <= '9' && (p[7] == '\0' || p[7] == '_'))
-			return p[6] - '0';
-	}
-	return -1;
+	return RT_MAT_FrameDigit (name);
 }
 
-// The animation base of a material name: "textures/+0_med25" -> "textures/_med25",
-// "progs/flame.mdl:frame1" -> "progs/flame.mdl".
-static void QRE_GroupBaseOf (const char *matname, char *out, size_t outsize)
+static void QRE_GroupBaseOf (const char *name, char *out, size_t outsize)
 {
-	if (!q_strncasecmp (matname, "textures/+", 10) && matname[10] >= '0' && matname[10] <= '9')
-	{
-		q_snprintf (out, outsize, "textures/%s", matname + 11);
-		return;
-	}
-
-	{
-		const char *p = strstr (matname, ":frame");
-
-		if (p && p[6] >= '0' && p[6] <= '9')
-		{
-			size_t n = (size_t)(p - matname);
-
-			if (n >= outsize)
-				n = outsize - 1;
-			memcpy (out, matname, n);
-			out[n] = '\0';
-			return;
-		}
-	}
-
-	q_strlcpy (out, matname, outsize);
+	RT_MAT_GroupBaseOf (name, out, outsize);
 }
 
 static qboolean QRE_NameInGroup (const char *matname, const char *groupbase)
@@ -681,26 +654,20 @@ static int QRE_CompareMats (const void *a, const void *b)
 	return strcmp (ma->name, mb->name);
 }
 
-// A detached default for one animation frame of a model: named exactly as the
-// engine names its skin texture, so the first change to it resolves to that
-// texture (the synthesis looks the texture's own name up).
-static void QRE_AddFrameDefault (const char *groupbase, gltexture_t *glt)
+// A detached default for one frame name of the picked texture: named exactly as
+// the engine names that texture, so the first change to it resolves to it (the
+// synthesis looks the texture's own name up).
+static void QRE_AddDefaultName (const char *groupbase, const char *name)
 {
-	char name[MAX_QPATH];
-	char *dot;
-	int   i;
+	char base[MAX_QPATH];
+	int  i;
 
-	if (!glt || !glt->name[0])
+	if (!name[0])
 		return;
 
-	RT_MAT_NormalizeName (glt->name, name, sizeof (name));
-	dot = strrchr (name, '.');
-	if (dot && !strchr (dot, ':'))
-		*dot = '\0';
-
-	// only the frames of the model that was picked
-	if (strncmp (name, groupbase, strlen (groupbase)) != 0)
-		return;
+	RT_MAT_GroupBaseOf (name, base, sizeof (base));
+	if (strcmp (base, groupbase))
+		return; // not a frame of this ring
 
 	for (i = 0; i < qre.group_count; i++)
 	{
@@ -715,56 +682,18 @@ static void QRE_AddFrameDefault (const char *groupbase, gltexture_t *glt)
 	qre.group[qre.group_count++] = &qre.extra[qre.extra_count++];
 }
 
-// Every animation frame the picked model has, whether or not a material names
-// it. Without this a frame with no yaml entry opened a block named after the
-// model base -- a name no texture ever resolves to -- so editing it changed
-// nothing on screen.
-static void QRE_AddModelFrames (const char *groupbase)
+// Every frame the engine actually has for the picked texture: the "textures/+N"
+// ring and the "progs/x.mdl:frameN" skins of a model or sprite. Without it a
+// frame with no yaml entry opened one block named after the ring base -- a name
+// no texture resolves to -- so editing it changed nothing on screen.
+static void QRE_AddEngineFrames (const char *texname, const char *groupbase)
 {
-	qmodel_t *model = qre.pick_model;
-	int       i, j;
+	char names[QRE_GROUP_MAX][MAX_QPATH];
+	int  count = TexMgr_CollectGroupNames (texname, names, QRE_GROUP_MAX);
+	int  i;
 
-	if (!model || (model->type != mod_alias && model->type != mod_sprite))
-		return;
-
-	if (model->type == mod_alias)
-	{
-		aliashdr_t *hdr = (aliashdr_t *)Mod_Extradata (model);
-
-		if (!hdr)
-			return;
-
-		for (i = 0; i < hdr->numskins && qre.group_count < QRE_GROUP_MAX; i++)
-			for (j = 0; j < 4 && qre.group_count < QRE_GROUP_MAX; j++)
-				QRE_AddFrameDefault (groupbase, hdr->gltextures[i][j]);
-	}
-	else
-	{
-		msprite_t *psprite = (msprite_t *)model->extradata;
-
-		if (!psprite)
-			return;
-
-		for (i = 0; i < psprite->numframes && qre.group_count < QRE_GROUP_MAX; i++)
-		{
-			mspriteframe_t *frame = NULL;
-
-			if (psprite->frames[i].type == SPR_SINGLE)
-			{
-				frame = psprite->frames[i].frameptr;
-			}
-			else
-			{
-				mspritegroup_t *group = (mspritegroup_t *)psprite->frames[i].frameptr;
-
-				if (group && group->numframes > 0)
-					frame = group->frames[0];
-			}
-
-			if (frame)
-				QRE_AddFrameDefault (groupbase, frame->gltexture);
-		}
-	}
+	for (i = 0; i < count && qre.group_count < QRE_GROUP_MAX; i++)
+		QRE_AddDefaultName (groupbase, names[i]);
 }
 
 // Builds the group of materials for a texture name (all animation frames).
@@ -813,8 +742,8 @@ static void QRE_ResolveGroup (const char *texname)
 		}
 	}
 
-	// the frames the model has but no material names yet get their own blocks
-	QRE_AddModelFrames (groupbase);
+	// the frames the engine has but no material names yet get their own blocks
+	QRE_AddEngineFrames (texname, groupbase);
 
 	if (qre.group_count == 0)
 	{
@@ -1244,6 +1173,7 @@ static void QRE_DoPick (qboolean select)
 		if (dot && !strchr (dot, ':'))
 			*dot = '\0';
 
+		q_strlcpy (qre.pick_name, texname, sizeof (qre.pick_name));
 		QRE_ResolveGroup (texname);
 
 		Con_Printf ("qr editor: picked '%s' (%d material(s) in the group)\n", texname, qre.group_count);
@@ -1977,7 +1907,8 @@ static void QRE_BuildPanelGUI (void)
 	{
 		char buf[MAX_QPATH + 16];
 
-		q_snprintf (buf, sizeof (buf), qre.pick_surf ? "face: %s" : "model: %s", qre.pick_glt->name);
+		q_snprintf (buf, sizeof (buf), qre.pick_surf ? "face: %s" : "model: %s",
+		            qre.pick_name[0] ? qre.pick_name : qre.pick_glt->name);
 		QR_GUI_LabelDim (buf);
 	}
 	QR_GUI_Spacing ();
@@ -2215,6 +2146,7 @@ static void QRE_Cancel (void)
 		dot = strrchr (texname, '.');
 		if (dot && !strchr (dot, ':'))
 			*dot = '\0';
+		q_strlcpy (qre.pick_name, texname, sizeof (qre.pick_name));
 		QRE_ResolveGroup (texname);
 	}
 

@@ -76,6 +76,12 @@ rt_material_t *RT_MAT_GetList(int which, int *outCount);
    names become "textures/name", extension stripped, lowercased). */
 void RT_MAT_NormalizeName(const char *name, char *out, size_t outsize);
 
+/* The animation-frame ring a material name belongs to: "textures/+0_med25" ->
+   "textures/_med25", "progs/flame.mdl:frame1" -> "progs/flame.mdl". The digit
+   of the frame, or -1 when the name is not a frame. */
+int  RT_MAT_FrameDigit(const char *name);
+void RT_MAT_GroupBaseOf(const char *name, char *out, size_t outsize);
+
 /* Appends a copy of mat to the global list; returns its index or -1 when full. */
 int RT_MAT_AppendGlobal(const rt_material_t *mat);
 

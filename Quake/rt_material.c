@@ -809,6 +809,54 @@ void RT_MAT_NormalizeName(const char *name, char *out, size_t outsize)
     rt_mat_normalize_name(name, out, outsize);
 }
 
+// "textures/+3_med25" -> 3, "progs/flame.mdl:frame2" -> 2 (a model or sprite
+// skin frame), anything else -> -1
+int RT_MAT_FrameDigit(const char *name)
+{
+    if (!q_strncasecmp(name, "textures/+", 10) && name[10] >= '0' && name[10] <= '9')
+    {
+        return name[10] - '0';
+    }
+
+    {
+        const char *p = strstr(name, ":frame");
+
+        if (p && p[6] >= '0' && p[6] <= '9' && (p[7] == '\0' || p[7] == '_'))
+        {
+            return p[6] - '0';
+        }
+    }
+    return -1;
+}
+
+void RT_MAT_GroupBaseOf(const char *name, char *out, size_t outsize)
+{
+    if (!q_strncasecmp(name, "textures/+", 10) && name[10] >= '0' && name[10] <= '9')
+    {
+        q_snprintf(out, outsize, "textures/%s", name + 11);
+        return;
+    }
+
+    {
+        const char *p = strstr(name, ":frame");
+
+        if (p && p[6] >= '0' && p[6] <= '9')
+        {
+            size_t n = (size_t)(p - name);
+
+            if (n >= outsize)
+            {
+                n = outsize - 1;
+            }
+            memcpy(out, name, n);
+            out[n] = '\0';
+            return;
+        }
+    }
+
+    q_strlcpy(out, name, outsize);
+}
+
 static rt_material_t *rt_mat_find_in(const char *name, rt_material_t *first, int count)
 {
     char n[MAX_QPATH];

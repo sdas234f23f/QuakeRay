@@ -1926,6 +1926,70 @@ void TexMgr_ReloadImage (gltexture_t *glt, int shirt, int pants)
 
 /*
 ================
+TexMgr_CollectGroupNames
+
+The animation-frame ring of a texture name as the engine actually has it: every
+active texture whose normalized name shares the ring base ("textures/+Nname",
+"textures/name", "progs/model.mdl:frameN") is listed once. The editor turns the
+names no material exists for into editable defaults, so a face never opens a
+block named after the base only -- a name no texture resolves to.
+================
+*/
+static void TexMgr_GroupName (const char *name, char *out, size_t outsize)
+{
+	char *dot;
+
+	RT_MAT_NormalizeName (name, out, outsize);
+	dot = strrchr (out, '.');
+	if (dot && !strchr (dot, ':'))
+		*dot = '\0';
+}
+
+int TexMgr_CollectGroupNames (const char *texname, char (*names)[MAX_QPATH], int max)
+{
+	char         group[MAX_QPATH];
+	char         name[MAX_QPATH];
+	gltexture_t *glt;
+	int          count = 0;
+
+	if (!texname || !texname[0] || max <= 0)
+		return 0;
+
+	TexMgr_GroupName (texname, name, sizeof (name));
+	RT_MAT_GroupBaseOf (name, group, sizeof (group));
+
+	for (glt = active_gltextures; glt; glt = glt->next)
+	{
+		char n[MAX_QPATH];
+		char g[MAX_QPATH];
+		int  i, dup = 0;
+
+		if (!glt->name[0])
+			continue;
+
+		TexMgr_GroupName (glt->name, n, sizeof (n));
+		RT_MAT_GroupBaseOf (n, g, sizeof (g));
+		if (strcmp (g, group))
+			continue;
+
+		for (i = 0; i < count; i++)
+		{
+			if (!strcmp (names[i], n))
+				dup = 1;
+		}
+		if (dup)
+			continue;
+
+		if (count >= max)
+			break;
+		q_strlcpy (names[count++], n, MAX_QPATH);
+	}
+
+	return count;
+}
+
+/*
+================
 TexMgr_LoadRgbaForPreview
 
 The RGBA8 pixels of a texture's own source, for the editor's texture preview

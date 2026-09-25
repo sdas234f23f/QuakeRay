@@ -136,6 +136,9 @@ void TexMgr_ReloadImage (gltexture_t *glt, int shirt, int pants);
 // RGBA8 pixels of a texture's own source, for the editor's texture preview.
 // The caller frees the buffer.
 byte *TexMgr_LoadRgbaForPreview (gltexture_t *glt, int *outWidth, int *outHeight);
+// The engine's own animation-frame names of a texture ("textures/+Nname",
+// "progs/model.mdl:frameN"), for the editor's group of blocks. Returns the count.
+int TexMgr_CollectGroupNames (const char *texname, char (*names)[MAX_QPATH], int max);
 void TexMgr_ReloadNobrightImages (void);
 void TexMgr_ReloadAllImages (void);
 
