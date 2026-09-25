@@ -7,9 +7,12 @@
 // material panel on the right edge of the screen. The panel is Dear ImGui
 // (Quake/qr_gui.cpp), and it edits the materials.yaml parameters of every
 // animation frame of the picked texture (medkits, blinking buttons, ...).
-// Apply writes the changes back to the materials/*.yaml files, Cancel reverts
-// to the values they were loaded from, Exit closes the editor and returns the
-// view to the player.
+// The world is frozen while the editor runs (the server is paused and cl.time
+// stands still, so nothing animates). Apply writes the session to
+// materials.editor.yaml; Exit asks whether to save, and only Save copies the
+// session file over <gamedir>/materials.yaml (backing the previous file up as
+// backup_materials.yaml) — a mod's materials.yaml overrides the id1 one, both
+// because it is loaded after it and because Save writes to the mod's file.
 //
 // Editing model: the editor mutates the live rt_material_t structs and
 // re-synthesizes the affected textures (TexMgr_ReloadImagesForMaterial). That
@@ -28,6 +31,7 @@
 #include "rt_material.h"
 #include "keys.h"
 #include "client.h"
+#include "server.h"
 #include "world.h"
 #include "console.h"
 #include "mathlib.h"
@@ -181,6 +185,21 @@ static struct
 	rt_material_t *snap_map;
 	int            snap_map_count;
 
+	// the session files, resolved on start: <gamedir>/materials.yaml is the file
+	// the editor saves to (a mod's file overrides the id1 one), while
+	// materials.editor.yaml carries the session until the exit dialog decides and
+	// backup_materials.yaml keeps the target as it was before a save
+	char target_file[MAX_OSPATH];
+	char editor_file[MAX_OSPATH];
+	char backup_file[MAX_OSPATH];
+
+	// the exit dialog is up: Save/Discard, the editor keeps running until answered
+	qboolean exit_prompt;
+
+	// the pause state the editor found, restored when it closes
+	qboolean sv_paused_prev;
+	qboolean cl_paused_prev;
+
 	// a material created by the editor for a texture that has none in yaml
 	rt_material_t tmp_mat;
 	qboolean      tmp_appended;
@@ -197,7 +216,11 @@ static void     QRE_Apply (void);
 static void     QRE_Cancel (void);
 static void     QRE_StopEditor (qboolean restore);
 static void     QRE_ClosePanel (void);
-static void     QRE_SaveMaterials (void);
+static void     QRE_RequestExit (void);
+static qboolean QRE_WriteSession (void);
+static qboolean QRE_FileExists (const char *path);
+static void     QRE_SessionSave (void);
+static void     QRE_SessionDiscard (void);
 static qboolean QRE_BrowseTexture (char *out, size_t outsize);
 
 // ---------------------------------------------------------------------------
@@ -1328,7 +1351,6 @@ static void QRE_BuildPanelGUI (void)
 	QR_GUI_SameLine ();
 	if (QR_GUI_Button ("Exit"))
 		exit_requested = true;
-
 	QR_GUI_Separator ();
 	QR_GUI_BeginScroll ();
 
@@ -1346,7 +1368,7 @@ static void QRE_BuildPanelGUI (void)
 	QR_GUI_EndPanel ();
 
 	if (exit_requested)
-		QRE_StopEditor (true);
+		QRE_RequestExit ();
 }
 
 static void QRE_BuildFlyingOverlay (void)
@@ -1413,7 +1435,22 @@ void QR_Editor_DrawPanel (cb_context_t *cbx)
 	if (!QR_GUI_BeginFrame ((unsigned int)host_framecount, (float)host_frametime, glx, gly, glwidth, glheight, vid.height))
 		return;
 
-	if (qre.panel_open)
+	if (qre.exit_prompt)
+	{
+		int answer = QR_GUI_Dialog ("Save materials?", "Save all materials changes?", "Save", "Discard");
+
+		if (answer == 1)
+		{
+			qre.exit_prompt = false;
+			QRE_SessionSave ();
+		}
+		else if (answer == 2)
+		{
+			qre.exit_prompt = false;
+			QRE_SessionDiscard ();
+		}
+	}
+	else if (qre.panel_open)
 		QRE_BuildPanelGUI ();
 	else
 		QRE_BuildFlyingOverlay ();
@@ -1437,7 +1474,7 @@ qboolean QR_Editor_KeyEvent (int key, qboolean down)
 
 	if (key == K_ESCAPE && down)
 	{
-		QRE_StopEditor (true);
+		QRE_RequestExit ();
 		return true;
 	}
 
@@ -1462,10 +1499,14 @@ qboolean QR_Editor_GuiProcessEvent (const void *sdl_event)
 	    e->key.keysym.scancode == SDL_SCANCODE_GRAVE && !QR_GUI_WantsKeyboard ())
 		return false;
 
-	// ESC closes the panel, unless an ImGui text field is editing
+	// ESC dismisses the exit question, or closes the panel, unless an ImGui
+	// text field is editing
 	if (e->type == SDL_KEYDOWN && e->key.keysym.sym == SDLK_ESCAPE && !QR_GUI_WantsKeyboard ())
 	{
-		QRE_ClosePanel ();
+		if (qre.exit_prompt)
+			qre.exit_prompt = false; // back to editing
+		else
+			QRE_ClosePanel ();
 		return true;
 	}
 
@@ -1499,10 +1540,14 @@ static void QRE_ClosePanel (void)
 
 static void QRE_Apply (void)
 {
-	QRE_SaveMaterials ();
+	if (!QRE_WriteSession ())
+	{
+		QRE_Notify ("nothing to save yet");
+		return;
+	}
+
 	QRE_TakeSnapshot (); // Cancel now reverts to the state just saved
-	qre.touched_count = 0;
-	QRE_Notify ("materials written to materials/");
+	QRE_Notify ("session written to materials.editor.yaml");
 }
 
 static void QRE_Cancel (void)
@@ -1531,6 +1576,10 @@ static void QRE_Cancel (void)
 			QRE_ResolveGroup (texname);
 		}
 	}
+
+	// the session file no longer matches the lists: put the reverted values there
+	if (QRE_FileExists (qre.editor_file))
+		QRE_WriteSession ();
 
 	QRE_Notify ("materials reverted to the values from materials.yaml");
 }
@@ -1646,220 +1695,187 @@ static void QRE_WriteMaterial (FILE *f, const rt_material_t *m)
 		fprintf (f, "    force_rasterize: true\n");
 }
 
-#define QRE_SAVE_FILES_MAX   32
-
-static const char *QRE_MaterialFile (const rt_material_t *m)
+static qboolean QRE_FileExists (const char *path)
 {
-	return m->source_file[0] ? m->source_file : "materials/materials.yaml";
+	FILE *f = fopen (path, "rb");
+
+	if (!f)
+		return false;
+	fclose (f);
+	return true;
 }
 
-static qboolean QRE_SameFile (const char *a, const char *b)
+static qboolean QRE_CopyFile (const char *from, const char *to)
 {
-	// the directory scan and the map name can differ in case on a
-	// case-insensitive filesystem; both name the same file
-	return !q_strcasecmp (a, b);
-}
+	FILE    *in = fopen (from, "rb");
+	FILE    *out;
+	char     buf[8192];
+	size_t   n;
+	qboolean ok = true;
 
-static qboolean QRE_FileListed (char files[][MAX_QPATH], int nfiles, const char *file)
-{
-	int i;
-
-	for (i = 0; i < nfiles; i++)
-	{
-		if (QRE_SameFile (files[i], file))
-			return true;
-	}
-	return false;
-}
-
-// A material of the file that the global list does not carry (its map copy is
-// then the only one that holds the edit).
-static qboolean QRE_NameInGlobalFile (const rt_material_t *list, int count, const char *file, const char *name)
-{
-	int i;
-
-	for (i = 0; i < count; i++)
-	{
-		if (list[i].valid && !strcmp (list[i].name, name) && QRE_SameFile (QRE_MaterialFile (&list[i]), file))
-			return true;
-	}
-	return false;
-}
-
-// A safety copy of a materials file before the editor rewrites it.
-static void QRE_BackupFile (const char *path)
-{
-	char   bak[MAX_OSPATH];
-	FILE  *in, *out;
-	char   buf[4096];
-	size_t n;
-
-	q_snprintf (bak, sizeof (bak), "%s.bak", path);
-
-	in = fopen (path, "rb");
 	if (!in)
-		return;
+		return false;
 
-	out = fopen (bak, "wb");
+	out = fopen (to, "wb");
 	if (!out)
 	{
 		fclose (in);
-		return;
+		return false;
 	}
 
 	while ((n = fread (buf, 1, sizeof (buf), in)) > 0)
-		fwrite (buf, 1, n, out);
+	{
+		if (fwrite (buf, 1, n, out) != n)
+		{
+			ok = false;
+			break;
+		}
+	}
+	if (ferror (in))
+		ok = false;
 
 	fclose (in);
+	if (fflush (out) != 0)
+		ok = false;
 	fclose (out);
+	return ok;
 }
 
-static void QRE_SaveMaterials (void)
+// The names the target materials.yaml already carries: the session file is what
+// replaces that file when it is saved, so those entries have to be written back
+// (with their live, possibly edited values) or the save would drop them.
+#define QRE_SESSION_NAMES_MAX 1024
+
+static int QRE_ReadTargetNames (char (*names)[MAX_QPATH], int max)
 {
-	char           files[QRE_SAVE_FILES_MAX][MAX_QPATH];
-	int            nfiles = 0;
-	rt_material_t *maplist, *glist;
-	int            mapcount, gcount;
-	int            i, k, f;
-	int            written_total = 0;
+	FILE *f = fopen (qre.target_file, "r");
+	char  line[1024];
+	int   count = 0;
 
-	maplist = RT_MAT_GetList (RT_MAT_LIST_MAP, &mapcount);
-	glist = RT_MAT_GetList (RT_MAT_LIST_GLOBAL, &gcount);
+	if (!f)
+		return 0;
 
-	/* The map materials also live in the global list (the directory scan reads
-	   materials/<map>.yaml as a global file), and RT_MAT_Find returns the map
-	   copy first, so an edit may sit in the map copy: sync it back. */
-	for (i = 0; i < mapcount; i++)
+	while (count < max && fgets (line, sizeof (line), f))
 	{
-		if (!maplist[i].valid)
+		char *p = strstr (line, "- name:");
+		char *e;
+
+		if (!p)
 			continue;
-		for (k = 0; k < gcount; k++)
+		p += 7;
+		while (*p == ' ' || *p == '\t')
+			p++;
+		e = p;
+		while (*e && *e != '\r' && *e != '\n' && *e != ' ' && *e != '\t')
+			e++;
+		if (e == p)
+			continue;
+		*e = '\0';
+		q_strlcpy (names[count++], p, MAX_QPATH);
+	}
+
+	fclose (f);
+	return count;
+}
+
+// Writes materials.editor.yaml: everything the target file carries plus every
+// material the session touched (a touched entry wins by name). Apply writes it,
+// Save copies it over the target, Discard deletes it.
+static qboolean QRE_WriteSession (void)
+{
+	char (*names)[MAX_QPATH];
+	int   count, i, written = 0;
+	FILE *f;
+
+	names = (char (*)[MAX_QPATH])Mem_Alloc (QRE_SESSION_NAMES_MAX * MAX_QPATH);
+	count = QRE_ReadTargetNames (names, QRE_SESSION_NAMES_MAX);
+
+	for (i = 0; i < qre.touched_count && count < QRE_SESSION_NAMES_MAX; i++)
+	{
+		if (!QRE_NameInList (names, count, qre.touched[i]))
+			q_strlcpy (names[count++], qre.touched[i], MAX_QPATH);
+	}
+
+	if (count == 0)
+	{
+		Mem_Free (names);
+		return false;
+	}
+
+	f = fopen (qre.editor_file, "w");
+	if (!f)
+	{
+		Mem_Free (names);
+		QRE_Notify ("cannot write %s", qre.editor_file);
+		return false;
+	}
+
+	fprintf (f, "%s", qre_yaml_header);
+	fprintf (f, "materials:\n");
+
+	for (i = 0; i < count; i++)
+	{
+		rt_material_t *m = RT_MAT_Find (names[i]);
+
+		if (m)
 		{
-			if (glist[k].valid && !strcmp (glist[k].name, maplist[i].name) &&
-			    QRE_SameFile (QRE_MaterialFile (&glist[k]), QRE_MaterialFile (&maplist[i])))
-			{
-				glist[k] = maplist[i];
-				break;
-			}
+			QRE_WriteMaterial (f, m);
+			written++;
 		}
 	}
 
-	/* every distinct source file, of both lists */
-	for (k = 0; k < 2; k++)
+	if (ferror (f) || fflush (f) != 0)
+		QRE_Notify ("write error in %s", qre.editor_file);
+	fclose (f);
+	Mem_Free (names);
+
+	Con_Printf ("qr editor: session written to %s (%d materials)\n", qre.editor_file, written);
+	return true;
+}
+
+// "Save" of the exit dialog: the target is backed up first, then the session
+// file becomes the target (a mod's materials.yaml, so it overrides id1's).
+static void QRE_SessionSave (void)
+{
+	if (qre.touched_count > 0)
+		QRE_WriteSession ();
+
+	if (QRE_FileExists (qre.target_file))
+		QRE_CopyFile (qre.target_file, qre.backup_file);
+	QRE_CopyFile (qre.editor_file, qre.target_file);
+	remove (qre.editor_file);
+
+	QRE_StopEditor (false);
+	QRE_Notify ("materials.yaml saved; backup_materials.yaml holds the previous file");
+}
+
+// "Discard": the session file goes away and the original values come back on
+// screen; nothing on disk is touched.
+static void QRE_SessionDiscard (void)
+{
+	remove (qre.editor_file);
+	QRE_StopEditor (true);
+	QRE_Notify ("changes discarded");
+}
+
+// Exit (button, Esc, the console command): ask about the session when there is
+// one, close straight away when nothing was changed.
+static void QRE_RequestExit (void)
+{
+	if (qre.touched_count == 0 && !QRE_FileExists (qre.editor_file))
 	{
-		rt_material_t *list = (k == 0) ? glist : maplist;
-		int            count = (k == 0) ? gcount : mapcount;
-
-		for (i = 0; i < count; i++)
-		{
-			const char *file;
-
-			if (!list[i].valid)
-				continue;
-			file = QRE_MaterialFile (&list[i]);
-			if (QRE_FileListed (files, nfiles, file))
-				continue;
-			if (nfiles >= QRE_SAVE_FILES_MAX)
-			{
-				/* refusing beats writing a file with entries dropped */
-				QRE_Notify ("too many materials/*.yaml files; nothing written");
-				return;
-			}
-			q_strlcpy (files[nfiles++], file, MAX_QPATH);
-		}
-	}
-
-	/* Only files that hold an edited material are rewritten: a file the user did
-	   not touch keeps its comments, formatting and keys the loader ignores. */
-	{
-		int kept = 0;
-
-		for (f = 0; f < nfiles; f++)
-		{
-			qboolean needed = false;
-
-			for (i = 0; i < gcount && !needed; i++)
-			{
-				if (glist[i].valid && QRE_SameFile (QRE_MaterialFile (&glist[i]), files[f]) &&
-				    QRE_NameInList (qre.touched, qre.touched_count, glist[i].name))
-					needed = true;
-			}
-			for (i = 0; i < mapcount && !needed; i++)
-			{
-				if (maplist[i].valid && QRE_SameFile (QRE_MaterialFile (&maplist[i]), files[f]) &&
-				    QRE_NameInList (qre.touched, qre.touched_count, maplist[i].name))
-					needed = true;
-			}
-
-			if (needed)
-			{
-				if (kept != f)
-					q_strlcpy (files[kept], files[f], MAX_QPATH);
-				kept++;
-			}
-		}
-
-		nfiles = kept;
-	}
-
-	if (nfiles == 0)
-	{
-		QRE_Notify ("nothing to save");
+		QRE_StopEditor (true);
 		return;
 	}
 
-	for (f = 0; f < nfiles; f++)
+	if (!qre.panel_open)
 	{
-		char  path[MAX_OSPATH];
-		FILE *file;
-		int   written = 0;
-
-		q_snprintf (path, sizeof (path), "%s/%s", com_gamedir, files[f]);
-
-		QRE_BackupFile (path);
-
-		file = fopen (path, "w");
-		if (!file)
-		{
-			QRE_Notify ("cannot write %s", files[f]);
-			continue;
-		}
-
-		if (QRE_SameFile (files[f], "materials/materials.yaml"))
-			fprintf (file, "%s", qre_yaml_header);
-
-		fprintf (file, "materials:\n");
-
-		/* the global list first; entries of a map file that it does not carry
-		   (should not happen, but the editor must not lose data) follow */
-		for (i = 0; i < gcount; i++)
-		{
-			if (glist[i].valid && QRE_SameFile (QRE_MaterialFile (&glist[i]), files[f]))
-			{
-				QRE_WriteMaterial (file, &glist[i]);
-				written++;
-			}
-		}
-		for (i = 0; i < mapcount; i++)
-		{
-			if (maplist[i].valid && QRE_SameFile (QRE_MaterialFile (&maplist[i]), files[f]) &&
-			    !QRE_NameInGlobalFile (glist, gcount, files[f], maplist[i].name))
-			{
-				QRE_WriteMaterial (file, &maplist[i]);
-				written++;
-			}
-		}
-
-		if (ferror (file) || fflush (file) != 0)
-		{
-			QRE_Notify ("write error in %s", files[f]);
-		}
-		fclose (file);
-
-		written_total += written;
+		qre.panel_open = true;
+		IN_FreeCursorForGui ();
+		SDL_ShowCursor (SDL_DISABLE);
+		QR_GUI_SetMouseCursor (1);
 	}
-
-	Con_Printf ("qr editor: wrote %d materials to %d file(s)\n", written_total, nfiles);
+	qre.exit_prompt = true;
 }
 
 // ---------------------------------------------------------------------------
@@ -1937,12 +1953,17 @@ static void QRE_StopEditor (qboolean restore)
 
 	qre.active = false;
 	qre.panel_open = false;
+	qre.exit_prompt = false;
 	qre.pick_model = NULL;
 	qre.pick_surf = NULL;
 	qre.pick_ent = NULL;
 	qre.hover_model = NULL;
 	qre.hover_surf = NULL;
 	qre.hover_ent = NULL;
+
+	// the world runs again
+	sv.paused = qre.sv_paused_prev;
+	cl.paused = qre.cl_paused_prev;
 
 	VectorCopy (qre.player_viewangles, cl.viewangles);
 
@@ -1977,12 +1998,27 @@ static void QR_Editor_Start_f (void)
 
 	QRE_TakeSnapshot ();
 
+	// the session files: the target is the gamedir's own materials.yaml (for a
+	// mod that is the mod's file, which the loader reads after id1's and lets
+	// override it), the session file carries the edits until the exit dialog
+	// decides, and the backup keeps the target as it was before a save
+	q_snprintf (qre.target_file, sizeof (qre.target_file), "%s/materials.yaml", com_gamedir);
+	q_snprintf (qre.editor_file, sizeof (qre.editor_file), "%s/materials.editor.yaml", com_gamedir);
+	q_snprintf (qre.backup_file, sizeof (qre.backup_file), "%s/backup_materials.yaml", com_gamedir);
+
+	// freeze the world: the server stops thinking and moving, cl.time stops
+	// advancing (CL_ReadFromServer), so animations, particles and poses hold
+	qre.sv_paused_prev = sv.paused;
+	qre.cl_paused_prev = cl.paused;
+	sv.paused = true;
+	cl.paused = true;
+
 	Con_Printf ("qr light editor: on (fly: WASD + mouse; LMB selects a face; ESC exits)\n");
 }
 
 static void QR_Editor_Stop_f (void)
 {
-	QRE_StopEditor (true);
+	QRE_RequestExit ();
 }
 
 // Verbose reload diagnostics of the live material editor: logs every texture a

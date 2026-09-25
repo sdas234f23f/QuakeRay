@@ -726,6 +726,33 @@ int QR_GUI_AnyItemActive (void)
 	return ImGui::IsAnyItemActive () ? 1 : 0;
 }
 
+int QR_GUI_Dialog (const char *title, const char *text, const char *yes, const char *no)
+{
+	const ImVec2 center (ImGui::GetIO ().DisplaySize.x * 0.5f, ImGui::GetIO ().DisplaySize.y * 0.5f);
+	int          result = 0;
+
+	ImGui::SetNextWindowPos (center, ImGuiCond_Always, ImVec2 (0.5f, 0.5f));
+	ImGui::SetNextWindowSize (ImVec2 (440.0f, 0.0f), ImGuiCond_Always);
+
+	const ImGuiWindowFlags flags = ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+	                               ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings |
+	                               ImGuiWindowFlags_AlwaysAutoResize;
+
+	if (ImGui::Begin (title, nullptr, flags))
+	{
+		ImGui::TextWrapped ("%s", text);
+		ImGui::Spacing ();
+		if (ImGui::Button (yes, ImVec2 (150.0f, 0.0f)))
+			result = 1;
+		ImGui::SameLine ();
+		if (ImGui::Button (no, ImVec2 (150.0f, 0.0f)))
+			result = 2;
+	}
+	ImGui::End ();
+
+	return result;
+}
+
 void QR_GUI_Notify (const char *text)
 {
 	snprintf (g_notify, sizeof (g_notify), "%s", text ? text : "");

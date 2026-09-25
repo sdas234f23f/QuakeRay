@@ -989,7 +989,11 @@ int CL_ReadFromServer (void)
 	int        i;                 // johnfitz
 
 	cl.oldtime = cl.time;
-	cl.time += host_frametime;
+	// The light editor freezes the client clock with the server: its camera and
+	// its re-synthesis run on host frames, and a frozen cl.time holds every
+	// animation that reads it (textures, poses, particles) still.
+	if (!QR_Editor_Active ())
+		cl.time += host_frametime;
 
 	needs_relink = true;
 	do

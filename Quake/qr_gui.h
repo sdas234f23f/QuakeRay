@@ -88,6 +88,10 @@ int  QR_GUI_Section (const char *label, int default_open);
 void QR_GUI_PushID (const char *id);
 void QR_GUI_PopID (void);
 
+// A small centred yes/no dialog drawn on top of the editor. Returns 1 for the
+// first button, 2 for the second and 0 while it is up.
+int  QR_GUI_Dialog (const char *title, const char *text, const char *yes, const char *no);
+
 // 1 while any ImGui item is being dragged or edited.
 int  QR_GUI_AnyItemActive (void);
 

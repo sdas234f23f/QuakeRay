@@ -422,14 +422,10 @@ static void rt_mat_yaml_scalar(const yaml_node_t *node, char *out, size_t outsiz
     out[n] = 0;
 }
 
-static int rt_mat_load_yaml_file(const char *file_name, rt_material_t *dest, int max_items)
+static int rt_mat_parse_yaml(const char *filebuf, int len, const char *file_name, rt_material_t *dest, int max_items)
 {
-    int len = 0;
-    char *filebuf = (char *)rt_load_file(file_name, &len);
     if (!filebuf || len == 0)
     {
-        if (filebuf)
-            rt_load_file_free((byte *)filebuf);
         return 0;
     }
 
@@ -439,7 +435,6 @@ static int rt_mat_load_yaml_file(const char *file_name, rt_material_t *dest, int
 
     if (!yaml_parser_initialize(&parser))
     {
-        rt_load_file_free((byte *)filebuf);
         return 0;
     }
 
@@ -517,33 +512,107 @@ static int rt_mat_load_yaml_file(const char *file_name, rt_material_t *dest, int
     }
 
     yaml_parser_delete(&parser);
+    return count;
+}
+
+static int rt_mat_load_yaml_file(const char *file_name, rt_material_t *dest, int max_items)
+{
+    int   len = 0;
+    char *filebuf = (char *)rt_load_file(file_name, &len);
+    int   count;
+
+    if (!filebuf)
+        return 0;
+
+    count = rt_mat_parse_yaml(filebuf, len, file_name, dest, max_items);
     rt_load_file_free((byte *)filebuf);
     return count;
 }
 
-static void rt_mat_find_dir_mats(int (*cb)(const char *name, void *ctx), void *ctx)
+// A file addressed by an absolute path: the search path cannot reach it. This
+// is how the base id1 directory is read while a mod is running.
+static int rt_mat_load_abs_file(const char *path, rt_material_t *dest, int max_items)
+{
+    FILE  *f = fopen(path, "rb");
+    long   len;
+    char  *buf;
+    size_t got;
+    int    count;
+
+    if (!f)
+        return 0;
+
+    fseek(f, 0, SEEK_END);
+    len = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (len <= 0 || len > 64 * 1024 * 1024)
+    {
+        fclose(f);
+        return 0;
+    }
+
+    buf = (char *)Mem_Alloc((size_t)len + 1);
+    got = fread(buf, 1, (size_t)len, f);
+    fclose(f);
+    buf[got] = 0;
+
+    count = rt_mat_parse_yaml(buf, (int)got, path, dest, max_items);
+    Mem_Free(buf);
+    return count;
+}
+
+static int rt_mat_load_any(const char *name, rt_material_t *dest, int max_items)
+{
+    // the directory scan passes an absolute path; the pkz listing and the map
+    // file pass a name the search path resolves
+    if (name[0] && (name[1] == ':' || name[0] == '/' || name[0] == '\\'))
+        return rt_mat_load_abs_file(name, dest, max_items);
+    return rt_mat_load_yaml_file(name, dest, max_items);
+}
+
+// Every materials/*.yaml of one directory, then its materials.yaml at the root.
+// Paths are absolute: the loader reads them itself, so a lower-priority
+// directory is reached even when a higher-priority one carries a file of the
+// same name (files loaded later override entries by name).
+static void rt_mat_load_dir(const char *dir, int (*cb)(const char *name, void *ctx), void *ctx)
 {
     char pattern[MAX_OSPATH];
-    q_snprintf(pattern, sizeof(pattern), "%s/materials/*.yaml", com_gamedir);
-
     WIN32_FIND_DATAA fd;
-    HANDLE h = FindFirstFileA(pattern, &fd);
+    HANDLE h;
+
+    q_snprintf(pattern, sizeof(pattern), "%s/materials/*.yaml", dir);
+    h = FindFirstFileA(pattern, &fd);
     if (h != INVALID_HANDLE_VALUE)
     {
         do
         {
+            char path[MAX_OSPATH];
+
             if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
             {
                 continue;
             }
-            char name[MAX_QPATH];
-            q_snprintf(name, sizeof(name), "materials/%s", fd.cFileName);
-            if (cb(name, ctx))
+            // the editor's own files: the session file is not a materials file
+            // until it is saved, and the backup never is
+            if (!q_strcasecmp(fd.cFileName, "materials.editor.yaml") ||
+                !q_strcasecmp(fd.cFileName, "backup_materials.yaml"))
+            {
+                continue;
+            }
+            q_snprintf(path, sizeof(path), "%s/materials/%s", dir, fd.cFileName);
+            if (cb(path, ctx))
             {
                 break;
             }
         } while (FindNextFileA(h, &fd));
         FindClose(h);
+    }
+
+    // the mod's override file lives at the gamedir root
+    q_snprintf(pattern, sizeof(pattern), "%s/materials.yaml", dir);
+    if (Sys_FileTime(pattern) != -1)
+    {
+        cb(pattern, ctx);
     }
 }
 
@@ -556,12 +625,45 @@ typedef struct {
 static int rt_mat_load_cb(const char *name, void *vctx)
 {
     rt_mat_load_ctx_t *ctx = (rt_mat_load_ctx_t *)vctx;
-    if (*ctx->count >= ctx->max)
+    const int before = *ctx->count;
+    int loaded, n, kept = 0;
+
+    if (before >= ctx->max)
     {
         return 1;
     }
-    int loaded = rt_mat_load_yaml_file(name, ctx->dest + *ctx->count, ctx->max - *ctx->count);
-    *ctx->count += loaded;
+
+    loaded = rt_mat_load_any(name, ctx->dest + before, ctx->max - before);
+
+    /* A later file overrides the entries of an earlier one with the same name.
+       The load order is the packaged base, then id1, then the running gamedir;
+       this loop is what makes a mod's materials.yaml replace the id1 values it
+       names while id1 still supplies everything the mod does not name. */
+    for (n = 0; n < loaded; n++)
+    {
+        rt_material_t *loaded_mat = ctx->dest + before + n;
+        int            old = -1, i;
+
+        for (i = 0; i < before; i++)
+        {
+            if (!q_strcasecmp(ctx->dest[i].name, loaded_mat->name))
+            {
+                old = i;
+                break;
+            }
+        }
+
+        if (old >= 0)
+        {
+            ctx->dest[old] = *loaded_mat;
+        }
+        else
+        {
+            ctx->dest[before + kept++] = *loaded_mat;
+        }
+    }
+    *ctx->count = before + kept;
+
     if (loaded > 0)
     {
         Con_Printf("RT: loaded %d materials from %s\n", loaded, name);
@@ -586,8 +688,19 @@ void RT_MAT_Init(void)
     RT_PKZ_Init();
 
     rt_mat_load_ctx_t ctx = { rt_global_materials, &rt_global_count, RT_MAT_MAX_GLOBAL };
+
+    // packaged materials first, then id1, then the running gamedir (a mod), so
+    // a mod's materials.yaml overrides the id1 entries it names
     RT_PKZ_ListFiles("materials/", ".yaml", rt_mat_load_cb, &ctx);
-    rt_mat_find_dir_mats(rt_mat_load_cb, &ctx);
+    {
+        char base[MAX_OSPATH];
+        q_snprintf(base, sizeof(base), "%s/id1", com_basedir);
+        if (q_strcasecmp(base, com_gamedir))
+        {
+            rt_mat_load_dir(base, rt_mat_load_cb, &ctx);
+        }
+    }
+    rt_mat_load_dir(com_gamedir, rt_mat_load_cb, &ctx);
 
     rt_mat_cmd = Cmd_AddCommand2("rt_mat", RT_MAT_Cmd, src_command);
 }
@@ -640,7 +753,15 @@ void RT_MAT_Reload(void)
 
     rt_mat_load_ctx_t ctx = { rt_global_materials, &rt_global_count, RT_MAT_MAX_GLOBAL };
     RT_PKZ_ListFiles("materials/", ".yaml", rt_mat_load_cb, &ctx);
-    rt_mat_find_dir_mats(rt_mat_load_cb, &ctx);
+    {
+        char base[MAX_OSPATH];
+        q_snprintf(base, sizeof(base), "%s/id1", com_basedir);
+        if (q_strcasecmp(base, com_gamedir))
+        {
+            rt_mat_load_dir(base, rt_mat_load_cb, &ctx);
+        }
+    }
+    rt_mat_load_dir(com_gamedir, rt_mat_load_cb, &ctx);
 
     if (rt_current_map[0])
     {
