@@ -121,21 +121,41 @@ class RhiTextureTable;
 // and words while their publication is pending, and the cluster sky-visibility table while its
 // update is pending. `LightManager::GetBuffers()` hands over the five device-local engine buffers,
 // `LightManager::GetFrameCopies(frameIndex)` the frame's staging handles and byte counts
-// (`Copy::size == 0` means nothing to copy). The wraps and the copies follow the module's usual
-// change detection and Retire contract.
+// (`Copy::size == 0` means nothing to copy). Once the copies are recorded the pass consumes the
+// pending flags through `LightManager::ConsumeFrameCopies(frameIndex)`, so a list buffer or the
+// sky-visibility table is copied again only when a new publication raises its flag; the light-array
+// prefix has no flag and keeps its every-frame copy. The wraps and the copies follow the module's
+// usual change detection and Retire contract.
+//
+// The light statistics (a42_recon.md §1): while `globalUniform.q2LightStatsMode` is not
+// Q2_LIGHT_STATS_DISABLED the direct raygen accumulates into and reads the per-cluster counters of
+// `LightManager`'s statistics buffer (Q2LightLists.hlsli:189-215, 312-358). The RHI list replaces
+// the legacy `LightManager::ResetLightStats` (`VulkanDevice.cpp:873-876`): the pass zeroes the
+// statistics slots the frame needs with the exact range that function fills
+// (`GetLightStatsClusterTarget` / `GetLightStatsClusterSize`, a prefix of 6,144 B per cluster), the
+// slot `frameId % LIGHT_STATS_SLOT_COUNT` always and the slots the lists have grown past what they
+// were last zeroed to. The fill is recorded on the set-6 statistics wrap with the automatic-barrier
+// pass (CopyDest before it, UnorderedAccess after it), and the pass mirrors the engine's cleared
+// bookkeeping itself, so the legacy path's state is untouched. `fltEnable[0] = 0` remains forced:
+// image 115 is still not written.
 //
 // Host contract (the skeleton wires the pass, the pass only records):
 //  - Record after the primary pass on the same list: the raygen reads the G-buffer the primary
 //    wrote into the same slot's images, and the NVRHI barriers between the two dispatches are what
 //    orders the writes before the reads.
-//  - Force `globalUniform.fltEnable[0] = 0` and `globalUniform.q2LightStatsMode =
-//    Q2_LIGHT_STATS_DISABLED` in the uniform patch for the traced mode: the direct raygen reads the
-//    gradient-sample image 115 only when `fltEnable[0] >= 0.5` (`Q2LightLists.hlsli:141-154`) and
-//    the light statistics only when the mode is not disabled (`Q2LightLists.hlsli:192-197, 348`),
-//    and the RHI path never writes image 115 (only the denoiser produces it) nor clears the stats
-//    buffer (ResetLightStats runs from the bypassed legacy `VulkanDevice::Render`). Binding 239 and
-//    binding 6 still have to be valid descriptors, which they are; without the switches the shader
-//    reads undefined memory. Both are temporary until A4.4/A4.5 (a42_recon.md §2.7).
+//  - Pass the frame's `frameId` and `lightStatsMode`, exactly the `ShGlobalUniform::frameId` and
+//    `ShGlobalUniform::q2LightStatsMode` the host wrote into the uniform this frame's raygen reads
+//    (`sky.uniform->GetData()->frameId` and `sky.uniform->GetData()->q2LightStatsMode`), so that
+//    the fill slot and the shader's slot agree: `frameId` is the engine counter, NOT `frameIndex`
+//    (the statistics rotate over LIGHT_STATS_SLOT_COUNT = 3 slots while MAX_FRAMES_IN_FLIGHT = 2).
+//    A mode of Q2_LIGHT_STATS_DISABLED (0) records no fill and leaves the statistics buffer to the
+//    same untouched path A4.2a had; any other mode makes the pass fill the slots the frame needs
+//    before the dispatch that writes them.
+//  - Force `globalUniform.fltEnable[0] = 0` in the uniform patch for the traced mode: the direct
+//    raygen reads the gradient-sample image 115 only when `fltEnable[0] >= 0.5`
+//    (`Q2LightLists.hlsli:141-154`) and the RHI path never writes image 115 (only the denoiser
+//    produces it). Binding 239 still has to be a valid descriptor, which it is; without the switch
+//    the shader reads undefined memory. Temporary until A4.5 (a42_recon.md §2.7).
 //  - Call ReleaseTargets() before Framebuffers::PrepareForSize destroys the framebuffer images.
 //
 // The pass is a no-op until Create succeeded and while an input is missing (no TLAS, no
@@ -159,9 +179,11 @@ public:
     // that owns the per-slot command lists and the retire queue every replaced wrap and set goes
     // through; 'pTextureTable' is the host's shared bindless table (RHI/RhiTextureTable.h), whose
     // layout becomes set 4 and whose table is bound with it; 'pLightManager' is the engine's light
-    // registry (LightManager.h), the source of the set-6 buffers and of the frame's light copies;
-    // 'pPrimaryPass' is the created primary-visibility pass (RHI/RhiRtPrimaryPass.h), which owns
-    // the shared set layouts, the empty set and the ray-stats set this pipeline and its states use.
+    // registry (LightManager.h), the source of the set-6 buffers and of the frame's light copies -
+    // the pass consumes the pending copies it records, so it is taken non-const (the call site does
+    // not change: Scene::GetLightManager().get() is already non-const); 'pPrimaryPass' is the
+    // created primary-visibility pass (RHI/RhiRtPrimaryPass.h), which owns the shared set layouts,
+    // the empty set and the ray-stats set this pipeline and its states use.
     // None of them is owned; all have to outlive this object, and a null or unusable one makes
     // Create fail. 'pShaderFolderPath' is the folder ShaderManager loads the engine blobs from,
     // with the trailing separator; the five RT blobs above are read from it. The pass logs through
@@ -170,7 +192,7 @@ public:
     bool Create(nvrhi::IDevice *pDevice,
                 rhi::RhiFrameContext *pFrameContext,
                 rhi::RhiTextureTable *pTextureTable,
-                const LightManager *pLightManager,
+                LightManager *pLightManager,
                 const RhiRtPrimaryPass *pPrimaryPass,
                 const char *pShaderFolderPath,
                 PrintFunction pfnPrint);
@@ -178,11 +200,16 @@ public:
     bool IsCreated() const { return created; }
 
     // One call per frame, on the frame context's open command list of 'frameIndex', after
-    // RhiRtPrimaryPass::Render of the same slot. 'pTopLevel' is the slot's top-level structure,
-    // 'pUniformBuffer' the engine's global uniform as a static constant-buffer wrap (the same wrap
-    // the primary takes), 'vertexData' the seven set 3 buffers ('RhiRtPrimaryPass::VertexData', the
-    // type is reused because the list is the same one the primary binds; this pass builds its own
-    // set over the primary's layout handle), and 'pFramebuffers' the engine's framebuffer registry.
+    // RhiRtPrimaryPass::Render of the same slot. 'frameId' is the engine counter
+    // (`ShGlobalUniform::frameId`, i.e. sky.uniform->GetData()->frameId) and 'lightStatsMode' the
+    // ShGlobalUniform::q2LightStatsMode of the same uniform, both exactly as the host wrote them
+    // into this frame's uniform: the mode gates the statistics fill and the frame id picks the
+    // statistics slot (frameId % LIGHT_STATS_SLOT_COUNT, not frameIndex). 'pTopLevel' is the slot's
+    // top-level structure, 'pUniformBuffer' the engine's global uniform as a static constant-buffer
+    // wrap (the same wrap the primary takes), 'vertexData' the seven set 3 buffers
+    // ('RhiRtPrimaryPass::VertexData', the type is reused because the list is the same one the
+    // primary binds; this pass builds its own set over the primary's layout handle), and
+    // 'pFramebuffers' the engine's framebuffer registry.
     // 'width'/'height' are the render resolution the images are sized to; the pass resolves every
     // image extent through Framebuffers::GetImageHandles' 4-tuple form, so the one set-1 image that
     // is not render-sized (Q2_GRAD_SMPL_POS, 1/3) is wrapped at its own extent.
@@ -190,7 +217,8 @@ public:
     // What is recorded: the wraps of the 12 set-1 images (created on first use, re-created when the
     // engine re-created an image or the size changed; the replaced wraps and the sets over them go
     // through the frame context's retire queue), the per-slot sets 0-3 and 6, the four light copies
-    // (before the state, so the automatic barriers order them before the dispatch), then one
+    // and the light-statistics fill of the slots the frame needs while the mode is not disabled
+    // (both before the state, so the automatic barriers order them before the dispatch), then one
     // `dispatchRays(width, height, 1)`. The full-size dispatch is what the raygen wants: its
     // `DispatchRaysIndex` is the checkerboard-packed texel itself (the shader hands it straight to
     // `fetchGbufferSurface` and to the two image stores, RtRaygenDirect.rgen.hlsl:82,186-188), and
@@ -212,6 +240,8 @@ public:
     // is missing.
     void Render(nvrhi::ICommandList *pCommandList,
                 uint32_t frameIndex,
+                uint32_t frameId,
+                uint32_t lightStatsMode,
                 nvrhi::rt::IAccelStruct *pTopLevel,
                 nvrhi::IBuffer *pUniformBuffer,
                 const RhiRtPrimaryPass::VertexData &vertexData,
@@ -287,20 +317,32 @@ private:
     bool PrepareVertexDataSet(Target &target, const RhiRtPrimaryPass::VertexData &vertexData);
 
     // Set 6 and this frame's light copies: wraps the five device-local engine buffers (re-wrapping
-    // when a handle changed), builds the set over the module's light layout, and records one
-    // copyBuffer per pending item of LightManager::GetFrameCopies(frameIndex) before the dispatch.
+    // when a handle changed), builds the set over the module's light layout, records one
+    // copyBuffer per pending item of LightManager::GetFrameCopies(frameIndex) and consumes the
+    // flags it recorded, and records the light-statistics fill while 'lightStatsMode' is not 0.
     // Returns false when an engine buffer or a pending copy source is missing.
-    bool PrepareLightSet(nvrhi::ICommandList *pCommandList, Target &target, uint32_t frameIndex);
+    bool PrepareLightSet(nvrhi::ICommandList *pCommandList, Target &target, uint32_t frameIndex,
+                         uint32_t frameId, uint32_t lightStatsMode);
+
+    // The ranged statistics fill of the frame: it is recorded on the set-6 wrap of the engine's
+    // statistics buffer inside 'target' (the same wrap the binding set binds, which is what makes
+    // the automatic barriers cover the native fill) and on that buffer's raw handle 'statsBuffer'.
+    // Zeroes exactly the slots LightManager::ResetLightStats would zero for 'frameId', on the range
+    // the lists the device holds can name, and mirrors that function's statsClusterCleared in the
+    // pass. Does nothing while the mode is Q2_LIGHT_STATS_DISABLED.
+    void RecordLightStatsFill(nvrhi::ICommandList *pCommandList, const Target &target,
+                              VkBuffer statsBuffer, uint32_t frameId, uint32_t lightStatsMode);
 
     nvrhi::IDevice *device = nullptr;
     PrintFunction print;
     std::string shaderFolderPath;
 
     // Not owned: the host's frame model and shared texture table, the engine's light registry and
-    // the primary-visibility pass, all outlive this object.
+    // the primary-visibility pass, all outlive this object. The light registry is non-const because
+    // the pass consumes the pending copies it records (LightManager::ConsumeFrameCopies).
     rhi::RhiFrameContext *frameContext = nullptr;
     rhi::RhiTextureTable *textureTable = nullptr;
-    const LightManager *lightManager = nullptr;
+    LightManager *lightManager = nullptr;
     const RhiRtPrimaryPass *primaryPass = nullptr;
 
     // The five engine blobs. The raygen needs no specialization (measured: the module declares no
@@ -323,6 +365,17 @@ private:
 
     // One entry per engine frame slot (MAX_FRAMES_IN_FLIGHT, Common.h:31).
     Target targets[MAX_FRAMES_IN_FLIGHT];
+
+    /* The rotating slots of the engine's light-statistics buffer and this pass's mirror of what
+       LightManager::statsClusterCleared holds: the RHI fills the slots without telling the engine,
+       so the mirror has to live here, one entry per statistics slot and independent of the
+       two-entry frame-slot Target array (three statistics slots against MAX_FRAMES_IN_FLIGHT = 2).
+       The constant is LightManager::LIGHT_STATS_SLOT_COUNT; this header keeps the engine headers
+       out, so it stands here and the .cpp asserts that the two agree. The entries are zero - every
+       slot is filled - until the pass fills one, and they are dropped when the engine's statistics
+       buffer handle changes, because a re-created buffer holds no counters this pass zeroed. */
+    static constexpr uint32_t LIGHT_STATS_SLOT_COUNT = 3;
+    uint32_t statsClusterCleared[LIGHT_STATS_SLOT_COUNT] = {};
 
     // One-shot warnings for the inputs that can legitimately be missing for a few frames or are a
     // permanent host-side mistake.

@@ -35,6 +35,7 @@
 #include "RHI/NvrhiRequirements.h"
 #include "RHI/RhiAccelStructs.h"
 #include "RHI/RhiDebugTracePass.h"
+#include "RHI/RhiRtComposePass.h"
 #include "RHI/RhiRtDirectPass.h"
 #include "RHI/RhiRtPrimaryPass.h"
 #include "RHI/RhiFrameContext.h"
@@ -444,6 +445,22 @@ VulkanDevice::VulkanDevice( const RgInstanceCreateInfo* info )
                         Print("Warning: RHI: the direct ray-tracing pass is unavailable, the legacy renderer is kept");
                     }
                 }
+
+                // The compose preview of A4.2b (RHI/RhiRtComposePass.h), created only under
+                // 'rhicompose': the real adapter -> interleave -> checkerboard chain ending in
+                // FINAL, which the skeleton then presents. A failure leaves the pointer null: the
+                // traced chain keeps the A4.2a diagnostic present instead of failing the frame.
+                if (libconfig.rhiCompose)
+                {
+                    rhiRtComposePass = std::make_shared<RhiRtComposePass>();
+                    if (!rhiRtComposePass->Create(nvrhi->GetDevice(), rhiFrameContext.get(),
+                                                  info->pShaderFolderPath,
+                                                  [this](const char *pMessage) { Print(pMessage); }))
+                    {
+                        rhiRtComposePass.reset();
+                        Print("Warning: RHI: the compose preview is unavailable, the diagnostic present is kept");
+                    }
+                }
             }
 
             // The pass binds the shared RHI texture table (its slot 0 holds the engine's empty
@@ -480,6 +497,7 @@ VulkanDevice::VulkanDevice( const RgInstanceCreateInfo* info )
                 rhiDebugTracePass.get(),
                 rhiRtPrimaryPass.get(),
                 rhiRtDirectPass.get(),
+                rhiRtComposePass.get(),
                 frameMode,
                 [this](const char *pMessage) { Print(pMessage); });
 
@@ -557,11 +575,12 @@ VulkanDevice::~VulkanDevice()
     // be released before both of them
     nvrhiFrameSkeleton.reset();
 
-    // The skeleton references all of them, so they follow it immediately; all four wrap engine
+    // The skeleton references all of them, so they follow it immediately; all five wrap engine
     // buffers/images and quote the RHI device, so they precede the table/context and the device
     // below. The direct pass borrows the primary's layout handles, so it goes before the primary.
     rhiDebugTracePass.reset();
     rhiRtDirectPass.reset();
+    rhiRtComposePass.reset();
     rhiRtPrimaryPass.reset();
     rhiAccelStructs.reset();
 

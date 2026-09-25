@@ -24,6 +24,7 @@
 
 #include "RhiAccelStructs.h"
 #include "RhiDebugTracePass.h"
+#include "RhiRtComposePass.h"
 #include "RhiRtDirectPass.h"
 #include "RhiRtPrimaryPass.h"
 #include "RhiTextureSource.h"
@@ -85,6 +86,7 @@ NvrhiFrameSkeleton::NvrhiFrameSkeleton(nvrhi::IDevice *pDevice,
                                        RhiDebugTracePass *pDebugTracePass,
                                        RhiRtPrimaryPass *pRtPrimaryPass,
                                        RhiRtDirectPass *pRtDirectPass,
+                                       RhiRtComposePass *pRtComposePass,
                                        FrameMode mode,
                                        PrintFunction pfnPrint)
     : device(dynamic_cast<nvrhi::vulkan::IDevice *>(pDevice))
@@ -94,6 +96,7 @@ NvrhiFrameSkeleton::NvrhiFrameSkeleton(nvrhi::IDevice *pDevice,
     , debugTracePass(pDebugTracePass)
     , rtPrimaryPass(pRtPrimaryPass)
     , rtDirectPass(pRtDirectPass)
+    , rtComposePass(pRtComposePass)
     , frameMode(mode)
     , textureTable(pTextureTable)
     , frameContext(pFrameContext)
@@ -367,17 +370,14 @@ bool NvrhiFrameSkeleton::Render(const Swapchain *pSwapchain, uint32_t frameIndex
             }
         }
 
-        // The A4.2 switches, forced for the traced chain until A4.4/A4.5 lift them:
-        //  - fltEnable[0] = 0 makes q2GetIsGradient return before reading the gradient-sample-
-        //    position image, which the traced chain never writes under `rhiframe` (the ASVGF chain
-        //    is A4.5);
-        //  - q2LightStatsMode = 0 makes the direct raygen skip the light-stats read and write, so
-        //    the engine's 144 MiB statistics buffer is bound but never accessed - the RHI path has
-        //    no clear or fill for it (the legacy ResetLightStats runs only from the bypassed path).
+        // The A4.2a switch, forced for the traced chain until A4.5 lifts it: fltEnable[0] = 0 makes
+        // q2GetIsGradient return before reading the gradient-sample-position image, which the
+        // traced chain never writes under `rhiframe` (the ASVGF chain is A4.5). q2LightStatsMode is
+        // no longer forced: the direct pass fills the statistics slots itself from the engine's
+        // cvar-driven value (RhiRtDirectPass.h documents the host contract).
         if (tracedFrame)
         {
             sky.uniform->GetData()->fltEnable[0] = 0.0f;
-            sky.uniform->GetData()->q2LightStatsMode = 0;
         }
 
         rhi::writeBuffer(commandList, worldUniformBuffer, sky.uniform->GetData(), sizeof(ShGlobalUniform));
@@ -465,15 +465,30 @@ bool NvrhiFrameSkeleton::Render(const Swapchain *pSwapchain, uint32_t frameIndex
         // and the seed) and the frame's light buffers; it records on the same list right after the
         // primary, the order the legacy frame uses (VulkanDevice.cpp:901 then :1039) and the order
         // its state announcements and the present's direct read assume.
-        if (rtDirectPass != nullptr)
+        if (rtDirectPass != nullptr && sky.uniform != nullptr)
         {
+            // The light-statistics bookkeeping follows the uniform bytes the raygen reads, not the
+            // frame slot: the statistics buffer has three rotating slots and the raygen addresses
+            // frameId % 3 (RhiRtDirectPass.h documents the contract).
+            const ShGlobalUniform *uniform = sky.uniform->GetData();
+
             rtDirectPass->Render(
                 commandList, frameIndex,
+                uniform->frameId, uniform->q2LightStatsMode,
                 accelStructs != nullptr ? accelStructs->GetTopLevel(frameIndex) : nullptr,
                 worldUniformBuffer.Get(),
                 passVertexData,
                 sky.framebuffers,
                 sky.width, sky.height);
+        }
+
+        // The compose preview: the real adapter -> interleave -> checkerboard chain over the
+        // G-buffer and the direct buffers, writing FINAL, which the present samples when the pass
+        // exists. It records after the direct pass for the same reason it does.
+        if (rtComposePass != nullptr)
+        {
+            rtComposePass->Render(commandList, frameIndex, sky.framebuffers, sky.width, sky.height,
+                                  worldUniformBuffer.Get());
         }
     }
     else if (debugTracePass != nullptr && sky.framebuffers != nullptr)
@@ -497,12 +512,22 @@ bool NvrhiFrameSkeleton::Render(const Swapchain *pSwapchain, uint32_t frameIndex
             albedoFormat);
     }
 
-    // The present samples the ALBEDO wrap of this slot. The pass is the only owner of the wrap, so
-    // the handle is borrowed and only valid until the pass re-wraps the slot. The direct term's
-    // image is the skeleton's own wrap (ResolvePresentDirectTexture): every mode resolves it,
-    // because the layout's unordered-access item is always filled, but the shader reads it only
-    // while the traced chain runs (the params flag below).
-    nvrhi::ITexture *albedo = skyPass != nullptr ? skyPass->GetAlbedoTexture(frameIndex) : nullptr;
+    // The present samples the source of this slot: the ALBEDO wrap of the raster and diagnostic
+    // modes (the sky pass is the only owner of that wrap), or the compose preview's FINAL image
+    // when the preview ran - both are borrowed and only valid until their pass re-wraps the slot.
+    // The direct term's image is the skeleton's own wrap (ResolvePresentDirectTexture): every mode
+    // resolves it, because the layout's unordered-access item is always filled, but the shader
+    // reads it only in the diagnostic mode (the params flag below).
+    nvrhi::ITexture *albedo = nullptr;
+    if (rtComposePass != nullptr)
+    {
+        albedo = rtComposePass->GetFinalTexture(frameIndex);
+    }
+    else if (skyPass != nullptr)
+    {
+        albedo = skyPass->GetAlbedoTexture(frameIndex);
+    }
+
     nvrhi::ITexture *directTexture = albedo != nullptr ? ResolvePresentDirectTexture(frameIndex, sky) : nullptr;
 
     if (albedo == nullptr)
@@ -523,12 +548,14 @@ bool NvrhiFrameSkeleton::Render(const Swapchain *pSwapchain, uint32_t frameIndex
         // exposure.y is the mirror flag of the frame's mode: the engine-convention traced frames
         // need the present to flip the sample coordinate (RhiPresent.frag.hlsl:64-76), the raster
         // and debug-trace frames do not (the debug raygen flips its own store,
-        // RhiDebugTrace.rgen.hlsl:107-114). exposure.z enables the direct-lighting term, which only
-        // the traced chain has.
+        // RhiDebugTrace.rgen.hlsl:107-114). exposure.z enables the direct-lighting term of the
+        // diagnostic present - the compose preview feeds FINAL, which already carries the light, so
+        // it keeps the term off.
         const bool traced = frameMode == FrameMode::Traced;
+        const bool compose = rtComposePass != nullptr;
         RhiPresentParams presentParams = PRESENT_PARAMS;
         presentParams.exposure[1] = traced ? 1.0f : 0.0f;
-        presentParams.exposure[2] = traced ? 1.0f : 0.0f;
+        presentParams.exposure[2] = (traced && !compose) ? 1.0f : 0.0f;
         rhi::writeBuffer(commandList, presentParamsBuffer, &presentParams, sizeof(presentParams));
 
         // The swapchain hands the image over in the present layout and expects it
@@ -977,6 +1004,13 @@ void NvrhiFrameSkeleton::DestroySwapchainResources()
     if (rtDirectPass != nullptr)
     {
         rtDirectPass->ReleaseTargets();
+    }
+
+    // The compose preview wraps the framebuffer images it reads and writes and keeps the FINAL wrap
+    // the present borrows when it ran, so it drops them here as well.
+    if (rtComposePass != nullptr)
+    {
+        rtComposePass->ReleaseTargets();
     }
 
     // A present binding set references the ALBEDO wrap and the direct-term image of one slot, so it

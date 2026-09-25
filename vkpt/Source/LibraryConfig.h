@@ -40,9 +40,14 @@ namespace vkpt::LibraryConfig
         // Draws the frame through the real ray-tracing passes of the RHI path (A4) instead of the
         // rasterized chain. As of A4.1 this is the primary-visibility pass: the engine's primary
         // raygen fills the checkerboard G-buffer (ALBEDO included) and the present shows it without
-        // lighting; the later A4 cuts add direct lighting, GI, the denoiser and the composition.
-        // Requires 'rhiframe'; when 'rhitrace' is set as well, this mode wins.
+        // lighting; A4.2 added the direct-lighting pass and the present's diagnostic compose. The
+        // later A4 cuts add the denoiser and the full composition. Requires 'rhiframe'; when
+        // 'rhitrace' is set as well, this mode wins.
         bool rhiRayTracing = false;
+        // Draws the composed preview of the traced frame: the real adapter -> interleave ->
+        // checkerboard chain (with the denoiser bypassed) writes FINAL and the present shows it,
+        // instead of the A4.2a diagnostic present of ALBEDO + the direct term. Requires 'rhirt'.
+        bool rhiCompose = false;
     };
 
     namespace detail
@@ -76,6 +81,10 @@ namespace vkpt::LibraryConfig
             else if (entry == "rhirt")
             {
                 dst.rhiRayTracing = true;
+            }
+            else if (entry == "rhicompose")
+            {
+                dst.rhiCompose = true;
             }
         }
     }

@@ -150,20 +150,19 @@ constexpr uint32_t MAX_PAYLOAD_SIZE = 2 * sizeof(float) + 2 * sizeof(uint32_t);
 constexpr uint32_t MAX_ATTRIBUTE_SIZE = 2 * sizeof(float);
 
 // The five device-local engine buffers of set 6, in the order of `LightManager::Buffers` and of the
-// engine's own descriptor writes (LightManager.cpp:942-983): the light array, the list offsets, the
-// list words, the light statistics and the cluster sky visibility. The raw bindings are the
-// generated BINDING_LIGHT_SOURCES* numbers (0, 4, 5, 6, 8); the sizes are the engine's own creation
-// sizes (LightManager.cpp:71-96) and are what a native wrap has to carry, because
-// `LightManager::Buffers` hands out the VkBuffers without their sizes. The strides are the
+// engine's own descriptor writes (LightManager::CreateDescriptors / UpdateDescriptors): the light
+// array, the list offsets, the list words, the light statistics and the cluster sky visibility. The
+// raw bindings are the generated BINDING_LIGHT_SOURCES* numbers (0, 4, 5, 6, 8); the sizes are the
+// engine's own creation sizes (LightManager.cpp:71-96) and are what a native wrap has to carry,
+// because `LightManager::Buffers` hands out the VkBuffers without their sizes. The strides are the
 // shader's element strides: ShLightEncoded is 144 B and every other buffer is a uint array.
 //
 // The statistics buffer is the only UAV item (the raygen's `q2AccumulateLightStats` writes it) and
-// the only one the RHI never copies: while `globalUniform.q2LightStatsMode` is
+// the only one the RHI never copies. While `globalUniform.q2LightStatsMode` is
 // Q2_LIGHT_STATS_DISABLED the shader neither reads nor writes it (Q2LightLists.hlsli:192-197,
-// 348), which is the host contract this pass documents, so its contents do not matter and
-// `ResetLightStats`'s fill (LightManager.cpp:765-793, legacy path only) has no RHI counterpart yet.
-// A later cut that enables the statistics has to bring the fill and its barrier (a42_recon.md
-// §2.5, §6.2.2b).
+// 348) and the pass records no fill; any other mode makes `RecordLightStatsFill` zero the slots the
+// frame needs through a native ranged fill, on the range `LightManager::ResetLightStats` would
+// (a42_recon.md §1.5(b), §2.5).
 struct LightBufferBinding
 {
     uint32_t binding;
@@ -208,6 +207,14 @@ constexpr LightBufferBinding LIGHT_BUFFER_BINDINGS[LIGHT_BUFFER_COUNT] =
     },
 };
 
+// The statistics buffer of the table above: the only item the light-statistics fill touches, and
+// the only one whose automatic barrier state the pass drives by hand.
+constexpr uint32_t LIGHT_STATS_BUFFER_INDEX = 3;
+static_assert(LIGHT_BUFFER_BINDINGS[LIGHT_STATS_BUFFER_INDEX].binding ==
+                  BINDING_LIGHT_SOURCES_Q2_LIGHT_STATS &&
+              LIGHT_BUFFER_BINDINGS[LIGHT_STATS_BUFFER_INDEX].isUAV,
+              "LIGHT_STATS_BUFFER_INDEX has to name the statistics buffer of the set-6 table");
+
 static_assert(sizeof(ShLightEncoded) == 144,
               "the shader's StructuredBuffer<ShLightEncoded> strides by 144 B (Generated/ShaderCommonC.h:389-401)");
 
@@ -244,10 +251,11 @@ const char *const LIGHT_BUFFER_DEBUG_NAMES[LIGHT_BUFFER_COUNT] =
 //  - initialState claims the state the buffer is in at the start of every command list, because
 //    the engine's writes are invisible to NVRHI: the four SRV buffers are written by the module's
 //    own copyBuffer and claim CopyDest (the same choice RhiAccelStructs::MakeCopyDest describes),
-//    the statistics buffer claims UnorderedAccess and is never touched at all. keepInitialState
-//    makes the claim stick for every later list instead of reporting an unknown prior state
-//    (state-tracking.cpp:290-297); the automatic barrier pass then turns the copy or the shader
-//    use into a transition out of that claim.
+//    while the statistics buffer claims UnorderedAccess, the state the raygen leaves it in; the
+//    fill's setBufferState(CopyDest)/setBufferState(UnorderedAccess) pair is the transition out of
+//    and back into that claim. keepInitialState makes the claim stick for every later list instead
+//    of reporting an unknown prior state (state-tracking.cpp:290-297); the automatic barrier pass
+//    then turns the copy, the fill or the shader use into a transition out of that claim.
 nvrhi::BufferDesc MakeLightBufferDesc(const LightBufferBinding &binding, std::string debugName)
 {
     nvrhi::BufferDesc desc;
@@ -350,7 +358,7 @@ RhiRtDirectPass::~RhiRtDirectPass()
 bool RhiRtDirectPass::Create(nvrhi::IDevice *pDevice,
                              rhi::RhiFrameContext *pFrameContext,
                              rhi::RhiTextureTable *pTextureTable,
-                             const LightManager *pLightManager,
+                             LightManager *pLightManager,
                              const RhiRtPrimaryPass *pPrimaryPass,
                              const char *pShaderFolderPath,
                              PrintFunction pfnPrint)
@@ -570,6 +578,8 @@ bool RhiRtDirectPass::Create(nvrhi::IDevice *pDevice,
 
 void RhiRtDirectPass::Render(nvrhi::ICommandList *pCommandList,
                              uint32_t frameIndex,
+                             uint32_t frameId,
+                             uint32_t lightStatsMode,
                              nvrhi::rt::IAccelStruct *pTopLevel,
                              nvrhi::IBuffer *pUniformBuffer,
                              const RhiRtPrimaryPass::VertexData &vertexData,
@@ -737,9 +747,10 @@ void RhiRtDirectPass::Render(nvrhi::ICommandList *pCommandList,
         return;
     }
 
-    // Set 6 and the four light copies. The copies go before the state below, so the automatic
-    // barriers order each copy before the dispatch that reads the copied buffer.
-    if (!PrepareLightSet(pCommandList, target, frameIndex))
+    // Set 6, the four light copies and the light-statistics fill. The copies and the fill go before
+    // the state below, so the automatic barriers order each of them before the dispatch that reads
+    // or writes the buffer.
+    if (!PrepareLightSet(pCommandList, target, frameIndex, frameId, lightStatsMode))
     {
         return;
     }
@@ -1070,7 +1081,8 @@ bool RhiRtDirectPass::PrepareVertexDataSet(Target &target, const RhiRtPrimaryPas
     return true;
 }
 
-bool RhiRtDirectPass::PrepareLightSet(nvrhi::ICommandList *pCommandList, Target &target, uint32_t frameIndex)
+bool RhiRtDirectPass::PrepareLightSet(nvrhi::ICommandList *pCommandList, Target &target,
+                                      uint32_t frameIndex, uint32_t frameId, uint32_t lightStatsMode)
 {
     const LightManager::Buffers buffers = lightManager->GetBuffers();
     const VkBuffer rawBuffers[LIGHT_BUFFER_COUNT] =
@@ -1103,6 +1115,15 @@ bool RhiRtDirectPass::PrepareLightSet(nvrhi::ICommandList *pCommandList, Target 
 
     if (buffersChanged)
     {
+        // A changed statistics buffer is a buffer whose counters this pass never zeroed, so the
+        // fill mirror starts over; the engine's own statsClusterCleared belongs to ResetLightStats
+        // and cannot be read here. A release that only dropped the wraps (a resize) re-wraps the
+        // same buffer, and the mirror stays valid.
+        if (target.lightHandles[LIGHT_STATS_BUFFER_INDEX] != rawBuffers[LIGHT_STATS_BUFFER_INDEX])
+        {
+            std::memset(statsClusterCleared, 0, sizeof(statsClusterCleared));
+        }
+
         // A light buffer handle changed (the engine re-created its buffers): the wraps, the set
         // over them and this slot's copy sources are retired and rebuilt from the new handles.
         ReleaseLightTarget(target);
@@ -1155,11 +1176,10 @@ bool RhiRtDirectPass::PrepareLightSet(nvrhi::ICommandList *pCommandList, Target 
     // the `rhiframe` path bypasses (a42_recon.md §2.2, §5). `Copy::size == 0` means nothing is
     // pending for that item. The prefix copy of the light array runs every frame and includes the
     // sun slot at index 0; the two list buffers and the sky-visibility table run while their
-    // publication/update is pending. Note that this accessor reports, it does not consume: the
-    // pending flags live in the engine and the legacy path that clears them does not run under
-    // `rhiframe`, so an unchanged list buffer is copied again on every frame that binds this set.
-    // That is redundant traffic, not a correctness issue - the per-slot staging holds exactly the
-    // words `GetFrameCopies` measures.
+    // publication/update is pending. Unlike in A4.2a, the flags this accessor reports under are
+    // consumed once the copies are recorded, so an unchanged list buffer is not copied again on
+    // the next frame (a42_recon.md §2.4); the light-array prefix has no flag and keeps its
+    // every-frame copy.
     const LightManager::FrameCopies copies = lightManager->GetFrameCopies(frameIndex);
     const LightManager::Copy copyItems[LIGHT_COPY_COUNT] =
     {
@@ -1227,7 +1247,106 @@ bool RhiRtDirectPass::PrepareLightSet(nvrhi::ICommandList *pCommandList, Target 
         pCommandList->copyBuffer(target.lightWraps[bufferIndex], 0, target.lightStagingWraps[i], 0, copy.size);
     }
 
+    /* Every item the accessor reported with a non-zero size was recorded above (a zero size means
+       nothing is pending), so the flags are consumed here - the same two clears CopyFromStaging
+       makes once it has copied. This is the only consumer of the flags that runs under `rhiframe`,
+       and it runs only after all copies were recorded: an early return above leaves the flags for
+       the next frame. */
+    lightManager->ConsumeFrameCopies(frameIndex);
+
+    // The statistics fill, on the same wrap the set binds and with the range the legacy
+    // ResetLightStats fills. It is the second thing this pass adds to the list before the
+    // dispatch that both reads the counters of slot frameId - 1 and accumulates into slot
+    // frameId; setRayTracingState is what commits the barriers that order it against them.
+    RecordLightStatsFill(pCommandList, target, buffers.lightStats, frameId, lightStatsMode);
+
     return true;
+}
+
+void RhiRtDirectPass::RecordLightStatsFill(nvrhi::ICommandList *pCommandList, const Target &target,
+                                           VkBuffer statsBuffer, uint32_t frameId, uint32_t lightStatsMode)
+{
+    // The constant of this header is the engine's slot count; the two have to spin together.
+    static_assert(LIGHT_STATS_SLOT_COUNT == LightManager::LIGHT_STATS_SLOT_COUNT,
+                  "the direct RT pass mirrors the engine's statistics slot rotation");
+
+    /* Q2_LIGHT_STATS_DISABLED: the raygen neither accumulates into nor reads the statistics
+       (Q2LightLists.hlsli:110, 192-197), so a fill would be dead transfer work and the A4.2a
+       no-fill behavior is exactly what a disabled mode has to keep. The host passes the mode of the
+       uniform the raygen reads, so the fill and the shader can never disagree. */
+    if (lightStatsMode == 0)
+    {
+        return;
+    }
+
+    /* The fill plan of LightManager::ResetLightStats, without the engine's own vkCmdFillBuffer: a
+       cluster's counter pair costs GetLightStatsClusterSize() bytes, and only the clusters the
+       lists the device holds can name have to be zero - at most LIGHT_STATS_CLUSTER_COUNT of them,
+       which is the whole 48 MiB slot. */
+    const uint32_t clusterTarget = lightManager->GetLightStatsClusterTarget();
+    const VkDeviceSize clusterSize = lightManager->GetLightStatsClusterSize();
+
+    if (clusterTarget == 0 || clusterSize == 0)
+    {
+        return;
+    }
+
+    const uint32_t slot = frameId % LIGHT_STATS_SLOT_COUNT;
+    const VkDeviceSize slotSize = clusterSize * LightManager::LIGHT_STATS_CLUSTER_COUNT;
+    const VkDeviceSize fillSize = clusterSize * clusterTarget;
+
+    /* The native command buffer of the very list NVRHI records to (getNativeObject returns the open
+       VkCommandBuffer, vulkan-commandlist.cpp:50-58): NVRHI has no ranged buffer fill, and
+       clearBufferUInt clears the whole 144 MiB buffer - it would destroy the counters of the two
+       other slots the same frame reads, at three times the legacy traffic (a42_recon.md §1.5(a)).
+       Offset and size are multiples of 4 (whole clusters of a whole slot), which vkCmdFillBuffer
+       requires, and the buffer carries TRANSFER_DST (LightManager.cpp:91-94). */
+    const VkCommandBuffer nativeCmdBuffer = static_cast<VkCommandBuffer>(
+        pCommandList->getNativeObject(nvrhi::ObjectTypes::VK_CommandBuffer).pointer);
+
+    bool anyFill = false;
+
+    for (uint32_t i = 0; i < LIGHT_STATS_SLOT_COUNT; i++)
+    {
+        /* The slot of this frame is filled at every rotation, because the raygen accumulates into
+           it; the others only while the lists have grown past what they were last filled up to -
+           exactly the legacy condition, which is what leaves the frame's read slot (frameId - 1)
+           accumulated by the frame before it instead of zeroing it underneath. */
+        if (i != slot && statsClusterCleared[i] >= clusterTarget)
+        {
+            continue;
+        }
+
+        if (!anyFill)
+        {
+            /* Into the fill's state and out of the UnorderedAccess claim the wrap starts every
+               list with, committed before the native fill: a pending barrier would otherwise be
+               flushed after it and the fill would run unordered against the previous frame's
+               raygen atomics it overwrites. The fill is recorded on this wrap - the one the
+               binding set binds - because NVRHI's barrier bookkeeping is per wrap object
+               (a42_recon.md §1.5(b), §2.2). */
+            pCommandList->setBufferState(target.lightWraps[LIGHT_STATS_BUFFER_INDEX],
+                                         nvrhi::ResourceStates::CopyDest);
+            pCommandList->commitBarriers();
+            anyFill = true;
+        }
+
+        vkCmdFillBuffer(nativeCmdBuffer, statsBuffer, slotSize * i, fillSize, 0);
+
+        // This slot is zero up to the target now, the pass's mirror of statsClusterCleared: the
+        // next frames skip it again until the lists grow.
+        statsClusterCleared[i] = clusterTarget;
+    }
+
+    if (anyFill)
+    {
+        /* Back to the state the set-6 UAV binding requires. The pending CopyDest ->
+           UnorderedAccess barrier is committed by the setRayTracingState of this list, which also
+           emits the same-state UAV barrier that orders the previous submissions' atomics before
+           this frame's (a42_recon.md §2.2). */
+        pCommandList->setBufferState(target.lightWraps[LIGHT_STATS_BUFFER_INDEX],
+                                     nvrhi::ResourceStates::UnorderedAccess);
+    }
 }
 
 bool RhiRtDirectPass::LoadShader(const char *pFileName, nvrhi::ShaderType type, nvrhi::ShaderHandle &result)

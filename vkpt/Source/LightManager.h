@@ -93,6 +93,17 @@ public:
     void ResetLightStats(VkCommandBuffer cmd, uint32_t frameIndex, uint32_t frameId);
     void BarrierQ2ClusterLists(VkCommandBuffer cmd, uint32_t frameIndex);
 
+    /* The read-only fill plan the RHI direct pass mirrors from ResetLightStats: the count of
+       clusters the lists the device holds can name, clamped to LIGHT_STATS_CLUSTER_COUNT, and the
+       bytes one cluster's counter pair spans. One rotating slot spans
+       GetLightStatsClusterSize() * LIGHT_STATS_CLUSTER_COUNT bytes, and there are
+       LIGHT_STATS_SLOT_COUNT of them; both values are what ResetLightStats fills with
+       (LightManager.cpp:858-886). The cleared state itself stays private: the RHI pass keeps its
+       own mirror of statsClusterCleared and reports the fill it actually records, so the legacy
+       path's bookkeeping is untouched. */
+    uint32_t GetLightStatsClusterTarget() const;
+    VkDeviceSize GetLightStatsClusterSize() const;
+
     VkDescriptorSetLayout GetDescSetLayout();
     VkDescriptorSet GetDescSet(uint32_t frameIndex);
 
@@ -134,6 +145,14 @@ public:
        publishedListWords[frame], the word count the publication of this slot recorded, not the
        count of the frame being recorded. */
     FrameCopies GetFrameCopies(uint32_t frame) const;
+
+    /* Clears the pending flags GetFrameCopies reports for the frame, exactly the way
+       CopyFromStaging clears them once it has copied the staging buffers. It has to be called on
+       the path that recorded the copies and only there: a frame that leaves the flags set is a
+       frame a later pass (or the legacy path) still copies, while a frame that clears them
+       without copying leaves the device buffers stale. The light-array prefix has no flag - it is
+       copied every frame by design - and is not consumed here. */
+    void ConsumeFrameCopies(uint32_t frame);
 
 private:
     /* What one frame has registered so far. A light is looked up once per frame it survives in and

@@ -39,6 +39,7 @@ namespace vkpt
 class Framebuffers;
 class GlobalUniform;
 class RhiDebugTracePass;
+class RhiRtComposePass;
 class RhiRtDirectPass;
 class RhiRtPrimaryPass;
 class RhiSkyPass;
@@ -167,6 +168,10 @@ public:
     // borrows the primary's shared layout handles, so the primary has to outlive it and be
     // destroyed after it. Not owned; a null or not-created one with that mode makes the skeleton
     // unavailable.
+    // 'pRtComposePass' is the host's compose preview (RhiRtComposePass, RHI/RhiRtComposePass.h):
+    // when it is non-null, the traced chain runs it after the direct pass and the present samples
+    // its FINAL image instead of ALBEDO plus the direct term. Optional: a null one keeps the A4.2a
+    // present, and the host creates it only under 'rhicompose'.
     explicit NvrhiFrameSkeleton(nvrhi::IDevice *pDevice,
                                 const Swapchain *pSwapchain,
                                 const char *pShaderFolderPath,
@@ -176,6 +181,7 @@ public:
                                 RhiDebugTracePass *pDebugTracePass,
                                 RhiRtPrimaryPass *pRtPrimaryPass,
                                 RhiRtDirectPass *pRtDirectPass,
+                                RhiRtComposePass *pRtComposePass,
                                 FrameMode mode,
                                 PrintFunction pfnPrint);
     ~NvrhiFrameSkeleton() override;
@@ -289,6 +295,11 @@ private:
     // right after the primary when frameMode is Traced. It borrows the primary's layout handles, so
     // the host destroys it before the primary. Not owned; null when the host's 'rhirt' flag is off.
     RhiRtDirectPass *rtDirectPass = nullptr;
+
+    // The host's compose preview (RhiRtComposePass, RHI/RhiRtComposePass.h), driven after the direct
+    // pass when it is non-null; the present then samples its FINAL image. Not owned; null when the
+    // host's 'rhicompose' flag is off or the creation failed.
+    RhiRtComposePass *rtComposePass = nullptr;
 
     // The frame mode of the whole run: which chain Render records into ALBEDO. The host picks it
     // once from 'rhirt'/'rhitrace' (VulkanDevice_Init.cpp) and it does not change while the

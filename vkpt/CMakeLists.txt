@@ -91,6 +91,7 @@ set(vkpt_SOURCES
     Source/RHI/RhiDescriptors.cpp
     Source/RHI/RhiFrameContext.cpp
     Source/RHI/RhiPipeline.cpp
+    Source/RHI/RhiRtComposePass.cpp
     Source/RHI/RhiRtDirectPass.cpp
     Source/RHI/RhiRtPrimaryPass.cpp
     Source/RHI/RhiSkyPass.cpp

@@ -675,6 +675,38 @@ vkpt::LightManager::FrameCopies vkpt::LightManager::GetFrameCopies(uint32_t fram
     return copies;
 }
 
+void vkpt::LightManager::ConsumeFrameCopies(uint32_t frame)
+{
+    assert(frame < MAX_FRAMES_IN_FLIGHT);
+
+    /* The two flags GetFrameCopies reports, cleared exactly where CopyFromStaging clears them
+       once it has copied the staging buffers: the device buffers then hold the bytes the flags
+       described. A new publication or sky-visibility update raises its flag again before either
+       consumer records its next copy, so consuming here cannot lose a copy - and a frame that is
+       recorded but never submitted is not reachable in the current skeleton
+       (NvrhiFrameSkeleton::Render always ends with EndSlot). The light-array prefix has no flag
+       and keeps its every-frame copy. */
+    lightListCopyPending[frame] = false;
+    clusterSkyVisCopyPending[frame] = false;
+}
+
+uint32_t vkpt::LightManager::GetLightStatsClusterTarget() const
+{
+    /* The count SetClusterLightLists last recorded (clamped there to Q2_MAX_CLUSTERS) and
+       Q2_MAX_CLUSTERS again after Reset() while no list of the scene is known; the clamp is
+       repeated here so the accessor is the cluster count of ResetLightStats's fill range whatever
+       a later writer of statsClusterTarget does. */
+    return std::min(statsClusterTarget, LIGHT_STATS_CLUSTER_COUNT);
+}
+
+VkDeviceSize vkpt::LightManager::GetLightStatsClusterSize() const
+{
+    /* The bytes one cluster's counter pair spans: the slot size ResetLightStats derives
+       (:862-864) divided by the cluster count, i.e. 6,144 B. */
+    return (sizeof(uint32_t) * Q2_MAX_CLUSTERS * Q2_LIGHT_LIST_MAX_PER_CELL *
+            Q2_LIGHT_LIST_STATS_SIDES * 2) / LIGHT_STATS_CLUSTER_COUNT;
+}
+
 void vkpt::LightManager::SetClusterLightLists(uint32_t frameIndex, uint32_t numClusters,
                                               const uint32_t *pOffsets, const uint64_t *pLightUniqueIds,
                                               uint32_t totalLightCount, uint64_t listGeneration)

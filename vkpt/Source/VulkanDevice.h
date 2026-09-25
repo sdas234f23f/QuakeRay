@@ -72,6 +72,7 @@ namespace vkpt
 class NvrhiContext;
 class NvrhiFrameSkeleton;
 class RhiDebugTracePass;
+class RhiRtComposePass;
 class RhiRtDirectPass;
 class RhiRtPrimaryPass;
 struct NvrhiRequirements;
@@ -290,6 +291,11 @@ private:
     // flag is off or the creation failed; with the flag on and no pair the skeleton stays
     // unavailable and the legacy renderer is kept.
     std::shared_ptr<RhiRtDirectPass>        rhiRtDirectPass;
+    // The RHI compose preview (RHI/RhiRtComposePass.h): the real adapter -> interleave ->
+    // checkerboard chain writing FINAL for the traced frame, created only when 'rhicompose' is on
+    // and referenced by the skeleton, which then presents its FINAL image. Null when the flag is
+    // off or the creation failed; the traced chain then keeps the A4.2a diagnostic present.
+    std::shared_ptr<RhiRtComposePass>       rhiRtComposePass;
     // The RHI frame skeleton: the first frame pass that is recorded through the
     // RHI layer. Null unless 'rhiframe' is set in vkpt.txt.
     std::shared_ptr<NvrhiFrameSkeleton>     nvrhiFrameSkeleton;
