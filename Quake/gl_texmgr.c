@@ -1926,6 +1926,114 @@ void TexMgr_ReloadImage (gltexture_t *glt, int shirt, int pants)
 
 /*
 ================
+TexMgr_LoadRgbaForPreview
+
+The RGBA8 pixels of a texture's own source, for the editor's texture preview
+and its colour picker. The source is resolved the way TexMgr_ReloadImage
+resolves it (a lump in a file, an image file, or a buffer the loader kept).
+The caller frees the returned buffer.
+================
+*/
+byte *TexMgr_LoadRgbaForPreview (gltexture_t *glt, int *outWidth, int *outHeight)
+{
+	byte *src = NULL, *allocated = NULL, *out;
+	int   npix, i;
+
+	if (!glt)
+		return NULL;
+
+	if (glt->source_file[0] && glt->source_offset)
+	{
+		FILE *f = NULL;
+		int   size;
+
+		COM_FOpenFile (glt->source_file, &f, NULL);
+		if (!f || glt->source_offset > (src_offset_t)0x7fffffff)
+		{
+			if (f)
+				fclose (f);
+			return NULL;
+		}
+		if (fseek (f, (long)glt->source_offset, SEEK_CUR) != 0)
+		{
+			fclose (f);
+			return NULL;
+		}
+		size = glt->source_width * glt->source_height;
+		if (glt->source_format == SRC_RGBA)
+			size *= 4;
+		else if (glt->source_format == SRC_LIGHTMAP)
+			size *= LIGHTMAP_BYTES;
+		if (size <= 0 || glt->source_offset + (src_offset_t)size > (src_offset_t)com_filesize)
+		{
+			fclose (f);
+			return NULL;
+		}
+		allocated = src = (byte *)Mem_Alloc (size);
+		if (fread (src, 1, size, f) != (size_t)size)
+		{
+			fclose (f);
+			Mem_Free (allocated);
+			return NULL;
+		}
+		fclose (f);
+	}
+	else if (glt->source_file[0] && !glt->source_offset)
+	{
+		allocated = src = Image_LoadImage (glt->source_file, (int *)&glt->source_width, (int *)&glt->source_height);
+	}
+	else if (!glt->source_file[0] && glt->source_offset)
+	{
+		src = (byte *)glt->source_offset;
+	}
+
+	if (!src || glt->source_width <= 0 || glt->source_height <= 0)
+	{
+		if (allocated)
+			Mem_Free (allocated);
+		return NULL;
+	}
+
+	npix = glt->source_width * glt->source_height;
+	out = (byte *)Mem_Alloc (npix * 4);
+
+	switch (glt->source_format)
+	{
+	case SRC_INDEXED:
+		TexMgr_8to32 (src, (unsigned *)out, npix, d_8to24table);
+		break;
+	case SRC_LIGHTMAP:
+		for (i = 0; i < npix; i++)
+		{
+			out[i * 4 + 0] = out[i * 4 + 1] = out[i * 4 + 2] = src[i * LIGHTMAP_BYTES];
+			out[i * 4 + 3] = 255;
+		}
+		break;
+	case SRC_RGBA:
+	case SRC_SURF_INDICES:
+		memcpy (out, src, (size_t)npix * 4);
+		break;
+	default:
+		Mem_Free (out);
+		out = NULL;
+		break;
+	}
+
+	if (allocated)
+		Mem_Free (allocated);
+
+	if (out)
+	{
+		if (outWidth)
+			*outWidth = glt->source_width;
+		if (outHeight)
+			*outHeight = glt->source_height;
+	}
+	return out;
+}
+
+/*
+================
 TexMgr_ReloadNobrightImages -- reloads all texture that were loaded with the nobright palette.  called when gl_fullbrights changes
 ================
 */

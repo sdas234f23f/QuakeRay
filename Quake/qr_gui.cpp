@@ -726,6 +726,67 @@ int QR_GUI_AnyItemActive (void)
 	return ImGui::IsAnyItemActive () ? 1 : 0;
 }
 
+int QR_GUI_ImagePick (const char *id, int64_t texture, int tex_w, int tex_h, float *out_u, float *out_v)
+{
+	ImGui::PushID (id);
+
+	float w = 260.0f;
+	float h = 260.0f;
+
+	if (tex_w > 0 && tex_h > 0)
+	{
+		h = 260.0f * (float)tex_h / (float)tex_w;
+		if (h > 260.0f)
+		{
+			h = 260.0f;
+			w = 260.0f * (float)tex_w / (float)tex_h;
+		}
+	}
+
+	const ImVec2 pos = ImGui::GetCursorScreenPos ();
+	const ImVec2 size (w, h);
+
+	ImGui::Image ((ImTextureID)(uint64_t)texture, size, ImVec2 (0.0f, 0.0f), ImVec2 (1.0f, 1.0f));
+
+	const bool hovered = ImGui::IsItemHovered ();
+	const ImVec2 mouse = ImGui::GetIO ().MousePos;
+	int          result = 0;
+
+	if (hovered)
+	{
+		float u = (mouse.x - pos.x) / (w > 1.0f ? w : 1.0f);
+		float v = (mouse.y - pos.y) / (h > 1.0f ? h : 1.0f);
+
+		u = u < 0.0f ? 0.0f : (u > 1.0f ? 1.0f : u);
+		v = v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v);
+		if (out_u)
+			*out_u = u;
+		if (out_v)
+			*out_v = v;
+
+		if (ImGui::IsMouseDown (ImGuiMouseButton_Left))
+			result = 1;
+
+		ImGui::SetMouseCursor (ImGuiMouseCursor_Hand);
+	}
+
+	ImDrawList *dl = ImGui::GetWindowDrawList ();
+
+	dl->AddRect (pos, ImVec2 (pos.x + w, pos.y + h), IM_COL32 (150, 160, 185, 255));
+
+	if (hovered)
+	{
+		const ImU32 col = IM_COL32 (255, 230, 150, 230);
+
+		dl->AddLine (ImVec2 (mouse.x - 8.0f, mouse.y), ImVec2 (mouse.x + 8.0f, mouse.y), col, 1.5f);
+		dl->AddLine (ImVec2 (mouse.x, mouse.y - 8.0f), ImVec2 (mouse.x, mouse.y + 8.0f), col, 1.5f);
+		dl->AddCircle (mouse, 4.0f, col, 16, 1.5f);
+	}
+
+	ImGui::PopID ();
+	return result;
+}
+
 int QR_GUI_Dialog (const char *title, const char *text, const char *yes, const char *no)
 {
 	const ImVec2 center (ImGui::GetIO ().DisplaySize.x * 0.5f, ImGui::GetIO ().DisplaySize.y * 0.5f);

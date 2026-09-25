@@ -203,6 +203,13 @@ static struct
 	qboolean sv_paused_prev;
 	qboolean cl_paused_prev;
 
+	// the base-texture preview of the selected material (the emissive colour
+	// picker): the RgMaterial the panel draws and the pixels it samples
+	RgMaterial  preview_mat;
+	char        preview_key[MAX_QPATH * 2 + 32];
+	byte       *preview_pixels;
+	int         preview_w, preview_h;
+
 	// a material created by the editor for a texture that has none in yaml
 	rt_material_t tmp_mat;
 	qboolean      tmp_appended;
@@ -1332,6 +1339,85 @@ void QR_Editor_UpdateView (void)
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
+// Texture preview (the emissive colour picker)
+// ---------------------------------------------------------------------------
+
+static void QRE_FreePreview (void)
+{
+	if (qre.preview_mat != RG_NO_MATERIAL)
+	{
+		rgDestroyMaterial (vulkan_globals.instance, qre.preview_mat);
+		qre.preview_mat = RG_NO_MATERIAL;
+	}
+	if (qre.preview_pixels)
+	{
+		Mem_Free (qre.preview_pixels);
+		qre.preview_pixels = NULL;
+	}
+	qre.preview_w = qre.preview_h = 0;
+	qre.preview_key[0] = '\0';
+}
+
+// The pixels the emissive mask is synthesized from: the author's texture_base
+// when the material has one, the engine texture of the picked face otherwise.
+// The eyedropper samples this copy, so a picked colour is the colour the
+// synthesis will match, and the same pixels become the preview's RgMaterial.
+static void QRE_UpdatePreview (rt_material_t *m)
+{
+	char key[MAX_QPATH * 2 + 32];
+	byte *pixels = NULL;
+	int   w = 0, h = 0;
+
+	if (!qre.pick_glt)
+		return;
+
+	q_snprintf (key, sizeof (key), "%s|%s|%p", m->name, m->filename_base, (void *)qre.pick_glt);
+
+	if (!strcmp (key, qre.preview_key) && qre.preview_mat != RG_NO_MATERIAL)
+		return;
+
+	if (m->filename_base[0])
+		pixels = RT_MAT_LoadTexture (m, RT_MAT_TEX_BASE, &w, &h);
+	if (!pixels)
+		pixels = TexMgr_LoadRgbaForPreview (qre.pick_glt, &w, &h);
+
+	QRE_FreePreview ();
+
+	if (!pixels || w <= 0 || h <= 0)
+	{
+		if (pixels)
+			Mem_Free (pixels);
+		q_strlcpy (qre.preview_key, key, sizeof (qre.preview_key));
+		return;
+	}
+
+	{
+		RgMaterialCreateInfo info;
+
+		memset (&info, 0, sizeof (info));
+		info.size.width = (uint32_t)w;
+		info.size.height = (uint32_t)h;
+		info.textures.pDataAlbedoAlpha = pixels;
+		info.filter = RG_SAMPLER_FILTER_LINEAR;
+		info.addressModeU = RG_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+		info.addressModeV = RG_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+
+		if (rgCreateMaterial (vulkan_globals.instance, &info, &qre.preview_mat) != RG_SUCCESS)
+		{
+			qre.preview_mat = RG_NO_MATERIAL;
+			Mem_Free (pixels);
+			q_strlcpy (qre.preview_key, key, sizeof (qre.preview_key));
+			return;
+		}
+	}
+
+	qre.preview_pixels = pixels;
+	qre.preview_w = w;
+	qre.preview_h = h;
+	q_strlcpy (qre.preview_key, key, sizeof (qre.preview_key));
+}
+
+// ---------------------------------------------------------------------------
 // Per-parameter reset
 // ---------------------------------------------------------------------------
 
@@ -1563,6 +1649,32 @@ static void QRE_ParamWidgets (int g)
 		m = qre.group[g];
 		if (QR_GUI_ResetButton (label, !mirror_locks_rough && QRE_ParamChanged (m, orig, p)))
 			QRE_ResetParam (g, p, orig);
+
+		// The emissive colour picker: while color_emissive is on, the texture the
+		// mask is synthesized from is previewed, and a click takes the colour of
+		// the pixel under the cursor.
+		if (p == PARAM_CEMIS && m->has_color_emissive)
+		{
+			QRE_UpdatePreview (m);
+
+			if (qre.preview_mat != RG_NO_MATERIAL && qre.preview_pixels)
+			{
+				float u = 0.5f, v = 0.5f;
+
+				QR_GUI_LabelDim ("click a pixel to take its colour");
+				if (QR_GUI_ImagePick ("##color_pick", (int64_t)qre.preview_mat, qre.preview_w, qre.preview_h, &u, &v))
+				{
+					const int   px = CLAMP (0, (int)(u * (float)qre.preview_w), qre.preview_w - 1);
+					const int   py = CLAMP (0, (int)(v * (float)qre.preview_h), qre.preview_h - 1);
+					const byte *pix = qre.preview_pixels + ((size_t)py * (size_t)qre.preview_w + (size_t)px) * 4;
+
+					QRE_SetColorEnabled (g, p, true);
+					QRE_SetColorChannel (g, p, 0, pix[0] / 255.0f);
+					QRE_SetColorChannel (g, p, 1, pix[1] / 255.0f);
+					QRE_SetColorChannel (g, p, 2, pix[2] / 255.0f);
+				}
+			}
+		}
 
 		if (mirror_locks_rough)
 			QR_GUI_PopDisabled ();
@@ -2207,6 +2319,8 @@ static void QRE_StopEditor (qboolean restore)
 	qre.hover_surf = NULL;
 	qre.hover_ent = NULL;
 	qre.hover_glt = NULL;
+
+	QRE_FreePreview ();
 
 	// the world runs again
 	sv.paused = qre.sv_paused_prev;

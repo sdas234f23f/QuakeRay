@@ -11,6 +11,7 @@
 #define QR_GUI_H
 
 #include <stddef.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -92,6 +93,10 @@ void QR_GUI_PopID (void);
 // first button, 2 for the second and 0 while it is up.
 int  QR_GUI_Dialog (const char *title, const char *text, const char *yes, const char *no);
 
+// A texture preview drawn at the current cursor position (texture is an
+// RgMaterial handle). While the left mouse button is held over it, returns 1
+// and fills out_u/out_v with the cursor's normalised position (0..1).
+int  QR_GUI_ImagePick (const char *id, int64_t texture, int tex_w, int tex_h, float *out_u, float *out_v);
 // 1 while any ImGui item is being dragged or edited.
 int  QR_GUI_AnyItemActive (void);
 

@@ -133,6 +133,9 @@ gltexture_t *TexMgr_LoadImage (
 	qmodel_t *owner, const char *name, int width, int height, enum srcformat format, byte *data, const char *source_file, src_offset_t source_offset,
 	unsigned flags);
 void TexMgr_ReloadImage (gltexture_t *glt, int shirt, int pants);
+// RGBA8 pixels of a texture's own source, for the editor's texture preview.
+// The caller frees the buffer.
+byte *TexMgr_LoadRgbaForPreview (gltexture_t *glt, int *outWidth, int *outHeight);
 void TexMgr_ReloadNobrightImages (void);
 void TexMgr_ReloadAllImages (void);
 
