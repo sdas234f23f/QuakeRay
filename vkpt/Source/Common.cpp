@@ -22,6 +22,10 @@
 
 #include <cstdio>
 
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
 
 // Prints where the failing Vulkan call was made (file and line, which the assert
 // dialog cannot show) and what it returned, then lets the assert stop the run.
@@ -80,6 +84,18 @@ void vkpt::VK_CHECKERROR_Report(const VkResult r, const char *file, int line)
         std::fprintf(log, "vkpt: Vulkan call failed: %s (%d) at %s:%d\n", name, (int)r, file, line);
         std::fclose(log);
     }
+
+#ifdef _WIN32
+    // The assert dialog names this file and not the call, so say it here as well:
+    // the message box is what the user copies.
+    char message[1024];
+
+    std::snprintf(message, sizeof(message),
+                  "A Vulkan call failed.\n\n%s (%d)\n\nat %s:%d\n\n"
+                  "(the same line is appended to vk_last_error.txt)",
+                  name, (int)r, file, line);
+    MessageBoxA(nullptr, message, "vkpt: Vulkan error", MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
+#endif
 
     assert(r == VK_SUCCESS);
 }
