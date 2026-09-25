@@ -2948,6 +2948,7 @@ enum
 	VID_OPT_SHOWFPS,
 
 
+	VID_OPT_LIGHT_SYSTEM,
 	VID_OPT_GI_LEVEL,
 	VID_OPT_GODRAYS,
 	VID_OPT_REFLECT,
@@ -3450,6 +3451,10 @@ static void VID_MenuKey (int key)
 		case VID_OPT_SHOWFPS:
 			Cvar_SetValueQuick (&scr_showfps, !CVAR_TO_BOOL (scr_showfps));
 			break;
+		case VID_OPT_LIGHT_SYSTEM:
+			// the light system is a choice, not a checkbox: new (1) or old (0)
+			Cvar_SetValueQuick (&rt_truelight, CVAR_TO_FLOAT (rt_truelight) > 0.0f ? 0.0f : 1.0f);
+			break;
 		case VID_OPT_GI_LEVEL:
 			VID_Menu_StepGiLevel (-1.0f);
 			break;
@@ -3535,6 +3540,9 @@ static void VID_MenuKey (int key)
 		case VID_OPT_SHOWFPS:
 			Cvar_SetValueQuick (&scr_showfps, !CVAR_TO_BOOL (scr_showfps));
 			break;
+		case VID_OPT_LIGHT_SYSTEM:
+			Cvar_SetValueQuick (&rt_truelight, CVAR_TO_FLOAT (rt_truelight) > 0.0f ? 0.0f : 1.0f);
+			break;
 		case VID_OPT_GI_LEVEL:
 			VID_Menu_StepGiLevel (1.0f);
 			break;
@@ -3587,6 +3595,9 @@ static void VID_MenuKey (int key)
 			break;
 		case VID_OPT_SHOWFPS:
 			Cvar_SetValueQuick (&scr_showfps, !CVAR_TO_BOOL (scr_showfps));
+			break;
+		case VID_OPT_LIGHT_SYSTEM:
+			Cvar_SetValueQuick (&rt_truelight, CVAR_TO_FLOAT (rt_truelight) > 0.0f ? 0.0f : 1.0f);
 			break;
 		case VID_OPT_GODRAYS:
 			Cvar_SetValueQuick (&rt_godrays, !CVAR_TO_BOOL (rt_godrays));
@@ -3747,9 +3758,13 @@ static void VID_MenuDraw (cb_context_t *cbx)
 			break;
 
 
-		case VID_OPT_GI_LEVEL:
+		case VID_OPT_LIGHT_SYSTEM:
 			y += 8; // separate
 
+			M_Print (cbx, 16, y, "      Light system");
+			M_Print (cbx, 184, y, CVAR_TO_FLOAT (rt_truelight) > 0.0f ? "new" : "old");
+			break;
+		case VID_OPT_GI_LEVEL:
 			M_Print (cbx, 16, y, " Indirect lighting");
 			M_Print (cbx, 184, y, VID_Menu_GetGiLevelName ());
 			break;

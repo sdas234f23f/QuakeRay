@@ -59,6 +59,9 @@ extern vec3_t     vpn, vright, vup, r_origin; // gl_rmain.c
 extern qboolean   keydown[MAX_KEYS];          // keys.c
 extern kbutton_t  in_forward, in_back, in_moveleft, in_moveright, in_up, in_down; // cl_input.c
 extern atomic_uint32_t rt_require_static_submit; // gl_rmain.c
+// The editor edits what the new light system builds (TAL and the fake dlights
+// of materials); the old system has neither, so it refuses to start on it.
+extern cvar_t rt_truelight; // gl_vidsdl.c
 
 // ---------------------------------------------------------------------------
 // Parameters
@@ -2731,6 +2734,11 @@ static void QR_Editor_Start_f (void)
 	if (!sv.active || svs.maxclients > 1 || cls.demoplayback)
 	{
 		Con_Printf ("qr light editor: single player only (the world has to be frozen)\n");
+		return;
+	}
+	if (CVAR_TO_FLOAT (rt_truelight) <= 0.0f)
+	{
+		Con_Printf ("qr light editor: the new light system must be on (rt_truelight 1)\n");
 		return;
 	}
 
