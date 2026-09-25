@@ -9,6 +9,7 @@ QuakeRay is Ray Tracing engine for Quake 1, with a Q2RTX-style partial path trac
 * Ray tracing with ReSTIR direct light sampling
 * FSR 2.0 and 3.1 support
 * TAL (Texture Area Lights) system: all emissive surfaces are sampled as textured area lights with a per-surface light, with its own intensity, blend mode, screen-color ceiling, sharp mask and mip boost knobs. A light reads the same emission mask the visible surface does, in the point it samples, so a face bright in its centre and dark around it lights the scene from its lit part alone — through the light styles and the animated frames as well.
+* Model area lights (DTAL): an alias model whose material is a light (`is_light: true`) and carries an emissive mask lights the scene from the triangles of the pose it draws. The light follows the animation frame and the movement of the entity, and the shader reads the emission mask where the model really glows. The part that does not move with the pose (the model uvs, the glow cuts and their ranking) is collected once per skin frame and cached on the model; `rt_model_lights_max` caps a model and `rt_model_lights_budget` caps a frame. A model without a mask, a material that is not a light, or a frame the budget turned down keeps the old point light of `light_color`. The first-person weapon and sprites keep that point light as well: the weapon geometry rides the camera, and a sprite billboard is one sided against the area-light shader.
 * True Light Mode (opt-in): All light sources are TAL, which means all emissive textures are actual light sources.
 * Q2RTX-style path traced lighting.
 * ASVGF denoiser.
@@ -103,7 +104,7 @@ Steps:
 
    (or with plain CMake: `cmake -B build\Debug -G Ninja -DCMAKE_BUILD_TYPE=Debug` + `cmake --build build\Debug`; use `-DCMAKE_BUILD_TYPE=Release` and `build\Release` for a release build).
 
-   The build then deploys the ray-traced game data into `build\<Config>\id1`: the material definitions (`vkpt/Source/materials.yaml` → `id1/materials/materials.yaml`), `vkpt/Source/textures`, `vkpt/Source/progs` and `vkpt/Source/mdl_skins`, the blue noise table and the water normal map, and the SPIR-V shaders into `id1/shaders`.
+   The build then deploys the ray-traced game data into `build\<Config>\id1`: the material definitions (`vkpt/Source/materials.yaml` → `id1/materials/materials.yaml`), the textures from `vkpt/Source/textures` (which is where the model luma and gloss maps live now, under `textures/progs` and `textures/mdl_skins`), the blue noise table and the water normal map, and the SPIR-V shaders into `id1/shaders`.
 
 4. Run the game:
 
@@ -145,6 +146,7 @@ Everything is exposed as console variables; run `cvarlist rt_` in the console fo
 * `rt_denoiser 1` — ASVGF reconstruction of the lighting channels (`0` composites the raw ReSTIR output)
 * `rt_no_textures 0` — `1` swaps the diffuse albedo for a fixed value, i.e. "no textures"
 * `rt_emis_light_intensity 1.0` — how much light the emissive (luma-masked) surfaces emit
+* `rt_model_lights 1` with `rt_model_lights_max 8` and `rt_model_lights_budget 256`: alias models whose material is a light with an emissive mask light the scene from the triangles of the pose they draw. `0` keeps the old point light of `light_color` for every model. `rt_model_lights_max` caps the pieces one model may light with, and `rt_model_lights_budget` caps the model lights all of them together may add in one frame.
 * `rt_light_color 255 255 255` — tint multiplied into every light source (sun, dynamic, world, emissive), as `<r> <g> <b>` in `0-255`. It is a command like `rt_sky_color` above, so `cvarlist` does not list it and a bare `rt_light_color` prints the current value; `rt_light_color "255 255 255"` and `255,255,255` work too, and the value is archived
 * `rt_globallight 255 255 255` — colour a light starts from before its own colour and the tint above are applied, as `<r> <g> <b>` in `0-255`; same command form, and `rt_globallight_mult` is still the separate intensity multiplier
 * `rt_light_styles 1` with `rt_light_styles_reach 48` — animated light entities make their own fixture flicker; the reach (Quake units, measured from the surface centre to the light) keeps the flicker on the fixture instead of every surface that light happens to illuminate, `-1` removes the limit
@@ -158,5 +160,5 @@ Everything is exposed as console variables; run `cvarlist rt_` in the console fo
 
 ## Game data
 
-Quake 1 game files (`id1/`) are required (registered or shareware). HD texture packs can be used through `.pkz` archives or `.mat` material definitions, and the ray-traced material overrides are deployed into the build's game dir by `build_win.ps1` (`id1/materials/materials.yaml` plus the `id1/textures`, `id1/progs` and `id1/mdl_skins` folders) — nothing has to be packed by hand.
+Quake 1 game files (`id1/`) are required (registered or shareware). HD texture packs can be used through `.pkz` archives or `.mat` material definitions, and the ray-traced material overrides are deployed into the build's game dir by `build_win.ps1` (`id1/materials/materials.yaml` plus the `id1/textures` folder) — nothing has to be packed by hand.
 
