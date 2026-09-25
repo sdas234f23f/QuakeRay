@@ -261,7 +261,17 @@ float cloudDensity(CloudLayer layer, vec3 p, bool detail)
         // The fine noise is subtracted from the shape rather than multiplied into
         // it, which is what takes the cloud's edge apart and gives its silhouette
         // the ragged look of a real one.
-        vec3 q = vec3(p.xy + wind * 1.7, p.z * 0.75 / CLOUD_VERTICAL_STRETCH) * frequency * CLOUD_DETAIL_FREQUENCY;
+        //
+        // It rides the same wind as the shape does, and it has to: the copy of a
+        // texel in the layer's map (CmSkyClouds.comp) is the march of the frame
+        // before, put where the column of cloud it holds has moved to, and that
+        // move is measured with the shape's own drift (cloudAnchorDelta, from the
+        // host). A fine noise advected at another speed than the one the copies are
+        // tracked with leaves every edge of every cloud with a standing difference
+        // between the texels that were marched this frame and the ones that were
+        // copied -- a difference that follows the wind and that no dither of the
+        // ages can be asked to hide.
+        vec3 q = vec3(p.xy + wind, p.z * 0.75 / CLOUD_VERTICAL_STRETCH) * frequency * CLOUD_DETAIL_FREQUENCY;
         float erosion = layer.detail * cloudShape(q, CLOUD_DETAIL_OCTAVES);
         d = clamp((d - erosion) / max(1.0 - erosion, 1.0e-3), 0.0, 1.0);
     }
