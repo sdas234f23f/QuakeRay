@@ -488,19 +488,22 @@ VulkanDevice::VulkanDevice( const RgInstanceCreateInfo* info )
                     }
                 }
 
-                // The compose preview of A4.2b (RHI/RhiRtComposePass.h), created only under
-                // 'rhicompose': the real adapter -> interleave -> checkerboard chain ending in
-                // FINAL, which the skeleton then presents. A failure leaves the pointer null: the
-                // traced chain keeps the A4.2a diagnostic present instead of failing the frame.
+                // The compose pass of A4.4 (RHI/RhiRtComposePass.h), created only under
+                // 'rhicompose': the real adapter -> interleave -> exposure histogram/average ->
+                // checkerboard -> prepare-final chain ending in the display-referred FINAL, which
+                // the skeleton then presents raw. It wraps the per-slot tonemapping buffers, so the
+                // engine object has to outlive it. A failure leaves the pointer null: the traced
+                // chain keeps the A4.2a diagnostic present instead of failing the frame.
                 if (libconfig.rhiCompose)
                 {
                     rhiRtComposePass = std::make_shared<RhiRtComposePass>();
                     if (!rhiRtComposePass->Create(nvrhi->GetDevice(), rhiFrameContext.get(),
+                                                  tonemapping.get(),
                                                   info->pShaderFolderPath,
                                                   [this](const char *pMessage) { Print(pMessage); }))
                     {
                         rhiRtComposePass.reset();
-                        Print("Warning: RHI: the compose preview is unavailable, the diagnostic present is kept");
+                        Print("Warning: RHI: the compose pass is unavailable, the diagnostic present is kept");
                     }
                 }
             }

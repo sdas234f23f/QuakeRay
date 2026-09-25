@@ -53,14 +53,18 @@
 //
 // The compose is the A4.2 diagnostic of the direct pass: the unpacked direct term is added to the
 // albedo - sky pixels have a zero direct value, so they keep their color - and the sum goes through
-// the same exposure multiply and x / (1 + x) curve. The A4.4 chain replaces this compose.
+// the same exposure multiply and x / (1 + x) curve. The A4.4 chain replaces this compose: when
+// exposure.w is non-zero the sample already went through CmPrepareFinal, so it is display-referred
+// linear color and is passed through raw.
 
 struct RhiPresentParams_BT
 {
-    // x = exposure multiplier applied before the curve; y = vertical mirror of the sample
-    // coordinate (0 or 1, set per frame mode); z = non-zero enables the direct-lighting term of the
-    // traced chain; w unused. The block stays one float4, the shape the skeleton's colour
-    // parameters have.
+    // x = exposure multiplier applied before the curve (unused in the display-referred mode);
+    // y = vertical mirror of the sample coordinate (0 or 1, set per frame mode); z = non-zero
+    // enables the direct-lighting term of the traced chain (kept zero in the display-referred
+    // mode); w = the display-referred switch: non-zero passes the sample through raw - no exposure
+    // multiply, no direct-lighting term and no x / (1 + x) curve - and zero keeps the diagnostic
+    // compose. The block stays one float4, the shape the skeleton's colour parameters have.
     float4 exposure;
 };
 
@@ -106,12 +110,17 @@ float4 main( [[vk::location(0)]] float2 vUV : TEXCOORD0 ) : SV_Target0
         direct = decodeE5B9G9R9( directTexture.Load( cb ).r );
     }
 
-    // The exposure scales the linear HDR value, then the monotone x / (1 + x) curve folds the
-    // unbounded result into [0, 1) before it reaches the display attachment. The direct term is
-    // added to the albedo, the A4.2 diagnostic compose (sky pixels keep their color).
+    // The diagnostic compose: the exposure scales the linear HDR value, then the monotone
+    // x / (1 + x) curve folds the unbounded result into [0, 1) before it reaches the display
+    // attachment. The direct term is added to the albedo (sky pixels keep their color).
     const float3 illuminated = albedo * ( 1.0 + direct );
     const float3 exposed = illuminated * params.exposure.x;
-    const float3 display = exposed / (1.0 + exposed);
+    const float3 curved = exposed / (1.0 + exposed);
+
+    // params.exposure.w is the display-referred switch: after CmPrepareFinal the sample is already
+    // the display-referred linear image, so it must reach the attachment raw; the diagnostic path
+    // keeps the compose above.
+    const float3 display = params.exposure.w != 0.0 ? albedo : curved;
 
     return float4( display, 1.0 );
 }

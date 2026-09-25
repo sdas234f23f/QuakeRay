@@ -55,12 +55,14 @@ namespace
 const char *const VERTEX_SHADER_FILE_NAME = "RhiSkeleton.vert.spv";
 const char *const PIXEL_SHADER_FILE_NAME = "RhiPresent.frag.spv";
 
-// The present's constant buffer: exposure.x scales the linear ALBEDO sample before the shader's
-// x / (1 + x) curve, and exposure.y selects the vertical mirror of the sample coordinate - the
-// traced modes' ALBEDO follows the engine's ray-tracing convention and the raster modes follow
-// NVRHI's, and one present serves both (RhiPresent.frag.hlsl:50-80). The engine's own exposure
-// control (Tonemapping) is not on the RHI path yet, so this first cut writes a fixed 1.0; the
-// members stay a float4 to keep the shader's block shape.
+// The present's constant buffer: exposure.x scales the linear source before the shader's
+// x / (1 + x) curve, exposure.y selects the vertical mirror of the sample coordinate (the traced
+// modes' images follow the engine's convention and the raster modes NVRHI's), exposure.z enables
+// the diagnostic direct term and exposure.w marks a display-referred source (the composed FINAL,
+// which already carries the tone curve) - one present serves every mode
+// (RhiPresent.frag.hlsl:64-100). The engine's own exposure control (Tonemapping) is not applied by
+// the present; the composed chain bakes it into FINAL. The members stay a float4 to keep the
+// shader's block shape.
 struct RhiPresentParams
 {
     float exposure[4];
@@ -416,15 +418,15 @@ bool NvrhiFrameSkeleton::Render(const Swapchain *pSwapchain, uint32_t frameIndex
         if (skyPass != nullptr && skyPass->IsWorldCreated() &&
             sky.uniform != nullptr && sky.tonemapping != nullptr)
         {
-            // The exposure chain (Tonemapping::CalculateExposure) runs only from the legacy Render
-            // (VulkanDevice.cpp:1061), which the RHI path takes over, so nothing computes the engine
-            // buffer's avgLuminance under `rhiframe`. The world shader multiplies every output by a
-            // factor derived from it (Exposure.h:33-51):
+            // The raster mode has no PRE_FINAL for the exposure chain to histogram (A4.4's chain runs
+            // only in the traced mode, Tonemapping.h documents the split), so nothing computes the
+            // engine buffer's avgLuminance here. The world shader multiplies every output by a factor
+            // derived from it (Exposure.h:33-51):
             //   factor = 1 / (1.2 * exp2(log2(avg * 100 / 12.5))) = 1 / (9.6 * avg).
-            // The buffer is constructed zeroed, which would make the factor zero and the whole rasterized
-            // world black; the neutral stand-in is the value that gives factor 1,
-            // 1 / 9.6 = 0.10417, which is also close to a dim map's real average. DEV STAND-IN until the
-            // exposure chain is ported.
+            // The buffer is constructed zeroed, which would make the factor zero and the whole
+            // rasterized world black; the neutral stand-in is the value that gives factor 1,
+            // 1 / 9.6 = 0.10417, which is also close to a dim map's real average. Raster-mode dev
+            // fallback only; never call it in the traced mode, where the average pass owns the field.
             sky.tonemapping->SetAvgLuminance(frameIndex, 1.0f / 9.6f);
 
             // The world draws, exactly the sequence the sky got above: the pass owns the target, the
@@ -504,9 +506,20 @@ bool NvrhiFrameSkeleton::Render(const Swapchain *pSwapchain, uint32_t frameIndex
                 sky.width, sky.height);
         }
 
-        // The compose preview: the real adapter -> interleave -> checkerboard chain over the
-        // G-buffer and the direct and indirect buffers, writing FINAL, which the present samples
-        // when the pass exists. It records after the indirect pass for the same reason it does.
+        // The host-only exposure parameters of the traced frame: the compose chain's histogram and
+        // average passes write the curve the prepare-final consumes in the same frame, and their
+        // inputs come from this CPU write (the legacy CalculateExposure writes the same prefix and
+        // now delegates to the same method; Tonemapping.h documents the split).
+        if (rtComposePass != nullptr && sky.tonemapping != nullptr && sky.uniform != nullptr)
+        {
+            sky.tonemapping->PrepareExposureParams(frameIndex, sky.uniform, sky.exposureBias, sky.contrast);
+        }
+
+        // The compose pass: the real chain over the G-buffer and the direct and indirect buffers,
+        // ending in the display-referred FINAL, which the present samples when the pass exists. Its
+        // internal order is the engine's (adapter -> interleave -> the exposure's histogram and
+        // average -> checkerboard -> prepare-final); it records after the indirect pass for the same
+        // reason it does.
         if (rtComposePass != nullptr)
         {
             rtComposePass->Render(commandList, frameIndex, sky.framebuffers, sky.width, sky.height,
@@ -535,8 +548,8 @@ bool NvrhiFrameSkeleton::Render(const Swapchain *pSwapchain, uint32_t frameIndex
     }
 
     // The present samples the source of this slot: the ALBEDO wrap of the raster and diagnostic
-    // modes (the sky pass is the only owner of that wrap), or the compose preview's FINAL image
-    // when the preview ran - both are borrowed and only valid until their pass re-wraps the slot.
+    // modes (the sky pass is the only owner of that wrap), or the compose pass's FINAL image when
+    // it ran - both are borrowed and only valid until their pass re-wraps the slot.
     // The direct term's image is the skeleton's own wrap (ResolvePresentDirectTexture): every mode
     // resolves it, because the layout's unordered-access item is always filled, but the shader
     // reads it only in the diagnostic mode (the params flag below).
@@ -571,13 +584,17 @@ bool NvrhiFrameSkeleton::Render(const Swapchain *pSwapchain, uint32_t frameIndex
         // need the present to flip the sample coordinate (RhiPresent.frag.hlsl:64-76), the raster
         // and debug-trace frames do not (the debug raygen flips its own store,
         // RhiDebugTrace.rgen.hlsl:107-114). exposure.z enables the direct-lighting term of the
-        // diagnostic present - the compose preview feeds FINAL, which already carries the light, so
-        // it keeps the term off.
+        // diagnostic present - the compose pass feeds display-referred FINAL, which already carries
+        // the light and the tone curve, so the term and the curve stay off (exposure.w).
         const bool traced = frameMode == FrameMode::Traced;
         const bool compose = rtComposePass != nullptr;
         RhiPresentParams presentParams = PRESENT_PARAMS;
         presentParams.exposure[1] = traced ? 1.0f : 0.0f;
         presentParams.exposure[2] = (traced && !compose) ? 1.0f : 0.0f;
+        // exposure.w tells the present that the source is display-referred: the composed FINAL has
+        // already been through the tone curve, so the present must skip its own x / (1 + x) curve
+        // (RhiPresent.frag.hlsl documents the flag).
+        presentParams.exposure[3] = compose ? 1.0f : 0.0f;
         rhi::writeBuffer(commandList, presentParamsBuffer, &presentParams, sizeof(presentParams));
 
         // The swapchain hands the image over in the present layout and expects it
@@ -1028,8 +1045,9 @@ void NvrhiFrameSkeleton::DestroySwapchainResources()
         rtDirectPass->ReleaseTargets();
     }
 
-    // The compose preview wraps the framebuffer images it reads and writes and keeps the FINAL wrap
-    // the present borrows when it ran, so it drops them here as well.
+    // The compose pass wraps the framebuffer images it reads and writes (and its composition
+    // stand-ins) and keeps the FINAL wrap the present borrows when it ran, so it drops them here as
+    // well.
     if (rtComposePass != nullptr)
     {
         rtComposePass->ReleaseTargets();

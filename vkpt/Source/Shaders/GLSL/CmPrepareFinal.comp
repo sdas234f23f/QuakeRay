@@ -344,7 +344,10 @@ void main()
         return;
     }
 
-    vec3 hdr        = texelFetch( framebufFinal_Sampled, pix, 0 ).rgb;
+    // Read FINAL through the storage image, not the sampled view: this shader also writes
+    // framebufFinal, and binding both views of one image in one set makes the SRV and the UAV
+    // disagree about the image layout (A4.4).
+    vec3 hdr        = imageLoad( framebufFinal, pix ).rgb;
     const vec3 screenEmis = texelFetch( framebufScreenEmission_Sampled, pix, 0 ).rgb;
     // per-material rt_emis_blend override, stored by the primary ray pass.
     // That framebuffer is addressed in checkerboard space (like the throughput

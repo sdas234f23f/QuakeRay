@@ -1310,8 +1310,16 @@ bool VulkanDevice::RenderThroughRhi(const RgDrawFrameInfo &drawInfo)
     sky.applyVertexColorGamma = rasterizedVertexColorGamma;
     sky.worldDraws = worldDraws.data();
     sky.worldDrawCount = static_cast<uint32_t>(worldDraws.size());
-    sky.uniform = uniform.get();
+    sky.uniform = uniform;
     sky.tonemapping = tonemapping.get();
+    // The exposure controls with the legacy Render's own defaults and clamping
+    // (VulkanDevice.cpp:1051-1059); the traced mode's Tonemapping::PrepareExposureParams consumes
+    // them, the raster mode's stand-in does not.
+    if (drawInfo.pTonemappingParams != nullptr)
+    {
+        sky.exposureBias = drawInfo.pTonemappingParams->exposureBias;
+        sky.contrast = std::clamp(drawInfo.pTonemappingParams->contrast, 0.0f, 1.0f);
+    }
     // The module synthesises the instance list itself from the engine's registry, so it takes the
     // same three frame inputs the engine's own TLAS preparation takes (VulkanDevice.cpp:1285): the
     // uniform's world-ray cull mask, the instance-wide sky flag, and the draw info's flag.

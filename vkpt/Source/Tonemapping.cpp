@@ -83,10 +83,10 @@ vkpt::Tonemapping::~Tonemapping()
     vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
 }
 
-void vkpt::Tonemapping::CalculateExposure(VkCommandBuffer cmd, uint32_t frameIndex, const std::shared_ptr<const GlobalUniform> &uniform,
-                                          float exposureBias, float contrast)
+void vkpt::Tonemapping::PrepareExposureParams(uint32_t frameIndex, const std::shared_ptr<const GlobalUniform> &uniform,
+                                              float exposureBias, float contrast)
 {
-    CmdLabel label(cmd, "Exposure");
+    assert(frameIndex < MAX_FRAMES_IN_FLIGHT);
 
     // Write tone mapper params from the host. Only the params prefix of the
     // buffer is touched here; the histogram/curve state lives past it and is
@@ -126,6 +126,16 @@ void vkpt::Tonemapping::CalculateExposure(VkCommandBuffer cmd, uint32_t frameInd
 
         resetRequired[frameIndex] = false;
     }
+}
+
+void vkpt::Tonemapping::CalculateExposure(VkCommandBuffer cmd, uint32_t frameIndex, const std::shared_ptr<const GlobalUniform> &uniform,
+                                          float exposureBias, float contrast)
+{
+    CmdLabel label(cmd, "Exposure");
+
+    // The host-side params prefix, written before the barriers and the two dispatches below -
+    // the same bytes the traced RHI path produces through PrepareExposureParams on its own list.
+    PrepareExposureParams(frameIndex, uniform, exposureBias, contrast);
 
     // sync access to histogram buffer
     {

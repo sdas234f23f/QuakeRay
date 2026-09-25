@@ -113,8 +113,19 @@ public:
         // -- the rasterized world sub-pass --
         const RasterizedDataCollector::DrawInfo *worldDraws = nullptr;
         uint32_t worldDrawCount = 0;
-        GlobalUniform *uniform = nullptr;
+        // The engine's global uniform: the world shader's set 1, the source of the bytes the
+        // skeleton writes into the uniform wrap every frame, and the CPU copy the host-only exposure
+        // parameters read. The host owns it, so the field keeps the shared_ptr (the traced mode's
+        // Tonemapping::PrepareExposureParams takes the same shape).
+        std::shared_ptr<GlobalUniform> uniform;
         Tonemapping *tonemapping = nullptr;
+
+        // The exposure controls of the frame, copied from the draw info exactly as the legacy Render
+        // copies them (VulkanDevice.cpp:1051-1059): the bias is authoritative (the game clamps it),
+        // the contrast is clamped in the engine. They feed the traced mode's host-only
+        // exposure-parameter write; the raster mode's neutral stand-in does not use them.
+        float exposureBias = -2.8f;
+        float contrast = 0.6f;
 
         // -- the acceleration-structure stream --
 
@@ -173,10 +184,10 @@ public:
     // when 'mode' is Traced, Render drives it after the direct pass - it borrows the primary's
     // layout handles and the direct pass's light set, so both have to outlive it and be destroyed
     // after it. Not owned; a null or not-created one with that mode makes the skeleton unavailable.
-    // 'pRtComposePass' is the host's compose preview (RhiRtComposePass, RHI/RhiRtComposePass.h):
-    // when it is non-null, the traced chain runs it after the direct pass and the present samples
-    // its FINAL image instead of ALBEDO plus the direct term. Optional: a null one keeps the A4.2a
-    // present, and the host creates it only under 'rhicompose'.
+    // 'pRtComposePass' is the host's compose pass (RhiRtComposePass, RHI/RhiRtComposePass.h): when
+    // it is non-null, the traced chain runs it after the indirect pass and the present samples its
+    // display-referred FINAL image directly, instead of ALBEDO plus the direct term. Optional: a
+    // null one keeps the A4.2a present, and the host creates it only under 'rhicompose'.
     explicit NvrhiFrameSkeleton(nvrhi::IDevice *pDevice,
                                 const Swapchain *pSwapchain,
                                 const char *pShaderFolderPath,
@@ -308,9 +319,9 @@ private:
     // 'rhirt' flag is off.
     RhiRtIndirectPass *rtIndirectPass = nullptr;
 
-    // The host's compose preview (RhiRtComposePass, RHI/RhiRtComposePass.h), driven after the direct
-    // pass when it is non-null; the present then samples its FINAL image. Not owned; null when the
-    // host's 'rhicompose' flag is off or the creation failed.
+    // The host's compose pass (RhiRtComposePass, RHI/RhiRtComposePass.h), driven after the indirect
+    // pass when it is non-null; the present then samples its display-referred FINAL image. Not
+    // owned; null when the host's 'rhicompose' flag is off or the creation failed.
     RhiRtComposePass *rtComposePass = nullptr;
 
     // The frame mode of the whole run: which chain Render records into ALBEDO. The host picks it

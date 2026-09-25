@@ -46,6 +46,23 @@ public:
     Tonemapping &operator=(const Tonemapping &other) = delete;
     Tonemapping &operator=(Tonemapping &&other) noexcept = delete;
 
+    // The host-only half of the exposure chain: writes the params prefix of the 'frameIndex'
+    // tonemapping buffer (tmExposureBias, the fixed tone-curve parameters, frameTime from
+    // 'uniform', resetCurve from the slot's pending-reset flag, and the derived knee) through
+    // the persistent mapping, and clears that flag. This is exactly the block CalculateExposure
+    // wrote inline before it was split out, so the legacy bytes stay identical. No command
+    // buffer, no barrier and no dispatch: the histogram and average are CalculateExposure's.
+    // The traced RHI path calls it on the slot's own buffer after the slot fence is waited
+    // (rhi::RhiFrameContext::BeginSlot) and before it records those two dispatches.
+    // 'exposureBias' and 'contrast' come from the draw info's tone-mapping params with the same
+    // sources and fallbacks the legacy Render uses (VulkanDevice.cpp:1051-1059).
+    void PrepareExposureParams(
+        uint32_t frameIndex,
+        const std::shared_ptr<const GlobalUniform> &uniform,
+        float exposureBias, float contrast);
+
+    // The full legacy exposure chain: the host write above, then CmLuminanceHistogram and
+    // CmLuminanceAvg over the same slot's buffer on 'cmd'. Not used by the RHI path.
     void CalculateExposure(
         VkCommandBuffer cmd, uint32_t frameIndex,
         const std::shared_ptr<const GlobalUniform> &uniform,
@@ -65,11 +82,15 @@ public:
     uint32_t GetElementSize() const;
 
     // Writes the value the world shader reads as avgLuminance (member 23 of ShTonemapping,
-    // Offset 1616 in RsWorld.frag.spv) for 'frameIndex'. On the legacy path the GPU owns the
-    // field: CmLuminanceAvg stores adapted_luminance into it while CalculateExposure dispatches
-    // the histogram and average pipelines. The RHI path has no exposure chain, so the host has
-    // to supply a stand-in - decoding it through Exposure.h:33-51, a value of 1 gives the world
-    // colour the constant factor 1/9.6, and a non-positive value outputs black.
+    // Offset 1616 in RsWorld.frag.spv) for 'frameIndex'. On the legacy path and in the traced
+    // RHI path the GPU owns that field: CmLuminanceAvg stores adapted_luminance into it, and
+    // in the traced path the exposure chain runs earlier in the same frame's list, before
+    // CmPrepareFinal reads it. This setter is then the raster-mode dev fallback only:
+    // RhiSkyPass::RenderWorld draws before any chain could run and keeps its 1/9.6 stand-in,
+    // because the RHI raster mode has no PRE_FINAL to histogram - decoding the value through
+    // Exposure.h:33-51, 1 gives the world colour the constant factor 1/9.6, and a non-positive
+    // value outputs black. Do not call it in the traced mode: the average pass overwrites the
+    // field in the same frame.
     void SetAvgLuminance(uint32_t frameIndex, float avgLuminance);
     
     void OnShaderReload(const ShaderManager *shaderManager) override;

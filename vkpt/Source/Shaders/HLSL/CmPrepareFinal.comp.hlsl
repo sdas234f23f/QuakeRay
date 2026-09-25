@@ -426,7 +426,10 @@ void main( uint3 dispatchThreadID : SV_DispatchThreadID )
         return;
     }
 
-    float3 hdr        = framebufFinal_Sampled.Load(int3( pix, 0 )).rgb;
+    // Read FINAL through the storage image, not the sampled view: this shader also writes
+    // framebufFinal, and binding both views of one image in one set makes the SRV and the UAV
+    // disagree about the image layout (A4.4).
+    float3 hdr        = framebufFinal.Load( pix ).rgb;
     const float3 screenEmis = framebufScreenEmission_Sampled.Load(int3( pix, 0 )).rgb;
     // per-material rt_emis_blend override, stored by the primary ray pass.
     // That framebuffer is addressed in checkerboard space (like the throughput

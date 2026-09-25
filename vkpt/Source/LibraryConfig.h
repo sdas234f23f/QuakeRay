@@ -44,9 +44,10 @@ namespace vkpt::LibraryConfig
         // later A4 cuts add the denoiser and the full composition. Requires 'rhiframe'; when
         // 'rhitrace' is set as well, this mode wins.
         bool rhiRayTracing = false;
-        // Draws the composed preview of the traced frame: the real adapter -> interleave ->
-        // checkerboard chain (with the denoiser bypassed) writes FINAL and the present shows it,
-        // instead of the A4.2a diagnostic present of ALBEDO + the direct term. Requires 'rhirt'.
+        // Draws the fully composed traced frame: the real adapter -> interleave -> exposure
+        // histogram/average -> checkerboard -> prepare-final chain writes the display-referred
+        // FINAL (the ASVGF denoiser is not ported yet) and the present shows it raw, instead of the
+        // A4.2a diagnostic present of ALBEDO + the direct term. Requires 'rhirt'.
         bool rhiCompose = false;
     };
 
