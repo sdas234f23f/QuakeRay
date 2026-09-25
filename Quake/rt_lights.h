@@ -27,6 +27,14 @@ typedef struct rt_light_s
     float    intensity;        // the brightness of the light: a multiplier of its colour
     qboolean has_offset;
     vec3_t   offset;           // the offset from the emitter's pivot point (its origin)
+    qboolean has_color;
+    vec3_t   color;            // an explicit colour, replacing the emitter's own
+    qboolean force_rasterize;  // draw the emitter in the rasterized path
+    /* A light that follows its group: the editor writes an edit to every light
+       of the same group (the emitter's model, e.g. flame.mdl) that carries the
+       flag. With the flag off the light keeps its own values; turning it back on
+       copies the group's shared values into the light. Defaults to true. */
+    qboolean group_edit;
 } rt_light_t;
 
 void RT_LIGHT_Init (void);

@@ -197,27 +197,32 @@ void R_DrawSpriteModel (cb_context_t *cbx, entity_t *e, int entuniqueid)
 
 	qboolean is_decal = psprite->type == SPR_ORIENTED;
 	qboolean is_rasterized = is_decal;
+	rt_light_t *light_ov = tx ? RT_LIGHT_Find (tx->name) : NULL;
 
-	if (tx && tx->rtforcerasterize)
+	if (tx && (tx->rtforcerasterize || (light_ov && light_ov->force_rasterize)))
 		is_rasterized = true;
 
 	if (tx && tx->rthaslightcolor && RT_AllowFakeLights ())
 	{
-		rt_light_t *ov = RT_LIGHT_Find (tx->name);
 		vec3_t      color = {tx->rtlightcolor[0], tx->rtlightcolor[1], tx->rtlightcolor[2]};
 		vec3_t      lightorigin;
-		float       intensity = (ov && ov->has_intensity) ? ov->intensity : CVAR_TO_FLOAT (rt_dlight_intensity);
-		float       radius = (ov && ov->has_radius) ? ov->radius : CVAR_TO_FLOAT (rt_dlight_radius);
+		float       intensity = (light_ov && light_ov->has_intensity) ? light_ov->intensity : CVAR_TO_FLOAT (rt_dlight_intensity);
+		float       radius = (light_ov && light_ov->has_radius) ? light_ov->radius : CVAR_TO_FLOAT (rt_dlight_radius);
+
+		if (light_ov && light_ov->has_color)
+		{
+			VectorCopy (light_ov->color, color);
+		}
 
 		VectorScale (color, intensity, color);
 		RT_FIXUP_LIGHT_INTENSITY (color, true);
 
 		VectorCopy (e->origin, lightorigin);
-		if (ov && ov->has_offset)
+		if (light_ov && light_ov->has_offset)
 		{
-			lightorigin[0] += ov->offset[0];
-			lightorigin[1] += ov->offset[1];
-			lightorigin[2] += ov->offset[2];
+			lightorigin[0] += light_ov->offset[0];
+			lightorigin[1] += light_ov->offset[1];
+			lightorigin[2] += light_ov->offset[2];
 		}
 
 		RgSphericalLightUploadInfo light_info = {

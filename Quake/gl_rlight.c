@@ -933,6 +933,10 @@ void RT_UploadAllElights ()
 
 			vec3_t color;
 			RT_INIT_DEFAULT_LIGHT_COLOR (color);
+			if (ov && ov->has_color)
+			{
+				VectorCopy (ov->color, color);
+			}
 			VectorScale (color, intens, color);
 			RT_FIXUP_LIGHT_INTENSITY (color, true);
 

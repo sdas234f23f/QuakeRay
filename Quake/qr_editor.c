@@ -2303,6 +2303,210 @@ static void QRE_BuildPanelGUI (void)
 		QRE_RequestExit ();
 }
 
+// ---------------------------------------------------------------------------
+// The light editor's entries: fields, their originals, and the group
+// ---------------------------------------------------------------------------
+
+enum
+{
+	QRE_LIGHT_F_RADIUS = 0,
+	QRE_LIGHT_F_INTENSITY,
+	QRE_LIGHT_F_OFFSET,
+	QRE_LIGHT_F_COLOR,
+	QRE_LIGHT_F_FRAST,
+};
+
+// The state the entry had when the editor started (NULL when it had none).
+static const rt_light_t *QRE_LightOriginal (const char *name)
+{
+	int i;
+
+	for (i = 0; i < qre.snap_light_count; i++)
+	{
+		if (qre.snap_lights[i].valid && !strcmp (qre.snap_lights[i].name, name))
+			return &qre.snap_lights[i];
+	}
+	return NULL;
+}
+
+// One field of one entry.
+static void QRE_LightApply (rt_light_t *l, int field, float v0, float v1, float v2, qboolean b)
+{
+	switch (field)
+	{
+	case QRE_LIGHT_F_RADIUS:    l->radius = v0; l->has_radius = true; break;
+	case QRE_LIGHT_F_INTENSITY: l->intensity = v0; l->has_intensity = true; break;
+	case QRE_LIGHT_F_OFFSET:
+		l->offset[0] = v0; l->offset[1] = v1; l->offset[2] = v2;
+		l->has_offset = true;
+		break;
+	case QRE_LIGHT_F_COLOR:
+		if (v0 < 0.0f)
+		{
+			l->has_color = false; // the colour is switched off
+		}
+		else
+		{
+			l->color[0] = v0; l->color[1] = v1; l->color[2] = v2;
+			l->has_color = true;
+		}
+		break;
+	case QRE_LIGHT_F_FRAST:     l->force_rasterize = b; break;
+	default: break;
+	}
+	QRE_TouchLight (l->name);
+}
+
+// The field of the entry as the editor started with it (the has_ flag too).
+static void QRE_LightApplyOriginal (rt_light_t *l, const rt_light_t *orig, int field)
+{
+	if (!orig)
+	{
+		// the light had no entry: the field goes back to "not authored"
+		switch (field)
+		{
+		case QRE_LIGHT_F_RADIUS:    l->has_radius = false; break;
+		case QRE_LIGHT_F_INTENSITY: l->has_intensity = false; break;
+		case QRE_LIGHT_F_OFFSET:    l->has_offset = false; break;
+		case QRE_LIGHT_F_COLOR:     l->has_color = false; break;
+		case QRE_LIGHT_F_FRAST:     l->force_rasterize = false; break;
+		default: break;
+		}
+	}
+	else
+	{
+		switch (field)
+		{
+		case QRE_LIGHT_F_RADIUS:    l->has_radius = orig->has_radius; l->radius = orig->radius; break;
+		case QRE_LIGHT_F_INTENSITY: l->has_intensity = orig->has_intensity; l->intensity = orig->intensity; break;
+		case QRE_LIGHT_F_OFFSET:    l->has_offset = orig->has_offset; VectorCopy (orig->offset, l->offset); break;
+		case QRE_LIGHT_F_COLOR:     l->has_color = orig->has_color; VectorCopy (orig->color, l->color); break;
+		case QRE_LIGHT_F_FRAST:     l->force_rasterize = orig->force_rasterize; break;
+		default: break;
+		}
+	}
+	QRE_TouchLight (l->name);
+}
+
+// A light that follows its group writes an edit to every light of the same
+// group (the emitter's model, e.g. progs/flame.mdl) that also follows it --
+// in the file's list and among the lights of the frame, whose entries a group
+// edit creates when they are missing. A light with the flag off is its own.
+static void QRE_LightApplyToGroup (const char *source_name, int field, float v0, float v1, float v2, qboolean b)
+{
+	char group[MAX_QPATH];
+	char g2[MAX_QPATH];
+	int  count = 0, i;
+
+	RT_MAT_GroupBaseOf (source_name, group, sizeof (group));
+
+	{
+		rt_light_t *list = RT_LIGHT_List (&count);
+
+		for (i = 0; i < count; i++)
+		{
+			if (!list[i].valid || !list[i].group_edit)
+				continue;
+			RT_MAT_GroupBaseOf (list[i].name, g2, sizeof (g2));
+			if (!strcmp (g2, group))
+				QRE_LightApply (&list[i], field, v0, v1, v2, b);
+		}
+	}
+
+	{
+		const rt_tracked_light_t *lights = RT_TRACK_Lights (&count);
+
+		for (i = 0; i < count; i++)
+		{
+			rt_light_t *l;
+
+			if (!lights[i].name[0])
+				continue;
+			RT_MAT_GroupBaseOf (lights[i].name, g2, sizeof (g2));
+			if (strcmp (g2, group))
+				continue;
+
+			l = RT_LIGHT_Ensure (lights[i].name);
+			if (l && l->group_edit)
+				QRE_LightApply (l, field, v0, v1, v2, b);
+		}
+	}
+}
+
+// The panel's one place to write a field: the group when the light follows it,
+// the light itself otherwise.
+static void QRE_LightWrite (rt_light_t *l, int field, float v0, float v1, float v2, qboolean b)
+{
+	if (l->group_edit)
+		QRE_LightApplyToGroup (l->name, field, v0, v1, v2, b);
+	else
+		QRE_LightApply (l, field, v0, v1, v2, b);
+}
+
+static qboolean QRE_LightFieldChanged (const rt_light_t *l, const rt_light_t *orig, int field)
+{
+	switch (field)
+	{
+	case QRE_LIGHT_F_RADIUS:
+		return l->has_radius != (orig && orig->has_radius ? true : false) ||
+		       (l->has_radius && orig && orig->radius != l->radius);
+	case QRE_LIGHT_F_INTENSITY:
+		return l->has_intensity != (orig && orig->has_intensity ? true : false) ||
+		       (l->has_intensity && orig && orig->intensity != l->intensity);
+	case QRE_LIGHT_F_OFFSET:
+		return l->has_offset != (orig && orig->has_offset ? true : false) ||
+		       (l->has_offset && orig && memcmp (orig->offset, l->offset, sizeof (l->offset)) != 0);
+	case QRE_LIGHT_F_COLOR:
+		return l->has_color != (orig && orig->has_color ? true : false) ||
+		       (l->has_color && orig && memcmp (orig->color, l->color, sizeof (l->color)) != 0);
+	case QRE_LIGHT_F_FRAST:
+		return l->force_rasterize != (orig ? orig->force_rasterize : false);
+	default:
+		return false;
+	}
+}
+
+// A member of the same group that follows it: the source of the values a light
+// joining the group takes.
+static rt_light_t *QRE_LightGroupShared (const char *name, const rt_light_t *self)
+{
+	char group[MAX_QPATH];
+	char g2[MAX_QPATH];
+	int  count = 0, i;
+	rt_light_t *list = RT_LIGHT_List (&count);
+
+	RT_MAT_GroupBaseOf (name, group, sizeof (group));
+	for (i = 0; i < count; i++)
+	{
+		if (!list[i].valid || !list[i].group_edit || &list[i] == self)
+			continue;
+		RT_MAT_GroupBaseOf (list[i].name, g2, sizeof (g2));
+		if (!strcmp (g2, group))
+			return &list[i];
+	}
+	return NULL;
+}
+
+static void QRE_LightJoinGroup (rt_light_t *l)
+{
+	rt_light_t *shared = QRE_LightGroupShared (l->name, l);
+
+	if (shared)
+	{
+		l->has_radius = shared->has_radius;
+		l->radius = shared->radius;
+		l->has_intensity = shared->has_intensity;
+		l->intensity = shared->intensity;
+		l->has_offset = shared->has_offset;
+		VectorCopy (shared->offset, l->offset);
+		l->has_color = shared->has_color;
+		VectorCopy (shared->color, l->color);
+		l->force_rasterize = shared->force_rasterize;
+	}
+	l->group_edit = true;
+	QRE_TouchLight (l->name);
+}
+
 // The light editor's panel: the dlight of the picked emitter. Its fields live in
 // lights.yaml (radius, intensity, offset); an emitter without an entry shows the
 // global defaults, and authoring a value creates one.
@@ -2366,25 +2570,49 @@ static void QRE_BuildLightPanelGUI (void)
 
 	if (light)
 	{
-		float value;
+		const rt_light_t *orig = QRE_LightOriginal (light->name);
+		float             value;
+
+		// group_edit at the very top: whether an edit touches the whole group
+		{
+			int ge = light->group_edit ? 1 : 0;
+
+			if (QR_GUI_Checkbox ("group_edit", &ge,
+			                     "Edit every light of this group (the emitter's model) at once. Off keeps this light's own values; on takes the group's values back."))
+			{
+				if (ge)
+					QRE_LightJoinGroup (light);
+				else
+				{
+					light->group_edit = false;
+					QRE_TouchLight (light->name);
+				}
+			}
+		}
+		if (QR_GUI_ResetButton ("group_edit", light->group_edit != (orig ? orig->group_edit : true)))
+		{
+			if (orig ? orig->group_edit : true)
+				QRE_LightJoinGroup (light);
+			else
+			{
+				light->group_edit = false;
+				QRE_TouchLight (light->name);
+			}
+		}
 
 		value = light->has_radius ? light->radius : CVAR_TO_FLOAT (rt_dlight_radius);
 		if (QR_GUI_SliderFloat ("light_radius", &value, 0.0f, 1024.0f,
 		                        "The size of the light. Shows the global rt_dlight_radius until it is authored."))
-		{
-			light->radius = value;
-			light->has_radius = true;
-			QRE_TouchLight (light->name);
-		}
+			QRE_LightWrite (light, QRE_LIGHT_F_RADIUS, value, 0, 0, false);
+		if (QR_GUI_ResetButton ("light_radius", QRE_LightFieldChanged (light, orig, QRE_LIGHT_F_RADIUS)))
+			QRE_LightApplyOriginal (light, orig, QRE_LIGHT_F_RADIUS);
 
 		value = light->has_intensity ? light->intensity : CVAR_TO_FLOAT (rt_dlight_intensity);
 		if (QR_GUI_SliderFloat ("light_intensity", &value, 0.0f, 8.0f,
 		                        "The brightness of the light: a multiplier of its colour."))
-		{
-			light->intensity = value;
-			light->has_intensity = true;
-			QRE_TouchLight (light->name);
-		}
+			QRE_LightWrite (light, QRE_LIGHT_F_INTENSITY, value, 0, 0, false);
+		if (QR_GUI_ResetButton ("light_intensity", QRE_LightFieldChanged (light, orig, QRE_LIGHT_F_INTENSITY)))
+			QRE_LightApplyOriginal (light, orig, QRE_LIGHT_F_INTENSITY);
 
 		{
 			float offs[3];
@@ -2400,19 +2628,35 @@ static void QRE_BuildLightPanelGUI (void)
 			changed |= QR_GUI_SliderFloat ("light_offset z", &offs[2], -128.0f, 128.0f, NULL);
 
 			if (changed)
-			{
-				VectorCopy (offs, light->offset);
-				light->has_offset = true;
-				QRE_TouchLight (light->name);
-			}
+				QRE_LightWrite (light, QRE_LIGHT_F_OFFSET, offs[0], offs[1], offs[2], false);
+			if (QR_GUI_ResetButton ("light_offset", QRE_LightFieldChanged (light, orig, QRE_LIGHT_F_OFFSET)))
+				QRE_LightApplyOriginal (light, orig, QRE_LIGHT_F_OFFSET);
 		}
 
-		if (QR_GUI_Button ("Clear overrides"))
 		{
-			light->has_radius = false;
-			light->has_intensity = false;
-			light->has_offset = false;
-			QRE_TouchLight (light->name);
+			int   en = light->has_color ? 1 : 0;
+			float rgb[3];
+
+			VectorCopy (light->has_color ? light->color : vec3_origin, rgb);
+			if (QR_GUI_ColorHex ("light_color", rgb, &en,
+			                     "An explicit colour of the light, replacing the emitter's own."))
+			{
+				if (!en)
+					QRE_LightWrite (light, QRE_LIGHT_F_COLOR, -1.0f, 0, 0, false);
+				else
+					QRE_LightWrite (light, QRE_LIGHT_F_COLOR, rgb[0], rgb[1], rgb[2], false);
+			}
+			if (QR_GUI_ResetButton ("light_color", QRE_LightFieldChanged (light, orig, QRE_LIGHT_F_COLOR)))
+				QRE_LightApplyOriginal (light, orig, QRE_LIGHT_F_COLOR);
+		}
+
+		{
+			int fr = light->force_rasterize ? 1 : 0;
+
+			if (QR_GUI_Checkbox ("force_rasterize", &fr, "Draw the emitter in the rasterized path."))
+				QRE_LightWrite (light, QRE_LIGHT_F_FRAST, 0, 0, 0, fr != 0);
+			if (QR_GUI_ResetButton ("force_rasterize", QRE_LightFieldChanged (light, orig, QRE_LIGHT_F_FRAST)))
+				QRE_LightApplyOriginal (light, orig, QRE_LIGHT_F_FRAST);
 		}
 	}
 	else if (qre.sel_light_valid)

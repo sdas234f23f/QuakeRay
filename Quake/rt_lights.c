@@ -64,10 +64,15 @@ const rt_tracked_light_t *RT_TRACK_Lights(int *outCount)
 static const char *rt_light_header =
     "# Dynamic light overrides for the vkpt ray-traced renderer.\n"
     "# A light belongs to an emitter -- the texture a model or a sprite draws\n"
-    "# (the same name materials.yaml uses for it):\n"
+    "# (the same name materials.yaml uses for it), the model of the entity that\n"
+    "# asked for a legacy dlight, or the classname of a map light entity:\n"
     "#   light_radius    -- the size of the light (rt_dlight_radius units)\n"
     "#   light_intensity -- the brightness of the light (a multiplier of its colour)\n"
     "#   light_offset    -- \"x y z\", the offset from the emitter's pivot point\n"
+    "#   light_color     -- \"rrggbb\", an explicit colour for the light\n"
+    "#   force_rasterize -- draw the emitter in the rasterized path\n"
+    "#   group_edit      -- true (the default) when an edit of one light of the\n"
+    "#                      group (the emitter's model) is written to all of them\n"
     "# An emitter without an entry uses the global rt_dlight_* settings.\n";
 
 // The name the editor and the renderer agree on: the normalized texture name
@@ -156,13 +161,15 @@ rt_light_t *RT_LIGHT_Ensure(const char *name)
     light = &rt_lights[rt_light_count++];
     memset(light, 0, sizeof(*light));
     light->valid = true;
+    light->group_edit = true; // part of its group until the flag says otherwise
     q_strlcpy(light->name, normalized, sizeof(light->name));
     return light;
 }
 
 qboolean RT_LIGHT_HasFields(const rt_light_t *l)
 {
-    return l && (l->has_radius || l->has_intensity || l->has_offset);
+    return l && (l->has_radius || l->has_intensity || l->has_offset || l->has_color ||
+                 l->force_rasterize || !l->group_edit);
 }
 
 void RT_LIGHT_WriteEntry(FILE *f, const rt_light_t *l)
@@ -180,6 +187,18 @@ void RT_LIGHT_WriteEntry(FILE *f, const rt_light_t *l)
     {
         fprintf(f, "    light_offset: %.6g %.6g %.6g\n", l->offset[0], l->offset[1], l->offset[2]);
     }
+    if (l->has_color)
+    {
+        fprintf(f, "    light_color: %02x%02x%02x\n",
+                (int)(l->color[0] * 255.0f + 0.5f) & 0xff,
+                (int)(l->color[1] * 255.0f + 0.5f) & 0xff,
+                (int)(l->color[2] * 255.0f + 0.5f) & 0xff);
+    }
+    if (l->force_rasterize)
+    {
+        fprintf(f, "    force_rasterize: true\n");
+    }
+    fprintf(f, "    group_edit: %s\n", l->group_edit ? "true" : "false");
 }
 
 // Trims a scalar: leading/trailing space and tab, and a pair of quotes.
@@ -208,6 +227,58 @@ static void rt_light_trim(char *text, size_t outsize)
         start[len] = '\0';
     }
     q_strlcpy(text, start, outsize);
+}
+
+// "rrggbb" (a leading # is accepted) -> rgb in 0..1.
+static qboolean rt_light_parse_hex(const char *value, vec3_t out)
+{
+    int i, c;
+
+    while (*value == ' ' || *value == '\t')
+    {
+        value++;
+    }
+    if (*value == '#')
+    {
+        value++;
+    }
+    if (strlen(value) != 6)
+    {
+        return false;
+    }
+
+    for (i = 0; i < 3; i++)
+    {
+        int hi = value[i * 2];
+        int lo = value[i * 2 + 1];
+
+        if (hi >= '0' && hi <= '9')       hi -= '0';
+        else if (hi >= 'a' && hi <= 'f')  hi = hi - 'a' + 10;
+        else if (hi >= 'A' && hi <= 'F')  hi = hi - 'A' + 10;
+        else return false;
+
+        if (lo >= '0' && lo <= '9')       lo -= '0';
+        else if (lo >= 'a' && lo <= 'f')  lo = lo - 'a' + 10;
+        else if (lo >= 'A' && lo <= 'F')  lo = lo - 'A' + 10;
+        else return false;
+
+        c = hi * 16 + lo;
+        out[i] = (float)c / 255.0f;
+    }
+    return true;
+}
+
+static qboolean rt_light_parse_bool(const char *value)
+{
+    if (!q_strcasecmp(value, "true") || !q_strcasecmp(value, "yes") || !q_strcasecmp(value, "on"))
+    {
+        return true;
+    }
+    if (!q_strcasecmp(value, "false") || !q_strcasecmp(value, "no") || !q_strcasecmp(value, "off"))
+    {
+        return false;
+    }
+    return atoi(value) != 0;
 }
 
 static int rt_light_load_file(const char *path)
@@ -252,14 +323,21 @@ static int rt_light_load_file(const char *path)
                 {
                     // a later file replaces the fields of the earlier entry
                     memset(light, 0, sizeof(*light));
-                    light->valid = true;
-                    q_strlcpy(light->name, name, sizeof(light->name));
                 }
                 else if (rt_light_count < RT_LIGHT_CAP)
                 {
                     light = &rt_lights[rt_light_count++];
                     memset(light, 0, sizeof(*light));
+                }
+                else
+                {
+                    light = NULL;
+                }
+
+                if (light)
+                {
                     light->valid = true;
+                    light->group_edit = true; // the default: a light follows its group
                     q_strlcpy(light->name, name, sizeof(light->name));
                 }
                 cur = light;
@@ -297,6 +375,24 @@ static int rt_light_load_file(const char *path)
             {
                 cur->intensity = (float)atof(value);
                 cur->has_intensity = true;
+            }
+            else if (!q_strcasecmp(key, "light_color"))
+            {
+                vec3_t rgb;
+
+                if (rt_light_parse_hex(value, rgb))
+                {
+                    VectorCopy(rgb, cur->color);
+                    cur->has_color = true;
+                }
+            }
+            else if (!q_strcasecmp(key, "force_rasterize"))
+            {
+                cur->force_rasterize = rt_light_parse_bool(value);
+            }
+            else if (!q_strcasecmp(key, "group_edit"))
+            {
+                cur->group_edit = rt_light_parse_bool(value);
             }
             else if (!q_strcasecmp(key, "light_offset"))
             {

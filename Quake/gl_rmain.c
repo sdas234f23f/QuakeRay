@@ -416,6 +416,10 @@ static void RT_UploadAllDlights ()
 				position[1] += ov->offset[1];
 				position[2] += ov->offset[2];
 			}
+			if (ov->has_color)
+			{
+				VectorCopy (ov->color, color);
+			}
 		}
 
 		VectorScale (color, intensity, color);
