@@ -2665,10 +2665,15 @@ static const qre_global_t qre_globals[] = {
 	  "Draw the sun shafts." },
 	{ NULL,  "rt_godrays_intensity",    QRE_G_FLOAT, 0, 4,
 	  "Strength of the sun shafts." },
-	{ NULL,  "rt_volume_lintensity",    QRE_G_FLOAT, 0, 1000,
-	  "Intensity of the light the fog scatters: the shafts that are visible in it." },
-	{ NULL,  "rt_volume_lassymetry",    QRE_G_FLOAT, -0.95f, 0.95f,
-	  "How much the fog scatters forward (positive) or back (negative); 0 scatters evenly." },
+
+	{ "Volumetric fog", "rt_volume_type",    QRE_G_INT,   0, 2,
+	  "0 off, 1 a simple depth-based fog (the density and the colour below), 2 the volumetric pass the sky light feeds." },
+	{ NULL,  "rt_volume_scatter",            QRE_G_FLOAT, 0, 1,
+	  "Density of the simple depth-based fog (mode 1)." },
+	{ NULL,  "rt_volume_ambient",            QRE_G_FLOAT, 0, 8,
+	  "Brightness of the simple fog's colour, which is the sky's flat colour (mode 1)." },
+	{ NULL,  "rt_volume_far",                QRE_G_FLOAT, 0, 4000,
+	  "How far from the camera the volumetric volume reaches (mode 2)." },
 };
 
 static void QRE_GlobalColorGet (const char *name, float rgb[3])
