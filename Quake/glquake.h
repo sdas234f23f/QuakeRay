@@ -758,9 +758,6 @@ void     RT_Bench_Start (void);
 void     RT_Bench_Stop (void);
 // Marks a run that ended before its demo did (a map change, a disconnect): the report says so.
 void     RT_Bench_Interrupt (void);
-qboolean RT_Bench_Interrupted (void);
-// One whole host frame, from _Host_Frame: what the results screen's FPS and frametime mean.
-void     RT_Bench_HostFrame (double now);
 void     RT_Bench_Report (const char *demo);
 
 

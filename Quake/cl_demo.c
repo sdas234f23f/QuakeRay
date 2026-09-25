@@ -34,8 +34,7 @@ static void CL_FinishTimeDemo (void);
 static qboolean cl_bench_pending;
 static qboolean cl_bench_quit;
 static qboolean cl_bench_menu;
-static qboolean cl_bench_showfps_saved;
-static int      cl_bench_showfps;
+static int      cl_bench_showfps = -1;
 static char     cl_bench_demo[MAX_QPATH];
 static qboolean cl_demo_natural_end;
 
@@ -594,20 +593,15 @@ had. Called before a new demo replaces the run that never reached its report.
 */
 static void CL_BenchCancel (void)
 {
-	/* A run being replaced is not a run being measured: drop its timedemo, so its stop does not
-	   print a summary for it either. */
-	if (cl_bench_pending || RT_Bench_Active ())
-		cls.timedemo = false;
-
 	cl_bench_pending = false;
 	cl_bench_quit = false;
 	cl_bench_menu = false;
 	RT_Bench_Stop ();
 
-	if (cl_bench_showfps_saved)
+	if (cl_bench_showfps >= 0)
 	{
 		Cvar_SetValueQuick (&scr_showfps, (float) cl_bench_showfps);
-		cl_bench_showfps_saved = false;
+		cl_bench_showfps = -1;
 	}
 }
 
@@ -621,19 +615,22 @@ and rt_bench, which plays the same thing with the frame profiler around it.
 */
 static qboolean CL_StartDemoPlayback (const char *filename)
 {
-	char  name[MAX_OSPATH];
-	FILE *file = NULL;
-	int   forcetrack;
+	char name[MAX_OSPATH];
 
-	// copy the name before anything can rebuild the list it may point into
+	/* A run that never reached its report is void: a new demo replaces it. */
+	CL_BenchCancel ();
+
+	// disconnect from server
+	CL_Disconnect ();
+
+	// open the demo file
 	q_strlcpy (name, filename, sizeof (name));
 	COM_AddExtension (name, ".dem", sizeof (name));
 
 	Con_Printf ("Playing demo from %s.\n", name);
 
-	// open and check the file first: a name that does not open must not cost the running game
-	COM_FOpenFile (name, &file, NULL);
-	if (!file)
+	COM_FOpenFile (name, &cls.demofile, NULL);
+	if (!cls.demofile)
 	{
 		Con_Printf ("ERROR: couldn't open %s\n", name);
 		cls.demonum = -1; // stop demo loop
@@ -644,22 +641,15 @@ static qboolean CL_StartDemoPlayback (const char *filename)
 	// O.S.: if a space character e.g. 0x20 (' ') follows '\n',
 	// fscanf skips that byte too and screws up further reads.
 	//	fscanf (cls.demofile, "%i\n", &cls.forcetrack);
-	if (fscanf (file, "%i", &forcetrack) != 1 || fgetc (file) != '\n')
+	if (fscanf (cls.demofile, "%i", &cls.forcetrack) != 1 || fgetc (cls.demofile) != '\n')
 	{
-		fclose (file);
+		fclose (cls.demofile);
+		cls.demofile = NULL;
 		cls.demonum = -1; // stop demo loop
 		Con_Printf ("ERROR: demo \"%s\" is invalid\n", name);
 		return false;
 	}
 
-	/* A run that never reached its report is void: a new demo replaces it. */
-	CL_BenchCancel ();
-
-	// disconnect from server
-	CL_Disconnect ();
-
-	cls.demofile = file;
-	cls.forcetrack = forcetrack;
 	cls.demoplayback = true;
 	cls.demopaused = false;
 	cls.state = ca_connected;
@@ -683,10 +673,7 @@ on-screen FPS counter is switched on for the run.
 */
 qboolean CL_BenchStart (const char *demo, qboolean from_menu)
 {
-	// the name may point into the demo list, which starting a playback can rebuild
-	q_strlcpy (cl_bench_demo, (demo && demo[0]) ? demo : "?", sizeof (cl_bench_demo));
-
-	if (!CL_StartDemoPlayback (cl_bench_demo))
+	if (!CL_StartDemoPlayback (demo))
 		return false;
 
 	cls.timedemo = true;
@@ -696,11 +683,11 @@ qboolean CL_BenchStart (const char *demo, qboolean from_menu)
 	cl_bench_pending = true;
 	cl_bench_quit = false;
 	cl_bench_menu = from_menu;
+	q_strlcpy (cl_bench_demo, demo, sizeof (cl_bench_demo));
 
-	if (!cl_bench_showfps_saved)
+	if (cl_bench_showfps < 0)
 	{
 		cl_bench_showfps = (int) scr_showfps.value;
-		cl_bench_showfps_saved = true;
 		Cvar_SetValueQuick (&scr_showfps, 1);
 	}
 
@@ -779,21 +766,20 @@ static void CL_FinishTimeDemo (void)
 	if (!cl_bench_pending)
 		Con_Printf ("%i frames %5.1f seconds %5.1f fps\n", frames, time, frames / time);
 
-	if (RT_Bench_Active ())
-	{
-		RT_Bench_Report (cl_bench_demo);
+	const qboolean measured = RT_Bench_Active ();
 
-		if (cl_bench_menu)
-		{
-			if (RT_Bench_Interrupted ())
-				Con_Printf ("rt_bench: the run was interrupted, its result is in benchmark.log\n");
-			else
-				M_Menu_BenchmarkResults_f ();
-		}
-	}
+	if (measured)
+		RT_Bench_Report (cl_bench_demo);
 	else if (cl_bench_pending)
-	{
 		Con_Printf ("rt_bench: the demo ended before the benchmark could start\n");
+
+	if (cl_bench_menu)
+	{
+		// feedback for a menu run: the screen says "no result" when nothing was measured
+		if (!measured)
+			rt_bench_result.valid = false;
+
+		M_Menu_BenchmarkResults_f ();
 	}
 
 	if (cl_bench_quit)
@@ -808,10 +794,10 @@ static void CL_FinishTimeDemo (void)
 	cl_bench_quit = false;
 	cl_bench_menu = false;
 
-	if (cl_bench_showfps_saved)
+	if (cl_bench_showfps >= 0)
 	{
 		Cvar_SetValueQuick (&scr_showfps, (float) cl_bench_showfps);
-		cl_bench_showfps_saved = false;
+		cl_bench_showfps = -1;
 	}
 }
 

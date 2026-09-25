@@ -1933,10 +1933,26 @@ void M_Benchmark_Key (int key)
 	case K_ABUTTON:
 		for (filelist_item_t *item = demolist; item; item = item->next)
 		{
+			char     name[MAX_OSPATH];
+			FILE    *file = NULL;
+			int      forcetrack;
+			qboolean ok = false;
+
 			if (demo_index++ != demo_cursor)
 				continue;
 
-			if (!CL_BenchStart (item->name, true))
+			/* Check the demo before the playback tears the running game down. */
+			q_strlcpy (name, item->name, sizeof (name));
+			COM_AddExtension (name, ".dem", sizeof (name));
+
+			COM_FOpenFile (name, &file, NULL);
+			if (file)
+			{
+				ok = (fscanf (file, "%i", &forcetrack) == 1 && fgetc (file) == '\n');
+				fclose (file);
+			}
+
+			if (!ok || !CL_BenchStart (name, true))
 			{
 				q_snprintf (bench_error, sizeof (bench_error), "could not open %s", item->name);
 				return;
@@ -2012,17 +2028,17 @@ void M_BenchmarkResults_Draw (cb_context_t *cbx)
 		return;
 	}
 
-	M_Print (cbx, 40, 44, r->demo);
+	M_Print (cbx, 72, 44, r->demo);
 	q_snprintf (line, sizeof (line), "%d frames, %.2f seconds", r->frames, r->seconds);
-	M_Print (cbx, 40, 56, line);
+	M_Print (cbx, 72, 56, line);
 
-	M_PrintWhite (cbx, 40, 76, "FPS");
+	M_PrintWhite (cbx, 72, 76, "FPS");
 	q_snprintf (line, sizeof (line), "min %5.1f   max %5.1f   avg %5.1f", r->fpsMin, r->fpsMax, r->fpsAvg);
-	M_Print (cbx, 40, 86, line);
+	M_Print (cbx, 72, 86, line);
 
-	M_PrintWhite (cbx, 40, 102, "FRAMETIME, ms");
+	M_PrintWhite (cbx, 72, 102, "FRAMETIME, ms");
 	q_snprintf (line, sizeof (line), "min %5.2f   max %5.2f   avg %5.2f", r->frameMinMs, r->frameMaxMs, r->frameAvgMs);
-	M_Print (cbx, 40, 112, line);
+	M_Print (cbx, 72, 112, line);
 
 	M_PrintWhite (cbx, 88, 140, "Press ENTER to continue");
 }

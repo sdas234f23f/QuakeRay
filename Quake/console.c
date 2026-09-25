@@ -829,7 +829,6 @@ typedef struct arg_completion_type_s
 
 static const arg_completion_type_t arg_completion_types[] = {{"map ", &extralevels}, {"changelevel ", &extralevels}, {"game ", &modlist},
                                                              {"record ", &demolist}, {"playdemo ", &demolist},       {"timedemo ", &demolist},
-                                                             {"rt_bench ", &demolist},
                                                              {"save ", &savelist},   {"load ", &savelist}};
 
 static const int num_arg_completion_types = sizeof (arg_completion_types) / sizeof (arg_completion_types[0]);

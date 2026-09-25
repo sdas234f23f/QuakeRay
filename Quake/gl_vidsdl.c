@@ -325,13 +325,8 @@ static qboolean rt_prof_active;
 static qboolean rt_bench_active;
 static qboolean rt_bench_interrupted;
 static int      rt_bench_frames;
-static int      rt_bench_hostframes;
 static double   rt_bench_start_time;
 static double   rt_bench_frame_min;
-static double   rt_bench_host_last;
-static double   rt_bench_host_sum;
-static double   rt_bench_host_min;
-static double   rt_bench_host_max;
 static double   rt_bench_sum[RT_PROF_COUNT];
 static double   rt_bench_max[RT_PROF_COUNT];
 
@@ -348,13 +343,8 @@ void RT_Bench_Start (void)
 	rt_bench_active = true;
 	rt_bench_interrupted = false;
 	rt_bench_frames = 0;
-	rt_bench_hostframes = 0;
 	rt_bench_start_time = Sys_DoubleTime ();
 	rt_bench_frame_min = 0.0;
-	rt_bench_host_last = 0.0;
-	rt_bench_host_sum = 0.0;
-	rt_bench_host_min = 0.0;
-	rt_bench_host_max = 0.0;
 	memset (rt_bench_sum, 0, sizeof (rt_bench_sum));
 	memset (rt_bench_max, 0, sizeof (rt_bench_max));
 	rt_cluster_cache_hits = 0;
@@ -373,44 +363,6 @@ void RT_Bench_Interrupt (void)
 {
 	if (rt_bench_active)
 		rt_bench_interrupted = true;
-}
-
-qboolean RT_Bench_Interrupted (void)
-{
-	return rt_bench_interrupted;
-}
-
-/*
-================
-RT_Bench_HostFrame
-
-The wall time of one whole host frame, sampled at the end of _Host_Frame. The profiler's frame
-slot brackets the screen update alone, which is what a CPU section report wants, but the FPS and
-the frametime the results screen shows are the frame the player watched, and the on-screen
-counter reads whole host frames.
-================
-*/
-void RT_Bench_HostFrame (double now)
-{
-	if (!rt_bench_active)
-		return;
-
-	if (rt_bench_host_last > 0.0)
-	{
-		const double ms = (now - rt_bench_host_last) * 1000.0;
-
-		if (ms > 0.0 && ms < 10000.0)
-		{
-			rt_bench_host_sum += ms;
-			if (rt_bench_hostframes == 0 || ms < rt_bench_host_min)
-				rt_bench_host_min = ms;
-			if (ms > rt_bench_host_max)
-				rt_bench_host_max = ms;
-			++rt_bench_hostframes;
-		}
-	}
-
-	rt_bench_host_last = now;
 }
 
 static void RT_Bench_Slot (int slot, double ms)
@@ -582,25 +534,21 @@ void RT_Bench_Report (const char *demo)
 	time_t      now;
 	struct tm  *local;
 	FILE       *f;
-	const int    profiled = rt_bench_frames > 0 ? rt_bench_frames : 1;
-	const int    hostframes = rt_bench_hostframes;
-	const double seconds = (rt_bench_frames > 0 || hostframes > 0) ? (Sys_DoubleTime () - rt_bench_start_time) : 0.0;
+	const int    frames = rt_bench_frames > 0 ? rt_bench_frames : 1;
+	const double seconds = rt_bench_frames > 0 ? (Sys_DoubleTime () - rt_bench_start_time) : 0.0;
 
 	if (!rt_bench_active)
 		return;
 
 	rt_bench_active = false;
 
-	/* The whole-frame numbers are the host frames, the ones the FPS counter and the player
-	   watched; the per-slot report below stays on the screen updates it sampled. */
-	const double frameAvg = hostframes > 0 ? rt_bench_host_sum / hostframes : rt_bench_sum[RT_PROF_FRAME] / profiled;
-	const double frameMin = hostframes > 0 ? rt_bench_host_min : (rt_bench_frame_min > 0.0 ? rt_bench_frame_min : frameAvg);
-	const double frameMax = hostframes > 0 ? rt_bench_host_max : rt_bench_max[RT_PROF_FRAME];
-	const int    frames = hostframes > 0 ? hostframes : rt_bench_frames;
+	const double frameAvg = rt_bench_sum[RT_PROF_FRAME] / frames;
+	const double frameMin = rt_bench_frame_min > 0.0 ? rt_bench_frame_min : frameAvg;
+	const double frameMax = rt_bench_max[RT_PROF_FRAME];
 
 	rt_bench_result.valid = true;
 	q_strlcpy (rt_bench_result.demo, (demo && demo[0]) ? demo : "?", sizeof (rt_bench_result.demo));
-	rt_bench_result.frames = frames;
+	rt_bench_result.frames = rt_bench_frames;
 	rt_bench_result.seconds = seconds;
 	rt_bench_result.frameAvgMs = frameAvg;
 	rt_bench_result.frameMinMs = frameMin;
@@ -630,17 +578,12 @@ void RT_Bench_Report (const char *demo)
 	         (demo && demo[0]) ? demo : "?", frames, seconds,
 	         seconds > 0.0 ? frames / seconds : 0.0, rt_bench_interrupted ? 1 : 0);
 
-	fprintf (f, "fps.host    %-17s avg=%.1f min=%.1f max=%.1f\n", "whole frame",
-	         rt_bench_result.fpsAvg, rt_bench_result.fpsMin, rt_bench_result.fpsMax);
-	fprintf (f, "frame.host  %-17s avg_ms=%.2f min_ms=%.2f max_ms=%.2f\n", "whole frame",
-	         frameAvg, frameMin, frameMax);
-
 	for (int i = 0; i < RT_PROF_COUNT; i++)
 		fprintf (f, "cpu.slot    %-17s avg_ms=%.2f max_ms=%.2f\n", RT_ProfSlotName (i),
-		         rt_bench_sum[i] / profiled, rt_bench_max[i]);
+		         rt_bench_sum[i] / frames, rt_bench_max[i]);
 
 	fprintf (f, "cpu.main    %-17s avg_ms=%.2f\n", "frame minus wait",
-	         (rt_bench_sum[RT_PROF_FRAME] - rt_bench_sum[RT_PROF_WAIT]) / profiled);
+	         (rt_bench_sum[RT_PROF_FRAME] - rt_bench_sum[RT_PROF_WAIT]) / frames);
 
 	fprintf (f, "cpu.cluster %-17s hits=%d misses=%d set=%d move=%d other=%d\n", "lists",
 	         rt_cluster_cache_hits, rt_cluster_cache_misses, rt_cluster_miss_set,
@@ -673,8 +616,6 @@ void RT_Bench_Report (const char *demo)
 	RT_Bench_Setting (f, "rt_upscale_fsr31");
 	RT_Bench_Setting (f, "rt_upscale_dlss");
 	RT_Bench_Setting (f, "rt_stats_panels");
-	RT_Bench_Setting (f, "vid_vsync");
-	RT_Bench_Setting (f, "host_maxfps");
 	fprintf (f, " vid=%dx%d version=%s\n", vid.width, vid.height, ENGINE_VER_STRING);
 
 	fclose (f);
