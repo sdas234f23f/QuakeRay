@@ -167,13 +167,16 @@ static struct
 	vec3_t player_viewangles;
 
 	// the picked / hovered face (hover is updated while flying); ent is NULL
-	// for a world face and the brush entity for a model face
-	qmodel_t   *pick_model;
-	msurface_t *pick_surf;
-	entity_t   *pick_ent;
-	qmodel_t   *hover_model;
-	msurface_t *hover_surf;
-	entity_t   *hover_ent;
+	// for a world face and the brush entity for a model face. A model/sprite
+	// pick has no surface: pick_glt is its skin texture and pick_surf is NULL.
+	qmodel_t    *pick_model;
+	msurface_t  *pick_surf;
+	entity_t    *pick_ent;
+	gltexture_t *pick_glt;
+	qmodel_t    *hover_model;
+	msurface_t  *hover_surf;
+	entity_t    *hover_ent;
+	gltexture_t *hover_glt;
 
 	// the material group (animation frames) shown by the panel
 	rt_material_t *group[QRE_GROUP_MAX];
@@ -771,6 +774,116 @@ static msurface_t *QRE_FindSurface (qmodel_t *model, const vec3_t impact, const 
 	return best;
 }
 
+// The skin texture a model entity draws: the alias frame at the animation the
+// renderer picked (it follows cl.time, which the editor freezes) or the sprite
+// frame.
+static gltexture_t *QRE_EntityTexture (entity_t *e)
+{
+	if (!e->model)
+		return NULL;
+
+	if (e->model->type == mod_alias)
+	{
+		aliashdr_t *hdr = (aliashdr_t *)Mod_Extradata (e->model);
+		int         anim, skinnum;
+
+		if (!hdr)
+			return NULL;
+
+		anim = (int)(cl.time * 10) & 3;
+		skinnum = e->skinnum;
+		if (skinnum < 0 || skinnum >= hdr->numskins)
+			skinnum = 0;
+		return hdr->gltextures[skinnum][anim];
+	}
+
+	if (e->model->type == mod_sprite)
+	{
+		mspriteframe_t *frame = R_GetSpriteFrame (e);
+
+		return frame ? frame->gltexture : NULL;
+	}
+
+	return NULL;
+}
+
+// A ray against an entity's model bounds (a rigid transform about the origin;
+// an alias model's bounds already carry its own scale and scale_origin).
+// Returns the fraction along the ray, or -1 when it misses.
+static float QRE_TraceEntityBox (entity_t *e, const vec3_t start, const vec3_t end)
+{
+	float       m[16];
+	RgTransform transform;
+	vec3_t      mins, maxs, local_start, local_dir;
+	float       tmin = 0.0f, tmax = 1.0f;
+	int         i;
+
+	if (!e->model || (e->model->type != mod_alias && e->model->type != mod_sprite))
+		return -1.0f;
+
+	VectorCopy (e->model->mins, mins);
+	VectorCopy (e->model->maxs, maxs);
+
+	// a sprite's bounds can be empty; give it the size the quad is drawn at
+	if (mins[0] == maxs[0] && mins[1] == maxs[1] && mins[2] == maxs[2])
+	{
+		mins[0] = mins[1] = mins[2] = -16.0f;
+		maxs[0] = maxs[1] = maxs[2] = 16.0f;
+	}
+
+	IdentityMatrix (m);
+	R_RotateForEntity (m, e->origin, e->angles);
+	transform = RT_GetModelTransform (m);
+
+	for (i = 0; i < 3; i++)
+	{
+		vec3_t ds, de;
+
+		VectorSubtract (start, e->origin, ds);
+		VectorSubtract (end, e->origin, de);
+
+		// local is the transpose of the rigid rotation applied to the delta
+		local_start[i] = transform.matrix[0][i] * ds[0]
+		               + transform.matrix[1][i] * ds[1]
+		               + transform.matrix[2][i] * ds[2];
+		local_dir[i]   = transform.matrix[0][i] * (de[0] - ds[0])
+		               + transform.matrix[1][i] * (de[1] - ds[1])
+		               + transform.matrix[2][i] * (de[2] - ds[2]);
+	}
+
+	for (i = 0; i < 3; i++)
+	{
+		const float d = local_dir[i];
+
+		if (fabsf (d) < 1e-6f)
+		{
+			if (local_start[i] < mins[i] || local_start[i] > maxs[i])
+				return -1.0f;
+		}
+		else
+		{
+			float t1 = (mins[i] - local_start[i]) / d;
+			float t2 = (maxs[i] - local_start[i]) / d;
+
+			if (t1 > t2)
+			{
+				const float t = t1;
+
+				t1 = t2;
+				t2 = t;
+			}
+			if (t1 > tmin)
+				tmin = t1;
+			if (t2 < tmax)
+				tmax = t2;
+			if (tmin > tmax)
+				return -1.0f;
+		}
+	}
+
+	return tmin;
+}
+
 static qboolean QRE_TracePick (qmodel_t **out_model, msurface_t **out_surf, entity_t **out_ent, gltexture_t **out_glt)
 {
 	vec3_t    start, end;
@@ -778,6 +891,7 @@ static qboolean QRE_TracePick (qmodel_t **out_model, msurface_t **out_surf, enti
 	float     best = 1.0f;
 	qmodel_t *bestmodel = NULL;
 	entity_t *bestent = NULL;
+	qboolean  bestisentity = false;
 	vec3_t    bestimpact = { 0, 0, 0 };
 
 	if (!cl.worldmodel)
@@ -818,8 +932,52 @@ static qboolean QRE_TracePick (qmodel_t **out_model, msurface_t **out_surf, enti
 		}
 	}
 
+	// alias models and sprites (medkits, items, torches): their textures are
+	// model skins, not BSP surfaces, so the traces above cannot see them
+	{
+		int i;
+
+		for (i = 1; i < cl.num_entities; i++)
+		{
+			entity_t *e = &cl.entities[i];
+			float     f;
+
+			if (!e->model || e->model == cl.worldmodel)
+				continue;
+			if (e->model->type != mod_alias && e->model->type != mod_sprite)
+				continue;
+			if (e == &cl.viewent || i == cl.viewentity)
+				continue;
+
+			f = QRE_TraceEntityBox (e, start, end);
+			if (f >= 0.0f && f < best)
+			{
+				best = f;
+				bestent = e;
+				bestmodel = e->model;
+				bestisentity = true;
+			}
+		}
+	}
+
 	if (!bestmodel)
 		return false;
+
+	if (bestisentity)
+	{
+		gltexture_t *glt = QRE_EntityTexture (bestent);
+
+		if (!glt)
+			return false;
+
+		*out_surf = NULL;
+		*out_model = bestmodel;
+		if (out_ent)
+			*out_ent = bestent;
+		if (out_glt)
+			*out_glt = glt;
+		return true;
+	}
 
 	{
 		RgTransform transform = RT_GetBrushModelMatrix (bestent);
@@ -850,6 +1008,7 @@ static void QRE_DoPick (qboolean select)
 		qre.hover_model = NULL;
 		qre.hover_surf = NULL;
 		qre.hover_ent = NULL;
+		qre.hover_glt = NULL;
 		return;
 	}
 
@@ -858,6 +1017,7 @@ static void QRE_DoPick (qboolean select)
 		qre.hover_model = model;
 		qre.hover_surf = surf;
 		qre.hover_ent = ent;
+		qre.hover_glt = glt;
 		return;
 	}
 
@@ -872,9 +1032,11 @@ static void QRE_DoPick (qboolean select)
 	qre.pick_model = model;
 	qre.pick_surf = surf;
 	qre.pick_ent = ent;
+	qre.pick_glt = glt;
 	qre.hover_model = NULL;
 	qre.hover_surf = NULL;
 	qre.hover_ent = NULL;
+	qre.hover_glt = NULL;
 
 	{
 		char texname[MAX_QPATH];
@@ -1020,6 +1182,84 @@ static void QRE_EmitOutline (qmodel_t *model, msurface_t *surf, entity_t *ent, u
 	RG_CHECK (r);
 }
 
+// The outline of a model pick: the entity's model bounds as a wire box, drawn
+// with the same overlay path as a face outline.
+static void QRE_EmitBoxOutline (entity_t *ent, uint32_t color)
+{
+	static const int edges[12][2] = {
+		{ 0, 1 }, { 1, 3 }, { 3, 2 }, { 2, 0 },
+		{ 4, 5 }, { 5, 7 }, { 7, 6 }, { 6, 4 },
+		{ 0, 4 }, { 1, 5 }, { 2, 6 }, { 3, 7 },
+	};
+	float       m[16];
+	RgTransform transform;
+	vec3_t      mins, maxs;
+	RgVertex   *rv;
+	uint32_t   *ri;
+	byte       *block;
+	int         i, j;
+
+	if (!ent || !ent->model)
+		return;
+
+	VectorCopy (ent->model->mins, mins);
+	VectorCopy (ent->model->maxs, maxs);
+	if (mins[0] == maxs[0] && mins[1] == maxs[1] && mins[2] == maxs[2])
+	{
+		mins[0] = mins[1] = mins[2] = -16.0f;
+		maxs[0] = maxs[1] = maxs[2] = 16.0f;
+	}
+
+	IdentityMatrix (m);
+	R_RotateForEntity (m, ent->origin, ent->angles);
+	transform = RT_GetModelTransform (m);
+
+	block = (byte *)RT_AllocScratchMemoryNulled (8 * sizeof (RgVertex) + 24 * sizeof (uint32_t));
+	rv = (RgVertex *)block;
+	ri = (uint32_t *)(block + 8 * sizeof (RgVertex));
+
+	for (i = 0; i < 8; i++)
+	{
+		vec3_t local;
+
+		local[0] = (i & 1) ? maxs[0] : mins[0];
+		local[1] = (i & 2) ? maxs[1] : mins[1];
+		local[2] = (i & 4) ? maxs[2] : mins[2];
+
+		for (j = 0; j < 3; j++)
+		{
+			rv[i].position[j] = transform.matrix[j][0] * local[0]
+			                  + transform.matrix[j][1] * local[1]
+			                  + transform.matrix[j][2] * local[2]
+			                  + transform.matrix[j][3];
+		}
+		rv[i].packedColor = color;
+	}
+
+	for (i = 0; i < 12; i++)
+	{
+		ri[i * 2 + 0] = (uint32_t)edges[i][0];
+		ri[i * 2 + 1] = (uint32_t)edges[i][1];
+	}
+
+	RgRasterizedGeometryUploadInfo info = {
+		.renderType = RG_RASTERIZED_GEOMETRY_RENDER_TYPE_SWAPCHAIN,
+		.vertexCount = 8,
+		.pVertices = rv,
+		.indexCount = 24,
+		.pIndices = ri,
+		.transform = RT_TRANSFORM_IDENTITY,
+		.color = RT_COLOR_WHITE,
+		.material = RG_NO_MATERIAL,
+		.pipelineState = RG_RASTERIZED_GEOMETRY_STATE_FORCE_LINE_LIST,
+		.blendFuncSrc = 0,
+		.blendFuncDst = 0,
+	};
+
+	RgResult r = rgUploadRasterizedGeometry (vulkan_globals.instance, &info, NULL, NULL);
+	RG_CHECK (r);
+}
+
 void QR_Editor_DrawSelection (cb_context_t *cbx)
 {
 	(void)cbx;
@@ -1027,13 +1267,22 @@ void QR_Editor_DrawSelection (cb_context_t *cbx)
 	if (!qre.active)
 		return;
 
-	if (qre.panel_open && qre.pick_surf)
+	if (qre.panel_open && (qre.pick_surf || (qre.pick_ent && qre.pick_glt)))
 	{
-		QRE_EmitOutline (qre.pick_model, qre.pick_surf, qre.pick_ent, RT_PackColorToUint32 (255, 255, 255, 255));
+		const uint32_t color = RT_PackColorToUint32 (255, 255, 255, 255);
+
+		if (qre.pick_surf)
+			QRE_EmitOutline (qre.pick_model, qre.pick_surf, qre.pick_ent, color);
+		else
+			QRE_EmitBoxOutline (qre.pick_ent, color);
 	}
 	else if (!qre.panel_open && qre.hover_surf)
 	{
 		QRE_EmitOutline (qre.hover_model, qre.hover_surf, qre.hover_ent, RT_PackColorToUint32 (255, 214, 64, 255));
+	}
+	else if (!qre.panel_open && qre.hover_surf == NULL && qre.hover_ent && qre.hover_glt)
+	{
+		QRE_EmitBoxOutline (qre.hover_ent, RT_PackColorToUint32 (255, 214, 64, 255));
 	}
 }
 
@@ -1334,11 +1583,11 @@ static void QRE_BuildPanelGUI (void)
 	QR_GUI_BeginPanel ("qr_material_editor", glwidth - panel_w, 0, panel_w, glheight);
 
 	QR_GUI_Label ("MATERIAL EDITOR");
-	if (qre.pick_surf && qre.pick_surf->texinfo && qre.pick_surf->texinfo->texture)
+	if (qre.pick_glt)
 	{
 		char buf[MAX_QPATH + 16];
 
-		q_snprintf (buf, sizeof (buf), "face: %s", qre.pick_surf->texinfo->texture->name);
+		q_snprintf (buf, sizeof (buf), qre.pick_surf ? "face: %s" : "model: %s", qre.pick_glt->name);
 		QR_GUI_LabelDim (buf);
 	}
 	QR_GUI_Spacing ();
@@ -1532,6 +1781,7 @@ static void QRE_ClosePanel (void)
 	qre.pick_model = NULL;
 	qre.pick_surf = NULL;
 	qre.pick_ent = NULL;
+	qre.pick_glt = NULL;
 
 	IN_Activate ();
 	SDL_ShowCursor (SDL_ENABLE);
@@ -1560,21 +1810,16 @@ static void QRE_Cancel (void)
 	// the restored lists may no longer contain the edited materials:
 	// rebuild the group (a picked texture without a material goes back to the
 	// detached defaults)
-	if (qre.pick_surf && qre.pick_surf->texinfo && qre.pick_surf->texinfo->texture)
+	if (qre.pick_glt)
 	{
-		gltexture_t *glt = qre.pick_surf->texinfo->texture->gltexture;
+		char texname[MAX_QPATH];
+		char *dot;
 
-		if (glt)
-		{
-			char texname[MAX_QPATH];
-			char *dot;
-
-			RT_MAT_NormalizeName (glt->name, texname, sizeof (texname));
-			dot = strrchr (texname, '.');
-			if (dot && !strchr (dot, ':'))
-				*dot = '\0';
-			QRE_ResolveGroup (texname);
-		}
+		RT_MAT_NormalizeName (qre.pick_glt->name, texname, sizeof (texname));
+		dot = strrchr (texname, '.');
+		if (dot && !strchr (dot, ':'))
+			*dot = '\0';
+		QRE_ResolveGroup (texname);
 	}
 
 	// the session file no longer matches the lists: put the reverted values there
@@ -1957,9 +2202,11 @@ static void QRE_StopEditor (qboolean restore)
 	qre.pick_model = NULL;
 	qre.pick_surf = NULL;
 	qre.pick_ent = NULL;
+	qre.pick_glt = NULL;
 	qre.hover_model = NULL;
 	qre.hover_surf = NULL;
 	qre.hover_ent = NULL;
+	qre.hover_glt = NULL;
 
 	// the world runs again
 	sv.paused = qre.sv_paused_prev;
