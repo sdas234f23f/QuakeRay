@@ -293,11 +293,11 @@ void QR_GUI_Init (void *sdl_window, void *rg_instance, const char *font_path)
 
 	ImFont *font = nullptr;
 	if (font_path && font_path[0])
-		font = io.Fonts->AddFontFromFileTTF (font_path, 17.0f);
+		font = io.Fonts->AddFontFromFileTTF (font_path, 19.0f);
 	if (!font)
 	{
 		ImFontConfig cfg;
-		cfg.SizePixels = 17.0f;
+		cfg.SizePixels = 19.0f;
 		font = io.Fonts->AddFontDefault (&cfg);
 		if (font_path && font_path[0])
 			fprintf (stderr, "qr gui: cannot load '%s', using the default font\n", font_path);

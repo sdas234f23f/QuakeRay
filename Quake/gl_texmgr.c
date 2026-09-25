@@ -1438,7 +1438,7 @@ static qboolean TexMgr_ApplyMaterialFromMat (gltexture_t *glt, unsigned *albedoF
 					const float k = RT_COLOR_EMISSIVE_FALLOFF;
 					const float tail = expf (-k);
 
-					mask[i] = (expf (-k * dnorm) - tail) / (1.0f - tail) * mat->emissive_factor;
+					mask[i] = (expf (-k * dnorm) - tail) / (1.0f - tail) * block->factor;
 				}
 			}
 

@@ -357,6 +357,7 @@ static rt_emissive_t *rt_mat_append_emissive_block(rt_material_t *mat)
     block->color[0] = block->color[1] = block->color[2] = 1.0f;
     block->threshold = mat->color_emissive_threshold;
     block->feather = mat->color_emissive_feather;
+    block->factor = mat->emissive_factor;
     block->blend = mat->emissive_blend;
     mat->color_emissive_count++;
     mat->has_color_emissive = true;
@@ -695,6 +696,11 @@ static int rt_mat_parse_yaml(const char *filebuf, int len, const char *file_name
                                                 block->feather = CLAMP(0.0f, (float)atof(vb), 16.0f);
                                                 block->has_feather = true;
                                             }
+                                            else if (!q_strcasecmp(kb, "emissive_factor") || !q_strcasecmp(kb, "factor"))
+                                            {
+                                                block->factor = (float)atof(vb);
+                                                block->has_factor = true;
+                                            }
                                             else if (!q_strcasecmp(kb, "blend"))
                                             {
                                                 const int v = rt_mat_parse_emissive_blend(vb);
@@ -748,9 +754,12 @@ static int rt_mat_parse_yaml(const char *filebuf, int len, const char *file_name
                             block->threshold = dest->color_emissive_threshold;
                         if (!block->has_feather)
                             block->feather = dest->color_emissive_feather;
+                        if (!block->has_factor)
+                            block->factor = dest->emissive_factor;
                         if (!block->has_blend)
                             block->blend = dest->emissive_blend;
-                        block->has_threshold = block->has_feather = block->has_blend = true;
+                        block->has_threshold = block->has_feather = true;
+                        block->has_factor = block->has_blend = true;
                     }
 
                     if (have_name)

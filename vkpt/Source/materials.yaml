@@ -14,6 +14,7 @@
 #           - color: ff0000          # rrggbb
 #             threshold: 0.02        # 0..1 colour-cube distance / sqrt(3)
 #             feather: 2             # pixels of edge softening, both sides
+#             emissive_factor: 1     # scales this block's glow (0..4)
 #             blend: screen          # cvar | off | normal | screen |
 #                                    # overlay | hard light | colour dodge
 #     The synthesized mask is white where the pixel matches the colour exactly
@@ -29,6 +30,7 @@
 #               - color: ff0000
 #                 threshold: 0.02
 #                 feather: 3
+#                 emissive_factor: 2
 #                 blend: screen
 #             is_light: true
 # The old single-colour keys (`color_emissive: ff0000,00ff00`,

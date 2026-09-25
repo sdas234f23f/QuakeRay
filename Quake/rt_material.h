@@ -22,11 +22,13 @@ typedef struct rt_emissive_s
     vec3_t   color;
     float    threshold;      // how far a pixel's colour may differ and still glow
     float    feather;        // pixels of edge softening (0 = a hard mask)
+    float    factor;         // scales this block's emission (emissive_factor)
     int      blend;          // how the glow is composited; -1 = the material's / cvar
     /* Set while a file is read: a block that does not carry its own value
        inherits the material-level one (the old single-colour keys). */
     qboolean has_threshold;
     qboolean has_feather;
+    qboolean has_factor;
     qboolean has_blend;
 } rt_emissive_t;
 

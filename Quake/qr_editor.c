@@ -87,8 +87,6 @@ enum
 	PARAM_BUMP,
 	PARAM_ROUGH,
 	PARAM_METAL,
-	PARAM_EMISF,
-	PARAM_EBLEND,
 	PARAM_BASEF,
 	PARAM_LBRIGHT,
 	PARAM_LUPOFF,
@@ -124,8 +122,6 @@ static const struct qre_param_s
 	                     "Ignore the gloss map and pin the roughness. 0 leaves it to the gloss; mirror forces 0." },
 	[PARAM_METAL]    = { "metalness_factor", QRE_T_FLOAT, 0, 1, 0.01f,
 	                     "How metal-like the surface is. With metalness_from_normal_alpha it scales that mask." },
-	[PARAM_EMISF]    = { "emissive_factor",  QRE_T_FLOAT, 0, 4, 0.01f,
-	                     "Multiplies the emission of the mask (or of the colour entries)." },
 	[PARAM_BASEF]    = { "base_factor",      QRE_T_FLOAT, 0, 4, 0.01f,
 	                     "Multiplies the albedo: dims or lifts the whole texture." },
 	[PARAM_LBRIGHT]  = { "light_brightness", QRE_T_FLOAT, 0, 5, 0.01f,
@@ -133,9 +129,7 @@ static const struct qre_param_s
 	[PARAM_LUPOFF]   = { "light_upoffset",   QRE_T_FLOAT, -64, 64, 0.5f,
 	                     "Lifts the cast light above the model's origin (alias models)." },
 	[PARAM_CEMIS]    = { "color_emissive",   QRE_T_BOOL,  0, 0, 0,
-	                     "Glow by colour: every block below matches its own colour and carries its own threshold, feather and blend." },
-	[PARAM_EBLEND]   = { "emissive_blend",   QRE_T_INT,  -1, 5, 1,
-	                     "How the emission of a texture_emissive mask is composited; every colour block has its own blend and this is the fallback." },
+	                     "Glow by colour: every block below matches its own colour and carries its own threshold, feather, emissive_factor and blend." },
 	[PARAM_ISLIGHT]  = { "is_light",         QRE_T_BOOL,  0, 0, 0,
 	                     "The surface casts light into the scene, not only glows (BSP faces; models light from light_color)." },
 	[PARAM_LSTYLES]  = { "light_styles",     QRE_T_BOOL,  0, 0, 0,
@@ -585,7 +579,6 @@ static float QRE_GetFloat (const rt_material_t *m, int param)
 	case PARAM_BUMP:     return m->bump_scale;
 	case PARAM_ROUGH:    return m->roughness_override;
 	case PARAM_METAL:    return m->metalness_factor;
-	case PARAM_EMISF:    return m->emissive_factor;
 	case PARAM_BASEF:    return m->base_factor;
 	case PARAM_LBRIGHT:  return m->light_brightness;
 	case PARAM_LUPOFF:   return m->light_upoffset;
@@ -595,9 +588,9 @@ static float QRE_GetFloat (const rt_material_t *m, int param)
 
 static int QRE_GetInt (const rt_material_t *m, int param)
 {
-	if (param == PARAM_EBLEND)
-		return m->emissive_blend;
-	return 0;
+	(void)m;
+	(void)param;
+	return 0; // the per-block controls are edited inside QRE_EmissiveEditor
 }
 
 static qboolean QRE_GetBool (const rt_material_t *m, int param)
@@ -637,8 +630,6 @@ static void QRE_SetFloat (int g, int param, float value)
 	case PARAM_BUMP:     m->bump_scale = value; break;
 	case PARAM_ROUGH:    m->roughness_override = value; break;
 	case PARAM_METAL:    m->metalness_factor = value; m->has_metalness_factor = true; break;
-	case PARAM_EMISF:    m->emissive_factor = value; break;
-	case PARAM_BASEF:    m->base_factor = value; break;
 	case PARAM_LBRIGHT:  m->light_brightness = value; break;
 	case PARAM_LUPOFF:   m->light_upoffset = value; break;
 	default:             break;
@@ -648,12 +639,9 @@ static void QRE_SetFloat (int g, int param, float value)
 
 static void QRE_SetInt (int g, int param, int value)
 {
-	QRE_EnsureLive (g);
-	rt_material_t *m = qre.group[g];
-
-	if (param == PARAM_EBLEND)
-		m->emissive_blend = value;
-	QRE_MarkDirty (m);
+	(void)g;
+	(void)param;
+	(void)value; // the per-block controls are edited inside QRE_EmissiveEditor
 }
 
 static void QRE_SetBool (int g, int param, qboolean value)
@@ -2114,6 +2102,9 @@ static void QRE_EmissiveEditor (int g)
 			if (QR_GUI_SliderFloat ("color_emissive_feather", &m->color_emissive[ci].feather, 0.0f, 16.0f,
 			                        "Softens this block's mask edge over this many pixels, on both sides of it, without comparing colours."))
 				QRE_MarkDirty (m);
+			if (QR_GUI_SliderFloat ("emissive_factor", &m->color_emissive[ci].factor, 0.0f, 4.0f,
+			                        "Scales this block's emission: below 1 it dims, above 1 it brightens."))
+				QRE_MarkDirty (m);
 			{
 				int idx = m->color_emissive[ci].blend + 1;
 
@@ -2142,8 +2133,10 @@ static void QRE_EmissiveEditor (int g)
 			block->color[0] = 1.0f;
 			block->threshold = (m->color_emissive_threshold > 0.0f) ? m->color_emissive_threshold : 0.02f;
 			block->feather = m->color_emissive_feather;
+			block->factor = m->emissive_factor;
 			block->blend = m->emissive_blend;
-			block->has_threshold = block->has_feather = block->has_blend = true;
+			block->has_threshold = block->has_feather = true;
+			block->has_factor = block->has_blend = true;
 			m->color_emissive_count++;
 			m->has_color_emissive = true;
 			QRE_MarkDirty (m);
@@ -2215,17 +2208,8 @@ static void QRE_ParamWidgets (int g)
 		{
 			int value = QRE_GetInt (m, p);
 
-			if (p == PARAM_EBLEND)
-			{
-				int index = value + 1;
-				if (QR_GUI_Combo (label, &index, qre_emissive_blends, (int)countof (qre_emissive_blends), tip))
-					QRE_SetInt (g, p, index - 1);
-			}
-			else
-			{
-				if (QR_GUI_SliderInt (label, &value, (int)qre_params[p].min, (int)qre_params[p].max, tip))
-					QRE_SetInt (g, p, value);
-			}
+			if (QR_GUI_SliderInt (label, &value, (int)qre_params[p].min, (int)qre_params[p].max, tip))
+				QRE_SetInt (g, p, value);
 			break;
 		}
 		case QRE_T_BOOL:
@@ -3089,6 +3073,7 @@ static const char *qre_yaml_header =
 	"#           - color: ff0000          # rrggbb\n"
 	"#             threshold: 0.02        # 0..1 colour-cube distance / sqrt(3)\n"
 	"#             feather: 2             # pixels of edge softening, both sides\n"
+	"#             emissive_factor: 1     # scales this block's glow (0..4)\n"
 	"#             blend: screen          # cvar | off | normal | screen |\n"
 	"#                                    # overlay | hard light | colour dodge\n"
 	"#     The synthesized mask is white where the pixel matches the colour\n"
@@ -3104,6 +3089,7 @@ static const char *qre_yaml_header =
 	"#               - color: ff0000\n"
 	"#                 threshold: 0.02\n"
 	"#                 feather: 3\n"
+	"#                 emissive_factor: 2\n"
 	"#                 blend: screen\n"
 	"#             is_light: true\n"
 	"# The old single-colour keys (`color_emissive: ff0000,00ff00`,\n"
@@ -3157,6 +3143,7 @@ static void QRE_WriteEmissiveBlocks (FILE *f, const rt_material_t *m)
 		         (int)(b->color[2] * 255.0f + 0.5f) & 0xff);
 		fprintf (f, "        threshold: %.6g\n", b->threshold);
 		fprintf (f, "        feather: %.6g\n", b->feather);
+		fprintf (f, "        emissive_factor: %.6g\n", b->factor);
 		fprintf (f, "        blend: %s\n", RT_MAT_EmissiveBlendName (b->blend));
 	}
 }
