@@ -68,10 +68,18 @@ void InitDeviceExtensionFunctions_DebugUtils(VkDevice device);
 #pragma endregion
 
 
-inline void VK_CHECKERROR(const VkResult r)
-{
-    assert(r == VK_SUCCESS);
-}
+// The failing call's file, line and result go to stderr and to vk_last_error.txt
+// before the assert fires: the dialog on its own names this header, not the call.
+void VK_CHECKERROR_Report(const VkResult r, const char *file, int line);
+
+#define VK_CHECKERROR(r)                                   \
+    do                                                     \
+    {                                                      \
+        if ((r) != VK_SUCCESS)                             \
+        {                                                  \
+            VK_CHECKERROR_Report((r), __FILE__, __LINE__); \
+        }                                                  \
+    } while (0)
 
 
 #define SET_DEBUG_NAME(device, obj, type, pName) AddDebugName((device), reinterpret_cast<uint64_t>(obj), (type), (pName))

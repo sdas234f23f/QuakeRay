@@ -20,6 +20,70 @@
 
 #include "Common.h"
 
+#include <cstdio>
+
+
+// Prints where the failing Vulkan call was made (file and line, which the assert
+// dialog cannot show) and what it returned, then lets the assert stop the run.
+void vkpt::VK_CHECKERROR_Report(const VkResult r, const char *file, int line)
+{
+    const char *name = "VK_ERROR_*";
+
+    switch (r)
+    {
+    case VK_ERROR_OUT_OF_HOST_MEMORY:
+        name = "VK_ERROR_OUT_OF_HOST_MEMORY";
+        break;
+    case VK_ERROR_OUT_OF_DEVICE_MEMORY:
+        name = "VK_ERROR_OUT_OF_DEVICE_MEMORY";
+        break;
+    case VK_ERROR_INITIALIZATION_FAILED:
+        name = "VK_ERROR_INITIALIZATION_FAILED";
+        break;
+    case VK_ERROR_DEVICE_LOST:
+        name = "VK_ERROR_DEVICE_LOST";
+        break;
+    case VK_ERROR_MEMORY_MAP_FAILED:
+        name = "VK_ERROR_MEMORY_MAP_FAILED";
+        break;
+    case VK_ERROR_LAYER_NOT_PRESENT:
+        name = "VK_ERROR_LAYER_NOT_PRESENT";
+        break;
+    case VK_ERROR_EXTENSION_NOT_PRESENT:
+        name = "VK_ERROR_EXTENSION_NOT_PRESENT";
+        break;
+    case VK_ERROR_FEATURE_NOT_PRESENT:
+        name = "VK_ERROR_FEATURE_NOT_PRESENT";
+        break;
+    case VK_ERROR_INCOMPATIBLE_DRIVER:
+        name = "VK_ERROR_INCOMPATIBLE_DRIVER";
+        break;
+    case VK_ERROR_TOO_MANY_OBJECTS:
+        name = "VK_ERROR_TOO_MANY_OBJECTS";
+        break;
+    case VK_ERROR_FORMAT_NOT_SUPPORTED:
+        name = "VK_ERROR_FORMAT_NOT_SUPPORTED";
+        break;
+    case VK_ERROR_SURFACE_LOST_KHR:
+        name = "VK_ERROR_SURFACE_LOST_KHR";
+        break;
+    default:
+        break;
+    }
+
+    std::fprintf(stderr, "vkpt: Vulkan call failed: %s (%d) at %s:%d\n", name, (int)r, file, line);
+    std::fflush(stderr);
+
+    std::FILE *log = std::fopen("vk_last_error.txt", "a");
+    if (log)
+    {
+        std::fprintf(log, "vkpt: Vulkan call failed: %s (%d) at %s:%d\n", name, (int)r, file, line);
+        std::fclose(log);
+    }
+
+    assert(r == VK_SUCCESS);
+}
+
 
 namespace vkpt
 {
