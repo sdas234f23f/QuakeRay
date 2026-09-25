@@ -24,6 +24,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #define _GL_TEXMAN_H
 
 #include "tasks.h"
+#include "atomics.h"
 
 // gl_texmgr.h -- fitzquake's texture manager. manages opengl texture images
 
@@ -105,6 +106,10 @@ extern gltexture_t *notexture;
 extern gltexture_t *nulltexture;
 extern gltexture_t *whitetexture;
 extern gltexture_t *greytexture;
+
+/* Incremented by every material synthesis, after the texture fields are written; the DTAL piece
+   cache of an alias model is rebuilt when the revision moved (see RT_AddAliasEmissiveLights). */
+extern atomic_uint32_t rt_material_revision;
 
 extern unsigned int d_8to24table[256];
 extern unsigned int d_8to24table_fbright[256];

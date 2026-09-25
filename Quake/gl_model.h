@@ -516,6 +516,7 @@ typedef struct qmodel_s
 	//
 	uint32_t *rtindices;	// hdr->numindexes
 	RgVertex *rtvertices;	// hdr->numposes * hdr->numverts_vbo
+	struct rt_dtal_cache_s *rt_dtal;	// DTAL emissive pieces, see RT_AddAliasEmissiveLights
 
 	//
 	// additional model data

@@ -86,12 +86,17 @@ extern RgVertex *rtallbrushvertices;
 #define RT_UV_SPLIT_PIECE_VERTS 6
 #define RT_MAX_UV_SPLIT_PIECES  16
 
-/* DTAL: the textured area lights an alias model builds from the triangles of its pose. Brush
-   faces are collected once per map and re-emitted every frame, but a model moves and animates,
-   so its lights are built in the draw path that knows the pose. A cap per model and a frame
-   budget keep a crowd of glowing models from filling the light array with hundreds of tiny
-   sources (see RT_AddAliasEmissiveLights); the per-model value is a cvar, this is its ceiling. */
-#define RT_MODEL_LIGHTS_MAX_PER_MODEL 32
+/* DTAL: the textured area lights an alias model builds from the triangles of its pose. The uv of
+   a model and the glow extents of a skin frame do not move with the pose, so the pieces of a
+   frame are collected once and cached per model (RT_AddAliasEmissiveLights): RT_DTAL_MAX_PIECES
+   is how many ranked pieces one frame holds, and also the ceiling of rt_model_lights_max, while
+   RT_DTAL_CACHE_ENTRIES is how many skin frames a model keeps. The piece count is what the
+   collection was made to save, and the entry count is a compromise: four covers the skins and
+   animated skin groups the shipped models draw, and a model with more distinct frames than that
+   rebuilds on the miss -- which costs the walk again, but never more than the walk alone. The
+   cache is ~14 KB per alias model (4 entries of 32 pieces), paid once at model load. */
+#define RT_DTAL_MAX_PIECES    32
+#define RT_DTAL_CACHE_ENTRIES 4
 
 static RgTexturedAreaLightUploadInfo rt_wldlights_emissive[MAX_WORLDLIGHTS_COUNT];
 static int                           rt_wldlights_emissive_count = 0;
@@ -124,8 +129,8 @@ typedef struct rt_emis_stats_s
 	int glow_lights;
 	int glow_faces;
 	int glow_fallback;
-	int model_lights;
-	int model_capped;
+	atomic_uint32_t model_lights;
+	atomic_uint32_t model_capped;
 } rt_emis_stats_t;
 
 static rt_emis_stats_t rt_emis_stats;
@@ -1874,15 +1879,59 @@ static int RT_EmissiveGlowPolygons (const rt_uploadsurf_state_t *s, const RgFloa
 	return num;
 }
 
-typedef struct rt_model_light_piece_s
+typedef struct rt_dtal_piece_s
 {
+	uint32_t  i0, i1, i2;
 	RgFloat2D uv[MAX_TEXTURED_AREA_LIGHT_VERTS];
 	int       numverts;
-	vec3_t    A, B, C;
-	vec3_t    normal;
+	/* The affine map of the texture onto the world of the triangle, kept as the uv of its
+	   corners and the solved fit: the world points move with the pose, the fit does not. */
+	float     inv_det;
+	float     du1, dv1, du2, dv2;
+	float     u0, v0;
 	float     uvarea; // in texture space, the rank of the piece
-	float     area;   // in world space, the emission the piece carries
-} rt_model_light_piece_t;
+} rt_dtal_piece_t;
+
+typedef struct rt_dtal_entry_s
+{
+	gltexture_t    *frame;    // the skin frame the pieces were built for
+	unsigned int    revision; // rt_material_revision the pieces were built from
+	int             numpieces;
+	rt_dtal_piece_t pieces[RT_DTAL_MAX_PIECES];
+} rt_dtal_entry_t;
+
+/* The DTAL pieces of one alias model. The uv of a model and the glow extents of its skin frame do
+   not depend on the pose, so the collection -- the walk of every triangle, the glow cuts and the
+   ranking -- is done once per (model, skin frame, material revision) instead of once per drawn
+   instance and frame; the draw path then maps only the pieces it keeps through the pose and the
+   entity transform. A handful of frames is kept because one model draws more than one (skins,
+   animated skin groups). The entity passes run in parallel, so the cache is taken with a
+   try-lock: a draw that cannot take it collects locally, which is what every draw did before the
+   cache. */
+struct rt_dtal_cache_s
+{
+	atomic_uint32_t lock;
+	atomic_uint32_t next;
+	rt_dtal_entry_t entries[RT_DTAL_CACHE_ENTRIES];
+};
+
+void RT_ModelLightsCacheAlloc (qmodel_t *model)
+{
+	if (model->rt_dtal != NULL)
+		return;
+
+	model->rt_dtal = (struct rt_dtal_cache_s *) Mem_Alloc (sizeof (struct rt_dtal_cache_s));
+	memset (model->rt_dtal, 0, sizeof (struct rt_dtal_cache_s));
+}
+
+void RT_ModelLightsCacheFree (qmodel_t *model)
+{
+	if (model->rt_dtal != NULL)
+	{
+		Mem_Free (model->rt_dtal);
+		model->rt_dtal = NULL;
+	}
+}
 
 /*
 =================
@@ -1894,8 +1943,8 @@ extents) does not change. Ranking by uv area rather than by the world area of th
 makes the slots stable: the pose moves, the texture does not.
 =================
 */
-static void RT_ModelLightPieceAdd (rt_model_light_piece_t *pieces, int *count, int max,
-                                   const rt_model_light_piece_t *piece)
+static void RT_ModelLightPieceAdd (rt_dtal_piece_t *pieces, int *count, int max,
+                                   const rt_dtal_piece_t *piece)
 {
 	if (piece->uvarea <= 1e-9f || max <= 0)
 		return;
@@ -1919,65 +1968,20 @@ static void RT_ModelLightPieceAdd (rt_model_light_piece_t *pieces, int *count, i
 
 /*
 =================
-RT_AddAliasEmissiveLights
+RT_CollectAliasEmissivePieces
 
-The textured area lights of one drawn alias model: the triangles of the pose the visible pass
-renders, each carrying the uv of its own corners, so the shader reads the emissive mask where the
-model actually glows. A brush face is collected once per map and re-emitted every frame
-(RT_UploadAllWorldModelLights); a model moves and animates, so its lights are built here, in the
-draw path that knows the pose -- the same place the fake dlight of the model was uploaded before.
-
-The caller keeps that fake dlight when this returns zero, so a model the pass cannot light from
-its geometry (no light material, no emissive mask, the feature off, a frame the budget turned
-down) does not go dark.
-
-Budget. Uploading every emissive triangle of every visible model would push the light array and
-the cluster lists with hundreds of tiny sources, so a model is capped at rt_model_lights_max
-pieces and the frame at rt_model_lights_budget lights in total. The pieces are ranked by their uv
-area and each slot keeps its rank, so the identity the denoiser and the cluster lists follow stays
-put while the pose moves. The frame counter is atomic because the entity passes that call this run
-in parallel; RT_UploadAllWorldModelLights resets it once per frame after every draw has uploaded.
+The emissive pieces of a model's skin frame, in the uv space of its triangles: every triangle
+whose texture map is not degenerate is cut down to the glow extents, once per repetition, when the
+texture glows over part of itself (as a brush face is), and the best pieces are ranked and capped
+at what one model may light with. The uv of a vertex is the same in every pose, so this is the
+half of RT_AddAliasEmissiveLights that does not depend on the pose or on the transform.
 =================
 */
-int RT_AddAliasEmissiveLights (gltexture_t *tex, uint64_t base_uniqueid, const RgVertex *pose1, const RgVertex *pose2,
-                               float blend, int numverts, const uint32_t *indices, int numindices,
-                               const RgTransform *transform)
+static void RT_CollectAliasEmissivePieces (rt_dtal_piece_t *pieces, int *out_count, const RgVertex *pose1,
+                                           int numverts, const uint32_t *indices, int numindices,
+                                           const rt_emissive_params_t *params)
 {
-	if (!CVAR_TO_BOOL (rt_model_lights) || !RT_AllowTexturedAreaLights ())
-		return 0;
-
-	if (!tex || !pose1 || !pose2 || !indices || !transform || numindices < 3)
-		return 0;
-
-	rt_emissive_params_t params;
-
-	if (!RT_EmissiveLightParamsForTex (tex, &params))
-		return 0;
-
-	/* An unmasked model keeps its fake dlight: the mask is what makes the light follow the shape
-	   of the model, and without one a handful of triangles cannot stand for the whole mesh the
-	   way one face of the world stands for a surface. */
-	if (params.material == RG_NO_MATERIAL)
-		return 0;
-
-	int max_lights = (int) CVAR_TO_FLOAT (rt_model_lights_max);
-	if (max_lights > RT_MODEL_LIGHTS_MAX_PER_MODEL)
-		max_lights = RT_MODEL_LIGHTS_MAX_PER_MODEL;
-	if (max_lights <= 0)
-		return 0;
-
-	int budget = (int) CVAR_TO_FLOAT (rt_model_lights_budget);
-	if (budget < 0)
-		budget = 0;
-
-	if (Atomic_LoadUInt32 (&rt_modellights_frame_count) >= (uint32_t) budget)
-	{
-		rt_emis_stats.model_capped++;
-		return 0;
-	}
-
-	rt_model_light_piece_t pieces[RT_MODEL_LIGHTS_MAX_PER_MODEL];
-	int                    numpieces = 0;
+	int numpieces = 0;
 
 	for (int t = 0; t + 2 < numindices; t += 3)
 	{
@@ -1991,32 +1995,6 @@ int RT_AddAliasEmissiveLights (gltexture_t *tex, uint64_t base_uniqueid, const R
 		const RgVertex *v0 = &pose1[i0];
 		const RgVertex *v1 = &pose1[i1];
 		const RgVertex *v2 = &pose1[i2];
-		const RgVertex *w0 = &pose2[i0];
-		const RgVertex *w1 = &pose2[i1];
-		const RgVertex *w2 = &pose2[i2];
-
-		/* The pose the draw shows: positions lerp between the two poses, while uv and normals
-		   are the first pose's, exactly as GetPoseVertices builds them. */
-		vec3_t bp0, bp1, bp2;
-
-		for (int k = 0; k < 3; k++)
-		{
-			bp0[k] = v0->position[k] + (w0->position[k] - v0->position[k]) * blend;
-			bp1[k] = v1->position[k] + (w1->position[k] - v1->position[k]) * blend;
-			bp2[k] = v2->position[k] + (w2->position[k] - v2->position[k]) * blend;
-		}
-
-		const RgFloat3D p0 = ApplyTransform (transform, bp0);
-		const RgFloat3D p1 = ApplyTransform (transform, bp1);
-		const RgFloat3D p2 = ApplyTransform (transform, bp2);
-
-		vec3_t e1, e2, cross;
-		VectorSubtract (p1.data, p0.data, e1);
-		VectorSubtract (p2.data, p0.data, e2);
-		CrossProduct (e1, e2, cross);
-
-		if (VectorLength (cross) <= 1e-6f)
-			continue;
 
 		/* The map from the texture to the world of a triangle is affine, and three points fix
 		   it exactly, so the light reads the mask where the triangle really is. */
@@ -2029,43 +2007,18 @@ int RT_AddAliasEmissiveLights (gltexture_t *tex, uint64_t base_uniqueid, const R
 		if (fabs (det) <= 1e-9f)
 			continue;
 
-		const float inv_det = 1.0f / det;
-		vec3_t      A, B, C;
-
-		for (int k = 0; k < 3; k++)
-		{
-			A[k] = (e1[k] * dv2 - e2[k] * dv1) * inv_det;
-			B[k] = (e2[k] * du1 - e1[k] * du2) * inv_det;
-			C[k] = p0.data[k] - A[k] * v0->texCoord[0] - B[k] * v0->texCoord[1];
-		}
-
-		vec3_t ab;
-		CrossProduct (A, B, ab);
-
-		const float jacobian = VectorLength (ab);
-
-		if (jacobian <= 1e-9f)
-			continue;
-
-		/* The light leaves the triangle through its front, and the front of a model triangle is
-		   the side its vertex normals face: the geometric normal only says where the plane is,
-		   the normals of the pose say which side of it glows. */
-		vec3_t normal;
-		VectorCopy (cross, normal);
-		VectorNormalize (normal);
-
-		const float side = normal[0] * (v0->normal[0] + v1->normal[0] + v2->normal[0]) +
-		                   normal[1] * (v0->normal[1] + v1->normal[1] + v2->normal[1]) +
-		                   normal[2] * (v0->normal[2] + v1->normal[2] + v2->normal[2]);
-
-		if (side < 0.0f)
-			VectorScale (normal, -1.0f, normal);
-
-		rt_model_light_piece_t piece;
-		VectorCopy (A, piece.A);
-		VectorCopy (B, piece.B);
-		VectorCopy (C, piece.C);
-		VectorCopy (normal, piece.normal);
+		rt_dtal_piece_t piece;
+		piece.i0     = i0;
+		piece.i1     = i1;
+		piece.i2     = i2;
+		piece.inv_det = 1.0f / det;
+		piece.du1    = du1;
+		piece.dv1    = dv1;
+		piece.du2    = du2;
+		piece.dv2    = dv2;
+		piece.u0     = v0->texCoord[0];
+		piece.v0     = v0->texCoord[1];
+		piece.uvarea = 0.5f * fabs (det);
 
 		RgFloat2D triuv[3];
 		triuv[0].data[0] = v0->texCoord[0];
@@ -2079,13 +2032,11 @@ int RT_AddAliasEmissiveLights (gltexture_t *tex, uint64_t base_uniqueid, const R
 		piece.uv[0]    = triuv[0];
 		piece.uv[1]    = triuv[1];
 		piece.uv[2]    = triuv[2];
-		piece.uvarea   = 0.5f * fabs (det);
-		piece.area     = piece.uvarea * jacobian;
 
-		if (!params.glow)
+		if (!params->glow)
 		{
 			/* The mask covers the whole triangle, so it is read over the whole triangle. */
-			RT_ModelLightPieceAdd (pieces, &numpieces, max_lights, &piece);
+			RT_ModelLightPieceAdd (pieces, &numpieces, RT_DTAL_MAX_PIECES, &piece);
 			continue;
 		}
 
@@ -2116,7 +2067,7 @@ int RT_AddAliasEmissiveLights (gltexture_t *tex, uint64_t base_uniqueid, const R
 			/* More repetitions than a face may be cut into is beyond what models use; the
 			   triangle keeps its whole uv, and a black sample outside the glow stands for
 			   itself. */
-			RT_ModelLightPieceAdd (pieces, &numpieces, max_lights, &piece);
+			RT_ModelLightPieceAdd (pieces, &numpieces, RT_DTAL_MAX_PIECES, &piece);
 			continue;
 		}
 
@@ -2124,54 +2075,135 @@ int RT_AddAliasEmissiveLights (gltexture_t *tex, uint64_t base_uniqueid, const R
 		{
 			for (int tx = tileminx; tx <= tilemaxx; tx++)
 			{
-				const float uvmin_t[2] = {(float) tx + params.glow_uvmin[0], (float) ty + params.glow_uvmin[1]};
-				const float uvmax_t[2] = {(float) tx + params.glow_uvmax[0], (float) ty + params.glow_uvmax[1]};
+				const float uvmin_t[2] = {(float) tx + params->glow_uvmin[0], (float) ty + params->glow_uvmin[1]};
+				const float uvmax_t[2] = {(float) tx + params->glow_uvmax[0], (float) ty + params->glow_uvmax[1]};
 				RgFloat2D   clipped[MAX_TEXTURED_AREA_LIGHT_VERTS];
 				const int   n = RT_ClipUvPolyToRect (triuv, 3, uvmin_t, uvmax_t, clipped);
 
 				if (n < 3)
 					continue;
 
-				rt_model_light_piece_t cut = piece;
+				rt_dtal_piece_t cut = piece;
 
 				for (int i = 0; i < n; i++)
 					cut.uv[i] = clipped[i];
 
 				cut.numverts = n;
 				cut.uvarea   = (float) fabs (RT_UvPolyArea (clipped, n));
-				cut.area     = cut.uvarea * jacobian;
 
-				RT_ModelLightPieceAdd (pieces, &numpieces, max_lights, &cut);
+				RT_ModelLightPieceAdd (pieces, &numpieces, RT_DTAL_MAX_PIECES, &cut);
 			}
 		}
 	}
 
+	*out_count = numpieces;
+}
+
+/*
+=================
+RT_UploadAliasEmissivePieces
+
+Maps the collected pieces through the pose and the entity transform and hands them to the dynamic
+emissive path of the world lights: the colour comes from the material, the mask is read by the
+shader at the sampled point, and the light is promised the reach of a light of a moving entity. A
+piece the pose collapses is skipped and the next ranked piece is uploaded in its place; the cache
+holds RT_DTAL_MAX_PIECES of them, more than a model may light with, so only a pose that collapses
+more pieces than that can lower the count.
+=================
+*/
+static int RT_UploadAliasEmissivePieces (const rt_dtal_piece_t *pieces, int numpieces, const rt_emissive_params_t *params,
+                                         gltexture_t *tex, uint64_t base_uniqueid, const RgVertex *pose1,
+                                         const RgVertex *pose2, float blend, const RgTransform *transform,
+                                         int max_lights, int budget)
+{
 	int uploaded = 0;
 
-	for (int i = 0; i < numpieces; i++)
+	for (int i = 0; i < numpieces && uploaded < max_lights; i++)
 	{
 		if (Atomic_LoadUInt32 (&rt_modellights_frame_count) >= (uint32_t) budget)
 		{
-			rt_emis_stats.model_capped++;
+			Atomic_AddUInt32 (&rt_emis_stats.model_capped, 1);
 			break;
 		}
 
-		const rt_model_light_piece_t *piece = &pieces[i];
+		const rt_dtal_piece_t *piece = &pieces[i];
+
+		const RgVertex *v0 = &pose1[piece->i0];
+		const RgVertex *v1 = &pose1[piece->i1];
+		const RgVertex *v2 = &pose1[piece->i2];
+		const RgVertex *w0 = &pose2[piece->i0];
+		const RgVertex *w1 = &pose2[piece->i1];
+		const RgVertex *w2 = &pose2[piece->i2];
+
+		/* The pose the draw shows: positions lerp between the two poses, while uv and normals
+		   are the first pose's, exactly as GetPoseVertices builds them. */
+		vec3_t bp0, bp1, bp2;
+
+		for (int k = 0; k < 3; k++)
+		{
+			bp0[k] = v0->position[k] + (w0->position[k] - v0->position[k]) * blend;
+			bp1[k] = v1->position[k] + (w1->position[k] - v1->position[k]) * blend;
+			bp2[k] = v2->position[k] + (w2->position[k] - v2->position[k]) * blend;
+		}
+
+		const RgFloat3D p0 = ApplyTransform (transform, bp0);
+		const RgFloat3D p1 = ApplyTransform (transform, bp1);
+		const RgFloat3D p2 = ApplyTransform (transform, bp2);
+
+		vec3_t e1, e2, cross;
+		VectorSubtract (p1.data, p0.data, e1);
+		VectorSubtract (p2.data, p0.data, e2);
+		CrossProduct (e1, e2, cross);
+
+		if (VectorLength (cross) <= 1e-6f)
+			continue;
+
+		const float inv_det = piece->inv_det;
+		vec3_t      A, B, C;
+
+		for (int k = 0; k < 3; k++)
+		{
+			A[k] = (e1[k] * piece->dv2 - e2[k] * piece->dv1) * inv_det;
+			B[k] = (e2[k] * piece->du1 - e1[k] * piece->du2) * inv_det;
+			C[k] = p0.data[k] - A[k] * piece->u0 - B[k] * piece->v0;
+		}
+
+		vec3_t ab;
+		CrossProduct (A, B, ab);
+
+		const float jacobian = VectorLength (ab);
+
+		if (jacobian <= 1e-9f)
+			continue;
+
+		/* The light leaves the triangle through its front, and the front of a model triangle is
+		   the side its vertex normals face: the geometric normal only says where the plane is,
+		   the normals of the pose say which side of it glows. */
+		vec3_t normal;
+		VectorCopy (cross, normal);
+		VectorNormalize (normal);
+
+		const float side = normal[0] * (v0->normal[0] + v1->normal[0] + v2->normal[0]) +
+		                   normal[1] * (v0->normal[1] + v1->normal[1] + v2->normal[1]) +
+		                   normal[2] * (v0->normal[2] + v1->normal[2] + v2->normal[2]);
+
+		if (side < 0.0f)
+			VectorScale (normal, -1.0f, normal);
 
 		RgTexturedAreaLightUploadInfo li = {0};
 
 		/* A slot of its own per piece: the base id names the geometry, the slot suffix names
 		   the light of that piece, and both stay put while the model is drawn. */
 		li.uniqueID = base_uniqueid | ((uint64_t) (i + 1) << 32);
-		VectorCopy (params.color, li.color.data);
-		VectorCopy (piece->A, li.A.data);
-		VectorCopy (piece->B, li.B.data);
-		VectorCopy (piece->C, li.C.data);
-		VectorCopy (piece->normal, li.normal.data);
-		li.area      = piece->area;
+		VectorCopy (params->color, li.color.data);
+		VectorCopy (A, li.A.data);
+		VectorCopy (B, li.B.data);
+		VectorCopy (C, li.C.data);
+		VectorCopy (normal, li.normal.data);
+		li.area      = piece->uvarea * jacobian;
 		li.numVerts  = piece->numverts;
-		li.material  = params.material;
-		li.meanEmiss = params.glow ? params.glow_mean : params.meanEmiss;
+		li.material  = params->material;
+		li.meanEmiss = params->glow ? params->glow_mean : params->meanEmiss;
 		li.fit       = 1;
 		li.isStatic  = 0;
 
@@ -2184,11 +2216,169 @@ int RT_AddAliasEmissiveLights (gltexture_t *tex, uint64_t base_uniqueid, const R
 		RT_UploadEmissiveLight (&li, false, NULL, tex);
 
 		Atomic_AddUInt32 (&rt_modellights_frame_count, 1);
-		rt_emis_stats.model_lights++;
+		Atomic_AddUInt32 (&rt_emis_stats.model_lights, 1);
 		uploaded++;
 	}
 
 	return uploaded;
+}
+
+static rt_dtal_entry_t *RT_ModelLightCacheFind (struct rt_dtal_cache_s *cache, gltexture_t *frame, uint32_t revision)
+{
+	for (int i = 0; i < RT_DTAL_CACHE_ENTRIES; i++)
+	{
+		if (cache->entries[i].frame == frame && cache->entries[i].revision == revision)
+			return &cache->entries[i];
+	}
+
+	return NULL;
+}
+
+/*
+=================
+RT_AddAliasEmissiveLights
+
+The textured area lights of one drawn alias model: the triangles of the pose the visible pass
+renders, each carrying the uv of its own corners, so the shader reads the emissive mask where the
+model actually glows. A brush face is collected once per map and re-emitted every frame
+(RT_UploadAllWorldModelLights); a model moves and animates, so its lights are built here, in the
+draw path that knows the pose -- the same place the fake dlight of the model was uploaded before.
+
+The caller keeps that fake dlight when this returns zero, so a model the pass cannot light from
+its geometry (no light material, no emissive mask, the feature off, a frame the budget turned
+down) does not go dark.
+
+Budget. Uploading every emissive triangle of every visible model would push the light array and
+the cluster lists with hundreds of tiny sources, so a model is capped at rt_model_lights_max
+pieces and the frame at rt_model_lights_budget lights in total. The pieces are ranked by their uv
+area and each slot keeps its rank, so the identity the denoiser and the cluster lists follow stays
+put while the pose moves; the ranking itself is part of what the model caches per skin frame. The
+frame counter is atomic because the entity passes that call this run in parallel;
+RT_UploadAllWorldModelLights resets it once per frame after every draw has uploaded.
+=================
+*/
+int RT_AddAliasEmissiveLights (qmodel_t *model, gltexture_t *tex, uint64_t base_uniqueid, const RgVertex *pose1,
+                               const RgVertex *pose2, float blend, int numverts, const uint32_t *indices,
+                               int numindices, const RgTransform *transform)
+{
+	if (!CVAR_TO_BOOL (rt_model_lights) || !RT_AllowTexturedAreaLights ())
+		return 0;
+
+	if (!model || !tex || !pose1 || !pose2 || !indices || !transform || numindices < 3)
+		return 0;
+
+	/* The revision is taken before the material is read. A synthesis that lands while the pieces
+	   are built (the editor reloads materials from a task of its own) would make them a mix of
+	   two materials, and such a mix must not be published under the new revision: the entry
+	   would match from then on and the model would light from the wrong mask until the next
+	   edit. */
+	const uint32_t revision = Atomic_LoadUInt32 (&rt_material_revision);
+
+	rt_emissive_params_t params;
+
+	if (!RT_EmissiveLightParamsForTex (tex, &params))
+		return 0;
+
+	/* An unmasked model keeps its fake dlight: the mask is what makes the light follow the shape
+	   of the model, and without one a handful of triangles cannot stand for the whole mesh the
+	   way one face of the world stands for a surface. */
+	if (params.material == RG_NO_MATERIAL)
+		return 0;
+
+	int max_lights = (int) CVAR_TO_FLOAT (rt_model_lights_max);
+	if (max_lights > RT_DTAL_MAX_PIECES)
+		max_lights = RT_DTAL_MAX_PIECES;
+	if (max_lights <= 0)
+		return 0;
+
+	int budget = (int) CVAR_TO_FLOAT (rt_model_lights_budget);
+	if (budget < 0)
+		budget = 0;
+
+	if (Atomic_LoadUInt32 (&rt_modellights_frame_count) >= (uint32_t) budget)
+	{
+		Atomic_AddUInt32 (&rt_emis_stats.model_capped, 1);
+		return 0;
+	}
+
+	rt_dtal_piece_t         local[RT_DTAL_MAX_PIECES];
+	int                     numpieces = 0;
+	struct rt_dtal_cache_s *cache = model->rt_dtal;
+
+	/* A material that moved between the snapshot and the read has no trustworthy pieces: light
+	   this frame, cache nothing. */
+	if (cache != NULL && Atomic_LoadUInt32 (&rt_material_revision) == revision)
+	{
+		uint32_t expected = 0;
+
+		if (Atomic_CompareExchangeUInt32 (&cache->lock, &expected, 1))
+		{
+			rt_dtal_entry_t *entry = RT_ModelLightCacheFind (cache, tex, revision);
+
+			if (entry != NULL)
+			{
+				numpieces = entry->numpieces;
+
+				if (numpieces > 0)
+					memcpy (local, entry->pieces, (size_t) numpieces * sizeof (local[0]));
+
+				Atomic_ExchangeUInt32 (&cache->lock, 0);
+			}
+			else
+			{
+				Atomic_ExchangeUInt32 (&cache->lock, 0);
+
+				/* The walk is the long part, so it runs outside the lock: a second draw of the
+				   same model that misses meanwhile collects for itself instead of waiting. */
+				RT_CollectAliasEmissivePieces (local, &numpieces, pose1, numverts, indices, numindices, &params);
+
+				/* A collection the material moved under is not publishable: it may mix two
+				   materials, and an entry is served until the next revision. */
+				if (Atomic_LoadUInt32 (&rt_material_revision) == revision)
+				{
+					expected = 0;
+
+					if (Atomic_CompareExchangeUInt32 (&cache->lock, &expected, 1))
+					{
+						/* Another draw may have published this very frame while the pieces
+						   were collected; its entry is as good and is kept. */
+						entry = RT_ModelLightCacheFind (cache, tex, revision);
+
+						if (entry == NULL)
+						{
+							const uint32_t slot = Atomic_IncrementUInt32 (&cache->next) % RT_DTAL_CACHE_ENTRIES;
+							entry = &cache->entries[slot];
+
+							if (numpieces > 0)
+								memcpy (entry->pieces, local, (size_t) numpieces * sizeof (local[0]));
+
+							entry->numpieces = numpieces;
+
+							/* Published after the pieces: a draw that finds this frame has
+							   found them complete. */
+							entry->revision = revision;
+							entry->frame    = tex;
+						}
+
+						Atomic_ExchangeUInt32 (&cache->lock, 0);
+					}
+				}
+			}
+		}
+		else
+		{
+			/* Another draw of the same model holds the cache; this one takes the long way
+			   rather than wait, and the lights it gets are the same either way. */
+			RT_CollectAliasEmissivePieces (local, &numpieces, pose1, numverts, indices, numindices, &params);
+		}
+	}
+	else
+	{
+		RT_CollectAliasEmissivePieces (local, &numpieces, pose1, numverts, indices, numindices, &params);
+	}
+
+	return RT_UploadAliasEmissivePieces (local, numpieces, &params, tex, base_uniqueid, pose1, pose2, blend, transform,
+	                                     max_lights, budget);
 }
 
 static void RT_AddEmissiveLight (const rt_uploadsurf_state_t *s)
@@ -4712,9 +4902,9 @@ void RT_PrintEmissiveStats (void)
 		RT_LightReportPrint ("partial-glow textures: %i faces built %i polygon lights, %i faces fell back to the whole surface\n",
 			rt_emis_stats.glow_faces, rt_emis_stats.glow_lights, rt_emis_stats.glow_fallback);
 
-	if (rt_emis_stats.model_lights || rt_emis_stats.model_capped)
+	if (Atomic_LoadUInt32 (&rt_emis_stats.model_lights) || Atomic_LoadUInt32 (&rt_emis_stats.model_capped))
 		RT_LightReportPrint ("alias models: %i textured-area lights built from model geometry, %i models turned down by the frame budget\n",
-			rt_emis_stats.model_lights, rt_emis_stats.model_capped);
+			(int) Atomic_LoadUInt32 (&rt_emis_stats.model_lights), (int) Atomic_LoadUInt32 (&rt_emis_stats.model_capped));
 
 	if (rt_emis_stats.static_dropped || rt_wldlights_emissive_count >= MAX_WORLDLIGHTS_COUNT)
 		RT_LightReportPrint ("WARNING: the static world-light list is full (%i/%i), %i dropped - "

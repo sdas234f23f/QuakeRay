@@ -211,7 +211,7 @@ static void GL_DrawAliasFrame(
        light and carries an emissive mask. The fake dlight stays as the fallback for everything
        the geometry path does not take (see RT_AddAliasEmissiveLights). */
     const int dtal_lights =
-        RT_AddAliasEmissiveLights (tx, RT_GetAliasModelUniqueId (entuniqueid),
+        RT_AddAliasEmissiveLights (e->model, tx, RT_GetAliasModelUniqueId (entuniqueid),
                                    GetModelVerticesForPose (e->model, paliashdr, lerpdata.pose1),
                                    GetModelVerticesForPose (e->model, paliashdr, lerpdata.pose2), blend,
                                    paliashdr->numverts_vbo, e->model->rtindices, paliashdr->numindexes, &transform);

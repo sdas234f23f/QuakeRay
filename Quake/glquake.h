@@ -620,9 +620,16 @@ int RT_GetEntityUniqueId (const entity_t *ent);
 // read that scratch. Returns the number of lights uploaded, and the caller keeps the fake dlight
 // of the model when it is zero: no light material, no emissive mask, the feature off, or a frame
 // the budget turned down.
-int RT_AddAliasEmissiveLights (gltexture_t *tex, uint64_t base_uniqueid, const RgVertex *pose1, const RgVertex *pose2,
-                               float blend, int numverts, const uint32_t *indices, int numindices,
-                               const RgTransform *transform);
+int RT_AddAliasEmissiveLights (qmodel_t *model, gltexture_t *tex, uint64_t base_uniqueid, const RgVertex *pose1,
+                               const RgVertex *pose2, float blend, int numverts, const uint32_t *indices,
+                               int numindices, const RgTransform *transform);
+
+// DTAL cache of an alias model: allocated with its vertex buffers and freed with them. The cache
+// lives far longer than a frame (it holds the pieces for a handful of skin frames and is rebuilt
+// when a material moves), and it is the model load and unload -- both outside the draw -- that
+// own its lifetime.
+void RT_ModelLightsCacheAlloc (qmodel_t *model);
+void RT_ModelLightsCacheFree (qmodel_t *model);
 
 RgTransform RT_GetModelTransform (const float model_matrix[16]);
 RgTransform RT_GetBrushModelMatrix (entity_t *e);

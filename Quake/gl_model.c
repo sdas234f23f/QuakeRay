@@ -378,6 +378,11 @@ void Mod_ResetAll (void)
 		if (!mod->needload) // otherwise Mod_ClearAll() did it already
 			Mod_FreeModelMemory (mod);
 
+		/* The vertex-buffer walk above stops at the first hole in the client precache, and a
+		   model loaded outside it (a teleport's, a beam's) would keep its DTAL cache: free it
+		   here, before the memset drops the pointer. */
+		RT_ModelLightsCacheFree (mod);
+
 		memset (mod, 0, sizeof (qmodel_t));
 	}
 	mod_numknown = 0;

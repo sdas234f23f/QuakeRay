@@ -130,7 +130,14 @@ static THREAD_LOCAL RgMaterialCreateInfo rtspecial_info = {0};
 static THREAD_LOCAL void                *rtspecial_info_albedoAlpha = NULL; // to point to data from rtspecial_info
 static THREAD_LOCAL char                 rtspecial_info_pRelativePath[MAX_QPATH];
 
+static qboolean TexMgr_ApplyMaterialFromMatInternal (gltexture_t *glt, unsigned *albedoFallback, byte *fullbrightOverride);
 static qboolean TexMgr_ApplyMaterialFromMat (gltexture_t *glt, unsigned *albedoFallback, byte *fullbrightOverride);
+
+/* Bumped after every material synthesis writes its fields -- never before them -- so a reader that
+   sees the new revision sees a finished texture. What a texture emits (is_light, the mask, its
+   glow extents) is read off those fields, and the DTAL piece cache of an alias model is only as
+   fresh as the revision it was built and published under (see RT_AddAliasEmissiveLights). */
+atomic_uint32_t rt_material_revision = {0};
 
 
 void TexMgr_RT_SpecialStart (float default_rough, float default_metallic)
@@ -1173,7 +1180,7 @@ static void TexMgr_DumpReloadTGA (const char *suffix, const char *name, int w, i
    as polygons over them; at or above it the whole surface glows and stays a single light. */
 #define RT_EMIS_GLOW_FULL 0.999f
 
-static qboolean TexMgr_ApplyMaterialFromMat (gltexture_t *glt, unsigned *albedoFallback, byte *fullbrightOverride)
+static qboolean TexMgr_ApplyMaterialFromMatInternal (gltexture_t *glt, unsigned *albedoFallback, byte *fullbrightOverride)
 {
 	rt_material_t *mat = RT_MAT_Find (glt->name);
 	if (!mat)
@@ -1588,6 +1595,24 @@ static qboolean TexMgr_ApplyMaterialFromMat (gltexture_t *glt, unsigned *albedoF
 	Mem_Free (normal);
 
 	return true;
+}
+
+/*
+================
+TexMgr_ApplyMaterialFromMat
+
+The revision moves after the synthesis, and only after it, so a reader that sees a new revision is
+looking at fields that revision produced; one that catches the synthesis mid-flight reads the old
+revision and its DTAL entry is refused as soon as the move lands.
+================
+*/
+static qboolean TexMgr_ApplyMaterialFromMat (gltexture_t *glt, unsigned *albedoFallback, byte *fullbrightOverride)
+{
+	const qboolean applied = TexMgr_ApplyMaterialFromMatInternal (glt, albedoFallback, fullbrightOverride);
+
+	Atomic_AddUInt32 (&rt_material_revision, 1);
+
+	return applied;
 }
 
 /*
