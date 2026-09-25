@@ -2172,14 +2172,6 @@ static void QRE_ParamWidgets (int g)
 		if (mirror_locks_rough)
 			QR_GUI_PushDisabled (1);
 
-		// The Emissive section: the colour blocks sit under the color_emissive
-		// checkbox; without the checkbox there is no section.
-		if (p == PARAM_CEMIS && m->has_color_emissive)
-		{
-			if (QR_GUI_Section ("Emissive", 1))
-				QRE_EmissiveEditor (g);
-		}
-
 		switch (qre_params[p].type)
 		{
 		case QRE_T_TEXT:
@@ -2280,6 +2272,15 @@ static void QRE_ParamWidgets (int g)
 		m = qre.group[g];
 		if (QR_GUI_ResetButton (label, !mirror_locks_rough && QRE_ParamChanged (m, orig, p)))
 			QRE_ResetParam (g, p, orig);
+
+		// The Emissive section sits right under the color_emissive checkbox row
+		// (its own row is the one just drawn); without the checkbox there is no
+		// section.
+		if (p == PARAM_CEMIS && m->has_color_emissive)
+		{
+			if (QR_GUI_Section ("Emissive", 1))
+				QRE_EmissiveEditor (g);
+		}
 
 		if (mirror_locks_rough)
 			QR_GUI_PopDisabled ();
