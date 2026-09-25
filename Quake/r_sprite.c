@@ -86,62 +86,85 @@ mspriteframe_t *R_GetSpriteFrame (entity_t *currentent)
 R_CreateSpriteVertices
 ================
 */
-static void R_CreateSpriteVertices (entity_t *e, mspriteframe_t *frame, RgVertex vertices[4])
+// The axes a sprite's quad is built on, by sprite type: R_CreateSpriteVertices
+// and the editor's picking and outline share this one switch.
+static qboolean R_SpriteQuadAxes (entity_t *e, vec3_t out_up, vec3_t out_right)
 {
-	vec3_t     point, v_forward, v_right, v_up;
-	msprite_t *psprite;
-	float     *s_up, *s_right;
+	msprite_t *psprite = (msprite_t *)e->model->extradata;
+	vec3_t     v_forward;
 	float      angle, sr, cr;
-
-	psprite = (msprite_t *)e->model->extradata;
 
 	switch (psprite->type)
 	{
 	case SPR_VP_PARALLEL_UPRIGHT: // faces view plane, up is towards the heavens
-		v_up[0] = 0;
-		v_up[1] = 0;
-		v_up[2] = 1;
-		s_up = v_up;
-		s_right = vright;
+		out_up[0] = 0; out_up[1] = 0; out_up[2] = 1;
+		VectorCopy (vright, out_right);
 		break;
 	case SPR_FACING_UPRIGHT: // faces camera origin, up is towards the heavens
 		VectorSubtract (e->origin, r_origin, v_forward);
 		v_forward[2] = 0;
 		VectorNormalizeFast (v_forward);
-		v_right[0] = v_forward[1];
-		v_right[1] = -v_forward[0];
-		v_right[2] = 0;
-		v_up[0] = 0;
-		v_up[1] = 0;
-		v_up[2] = 1;
-		s_up = v_up;
-		s_right = v_right;
+		out_right[0] = v_forward[1];
+		out_right[1] = -v_forward[0];
+		out_right[2] = 0;
+		out_up[0] = 0; out_up[1] = 0; out_up[2] = 1;
 		break;
 	case SPR_VP_PARALLEL: // faces view plane, up is towards the top of the screen
-		s_up = vup;
-		s_right = vright;
+		VectorCopy (vup, out_up);
+		VectorCopy (vright, out_right);
 		break;
 	case SPR_ORIENTED: // pitch yaw roll are independent of camera
-		AngleVectors (e->angles, v_forward, v_right, v_up);
-		s_up = v_up;
-		s_right = v_right;
+		AngleVectors (e->angles, v_forward, out_right, out_up);
 		break;
 	case SPR_VP_PARALLEL_ORIENTED: // faces view plane, but obeys roll value
 		angle = e->angles[ROLL] * M_PI_DIV_180;
 		sr = sin (angle);
 		cr = cos (angle);
-		v_right[0] = vright[0] * cr + vup[0] * sr;
-		v_right[1] = vright[1] * cr + vup[1] * sr;
-		v_right[2] = vright[2] * cr + vup[2] * sr;
-		v_up[0] = vright[0] * -sr + vup[0] * cr;
-		v_up[1] = vright[1] * -sr + vup[1] * cr;
-		v_up[2] = vright[2] * -sr + vup[2] * cr;
-		s_up = v_up;
-		s_right = v_right;
+		out_right[0] = vright[0] * cr + vup[0] * sr;
+		out_right[1] = vright[1] * cr + vup[1] * sr;
+		out_right[2] = vright[2] * cr + vup[2] * sr;
+		out_up[0] = vright[0] * -sr + vup[0] * cr;
+		out_up[1] = vright[1] * -sr + vup[1] * cr;
+		out_up[2] = vright[2] * -sr + vup[2] * cr;
 		break;
 	default:
-		return;
+		return false;
 	}
+	return true;
+}
+
+// The four corners of the quad R_CreateSpriteVertices draws (down-left, up-left,
+// up-right, down-right): the editor's picking and outline use them, so they hit
+// and draw the sprite where it is.
+void R_GetSpriteQuadCorners (entity_t *e, mspriteframe_t *frame, vec3_t corners[4])
+{
+	vec3_t up, right;
+
+	if (!e || !e->model || !frame || !R_SpriteQuadAxes (e, up, right))
+		return;
+
+	VectorMA (e->origin, frame->down, up, corners[0]);
+	VectorMA (corners[0], frame->left, right, corners[0]);
+
+	VectorMA (e->origin, frame->up, up, corners[1]);
+	VectorMA (corners[1], frame->left, right, corners[1]);
+
+	VectorMA (e->origin, frame->up, up, corners[2]);
+	VectorMA (corners[2], frame->right, right, corners[2]);
+
+	VectorMA (e->origin, frame->down, up, corners[3]);
+	VectorMA (corners[3], frame->right, right, corners[3]);
+}
+
+static void R_CreateSpriteVertices (entity_t *e, mspriteframe_t *frame, RgVertex vertices[4])
+{
+	vec3_t     point, v_up, v_right;
+	float     *s_up, *s_right;
+
+	if (!R_SpriteQuadAxes (e, v_up, v_right))
+		return;
+	s_up = v_up;
+	s_right = v_right;
 
 	VectorMA (e->origin, frame->down, s_up, point);
 	VectorMA (point, frame->left, s_right, point);

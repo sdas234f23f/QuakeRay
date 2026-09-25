@@ -1368,6 +1368,10 @@ void SCR_UpdateScreen (qboolean use_tasks)
 
 		Task_AddDependency (begin_rendering_task, draw_gui_task);
 		Task_AddDependency (setup_frame_task, draw_gui_task);
+		// while tasks are on, the GUI must not read the frame's uploaded lights
+		// (the editor's panel and its wireframes) before the draw that uploads them
+		if (rt_editor_draw_done_task != INVALID_TASK_HANDLE)
+			Task_AddDependency (rt_editor_draw_done_task, draw_gui_task);
 		Task_AddDependency (draw_gui_task, draw_done_task);
 		Task_AddDependency (draw_done_task, end_rendering_task);
 

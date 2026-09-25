@@ -955,6 +955,36 @@ static gltexture_t *QRE_EntityTexture (entity_t *e)
 	return NULL;
 }
 
+// Moller-Trumbore: the fraction along the ray where it crosses the triangle,
+// or -1. The direction is start->end scaled as the ray parameter.
+static float QRE_RayTriangle (const vec3_t start, const vec3_t dir,
+                              const vec3_t a, const vec3_t b, const vec3_t c)
+{
+	vec3_t e1, e2, p, t, q;
+	float  det, inv, u, v, frac;
+
+	VectorSubtract (b, a, e1);
+	VectorSubtract (c, a, e2);
+	CrossProduct (dir, e2, p);
+	det = DotProduct (e1, p);
+	if (fabsf (det) < 1e-8f)
+		return -1.0f;
+	inv = 1.0f / det;
+
+	VectorSubtract (start, a, t);
+	u = DotProduct (t, p) * inv;
+	if (u < 0.0f || u > 1.0f)
+		return -1.0f;
+
+	CrossProduct (t, e1, q);
+	v = DotProduct (dir, q) * inv;
+	if (v < 0.0f || u + v > 1.0f)
+		return -1.0f;
+
+	frac = DotProduct (e2, q) * inv;
+	return (frac >= 0.0f && frac <= 1.0f) ? frac : -1.0f;
+}
+
 // A ray against an entity's model bounds (a rigid transform about the origin;
 // an alias model's bounds already carry its own scale and scale_origin).
 // Returns the fraction along the ray, or -1 when it misses.
@@ -972,37 +1002,22 @@ static float QRE_TraceEntityBox (entity_t *e, const vec3_t start, const vec3_t e
 	if (e->model->type == mod_sprite)
 	{
 		mspriteframe_t *frame = R_GetSpriteFrame (e);
-		vec3_t          dir, hit, delta;
-		float           x0, x1, y0, y1, denom, t, dx, dy;
-		int             k;
+		vec3_t          corners[4];
+		vec3_t          dir;
+		float           t1, t2;
 
 		if (!frame)
 			return -1.0f;
 
-		// a sprite is a camera-facing quad built around the origin along the
-		// view axes (R_CreateSpriteVertices), not a box in the entity's frame
+		// the quad the renderer draws, axes and all (R_CreateSpriteVertices)
+		R_GetSpriteQuadCorners (e, frame, corners);
+
 		VectorSubtract (end, start, dir);
-		denom = DotProduct (vpn, dir);
-		if (fabsf (denom) < 1e-6f)
-			return -1.0f;
-		t = (DotProduct (vpn, e->origin) - DotProduct (vpn, start)) / denom;
-		if (t < 0.0f || t > 1.0f)
-			return -1.0f;
-
-		x0 = frame->left < frame->right ? frame->left : frame->right;
-		x1 = frame->left < frame->right ? frame->right : frame->left;
-		y0 = frame->down < frame->up ? frame->down : frame->up;
-		y1 = frame->down < frame->up ? frame->up : frame->down;
-
-		for (k = 0; k < 3; k++)
-			hit[k] = start[k] + t * dir[k];
-		VectorSubtract (hit, e->origin, delta);
-		dx = DotProduct (delta, vright);
-		dy = DotProduct (delta, vup);
-
-		if (dx < x0 || dx > x1 || dy < y0 || dy > y1)
-			return -1.0f;
-		return t;
+		t1 = QRE_RayTriangle (start, dir, corners[0], corners[1], corners[2]);
+		t2 = QRE_RayTriangle (start, dir, corners[0], corners[2], corners[3]);
+		if (t1 < 0.0f || (t2 >= 0.0f && t2 < t1))
+			t1 = t2;
+		return t1;
 	}
 
 	VectorCopy (e->model->mins, mins);
@@ -1201,6 +1216,8 @@ static int QRE_LightUnderCrosshair (void)
 		vec3_t oc;
 		float  b, c, disc, t;
 
+		if (!lights[i].ready)
+			continue;
 		VectorSubtract (lights[i].position, r_origin, oc);
 		b = DotProduct (oc, vpn);
 		c = DotProduct (oc, oc) - lights[i].radius * lights[i].radius;
@@ -1274,6 +1291,8 @@ static void QRE_RefreshSelectedLight (void)
 	lights = RT_TRACK_Lights (&count);
 	for (i = 0; i < count; i++)
 	{
+		if (!lights[i].ready)
+			continue;
 		if (lights[i].uniqueID == qre.sel_light.uniqueID && lights[i].kind == qre.sel_light.kind)
 		{
 			qre.sel_light = lights[i];
@@ -1313,6 +1332,9 @@ static void QRE_DrawLightWireframes (void)
 		const float               r = l->radius;
 		const int                 base = drawn * 3 * (QRE_LIGHT_WIRE_SEGS + 1);
 		uint32_t                  color;
+
+		if (!l->ready)
+			continue;
 
 		if (qre.sel_light_valid && l->uniqueID == qre.sel_light.uniqueID && l->kind == qre.sel_light.kind)
 			color = RT_PackColorToUint32 (255, 255, 255, 255);
@@ -1616,16 +1638,8 @@ static void QRE_EmitBoxOutline (entity_t *ent, uint32_t color)
 		srv = (RgVertex *)sblock;
 		sri = (uint32_t *)(sblock + 4 * sizeof (RgVertex));
 
-		// the quad R_CreateSpriteVertices builds: the view axes scaled by the
-		// frame's extents around the origin
-		VectorMA (ent->origin, frame->left, vright, corner[0]);
-		VectorMA (corner[0], frame->down, vup, corner[0]);
-		VectorMA (ent->origin, frame->left, vright, corner[1]);
-		VectorMA (corner[1], frame->up, vup, corner[1]);
-		VectorMA (ent->origin, frame->right, vright, corner[2]);
-		VectorMA (corner[2], frame->up, vup, corner[2]);
-		VectorMA (ent->origin, frame->right, vright, corner[3]);
-		VectorMA (corner[3], frame->down, vup, corner[3]);
+		// the quad the renderer draws, axes and all (R_CreateSpriteVertices)
+		R_GetSpriteQuadCorners (ent, frame, corner);
 
 		for (k = 0; k < 4; k++)
 		{
@@ -2420,7 +2434,7 @@ static void QRE_LightApplyToGroup (const char *source_name, int field, float v0,
 		{
 			rt_light_t *l;
 
-			if (!lights[i].name[0])
+			if (!lights[i].ready || !lights[i].name[0])
 				continue;
 			RT_MAT_GroupBaseOf (lights[i].name, g2, sizeof (g2));
 			if (strcmp (g2, group))
@@ -2431,6 +2445,49 @@ static void QRE_LightApplyToGroup (const char *source_name, int field, float v0,
 				QRE_LightApply (l, field, v0, v1, v2, b);
 		}
 	}
+}
+
+// A light that follows its group resets the field for every follower: each one
+// returns to the state the editor started with (its own snapshot entry, or "not
+// authored" when it had none), so the group does not keep mixed values.
+static void QRE_LightResetField (rt_light_t *self, int field)
+{
+	char group[MAX_QPATH];
+	char g2[MAX_QPATH];
+	int  count = 0, i;
+	rt_light_t *list;
+
+	if (!self->group_edit)
+	{
+		QRE_LightApplyOriginal (self, QRE_LightOriginal (self->name), field);
+		return;
+	}
+
+	list = RT_LIGHT_List (&count);
+	RT_MAT_GroupBaseOf (self->name, group, sizeof (group));
+	for (i = 0; i < count; i++)
+	{
+		if (!list[i].valid || !list[i].group_edit)
+			continue;
+		RT_MAT_GroupBaseOf (list[i].name, g2, sizeof (g2));
+		if (!strcmp (g2, group))
+			QRE_LightApplyOriginal (&list[i], QRE_LightOriginal (list[i].name), field);
+	}
+}
+
+// The radius and intensity a light of this kind uses when its field is not
+// authored: a material light and a legacy dlight take the dlight settings, a
+// map light entity its own.
+static float QRE_LightDefaultRadius (int kind)
+{
+	extern cvar_t rt_elight_radius;
+
+	return CVAR_TO_FLOAT (kind == RT_LIGHT_KIND_MAP ? rt_elight_radius : rt_dlight_radius);
+}
+
+static float QRE_LightDefaultIntensity (int kind)
+{
+	return (kind == RT_LIGHT_KIND_MAP) ? 1.0f : CVAR_TO_FLOAT (rt_dlight_intensity);
 }
 
 // The panel's one place to write a field: the group when the light follows it,
@@ -2600,19 +2657,25 @@ static void QRE_BuildLightPanelGUI (void)
 			}
 		}
 
-		value = light->has_radius ? light->radius : CVAR_TO_FLOAT (rt_dlight_radius);
+		value = light->has_radius ? light->radius : QRE_LightDefaultRadius (qre.sel_light.kind);
 		if (QR_GUI_SliderFloat ("light_radius", &value, 0.0f, 1024.0f,
-		                        "The size of the light. Shows the global rt_dlight_radius until it is authored."))
+		                        "The size of the light, in rt_dlight_radius units; the line under it is the radius the renderer draws."))
 			QRE_LightWrite (light, QRE_LIGHT_F_RADIUS, value, 0, 0, false);
 		if (QR_GUI_ResetButton ("light_radius", QRE_LightFieldChanged (light, orig, QRE_LIGHT_F_RADIUS)))
-			QRE_LightApplyOriginal (light, orig, QRE_LIGHT_F_RADIUS);
+			QRE_LightResetField (light, QRE_LIGHT_F_RADIUS);
+		{
+			char buf[64];
 
-		value = light->has_intensity ? light->intensity : CVAR_TO_FLOAT (rt_dlight_intensity);
+			q_snprintf (buf, sizeof (buf), "radius %.1f game units", METRIC_TO_QUAKEUNIT (value));
+			QR_GUI_LabelDim (buf);
+		}
+
+		value = light->has_intensity ? light->intensity : QRE_LightDefaultIntensity (qre.sel_light.kind);
 		if (QR_GUI_SliderFloat ("light_intensity", &value, 0.0f, 8.0f,
 		                        "The brightness of the light: a multiplier of its colour."))
 			QRE_LightWrite (light, QRE_LIGHT_F_INTENSITY, value, 0, 0, false);
 		if (QR_GUI_ResetButton ("light_intensity", QRE_LightFieldChanged (light, orig, QRE_LIGHT_F_INTENSITY)))
-			QRE_LightApplyOriginal (light, orig, QRE_LIGHT_F_INTENSITY);
+			QRE_LightResetField (light, QRE_LIGHT_F_INTENSITY);
 
 		{
 			float offs[3];
@@ -2630,7 +2693,7 @@ static void QRE_BuildLightPanelGUI (void)
 			if (changed)
 				QRE_LightWrite (light, QRE_LIGHT_F_OFFSET, offs[0], offs[1], offs[2], false);
 			if (QR_GUI_ResetButton ("light_offset", QRE_LightFieldChanged (light, orig, QRE_LIGHT_F_OFFSET)))
-				QRE_LightApplyOriginal (light, orig, QRE_LIGHT_F_OFFSET);
+				QRE_LightResetField (light, QRE_LIGHT_F_OFFSET);
 		}
 
 		{
@@ -2647,16 +2710,17 @@ static void QRE_BuildLightPanelGUI (void)
 					QRE_LightWrite (light, QRE_LIGHT_F_COLOR, rgb[0], rgb[1], rgb[2], false);
 			}
 			if (QR_GUI_ResetButton ("light_color", QRE_LightFieldChanged (light, orig, QRE_LIGHT_F_COLOR)))
-				QRE_LightApplyOriginal (light, orig, QRE_LIGHT_F_COLOR);
+				QRE_LightResetField (light, QRE_LIGHT_F_COLOR);
 		}
 
+		if (qre.sel_light.kind == RT_LIGHT_KIND_MATERIAL)
 		{
 			int fr = light->force_rasterize ? 1 : 0;
 
 			if (QR_GUI_Checkbox ("force_rasterize", &fr, "Draw the emitter in the rasterized path."))
 				QRE_LightWrite (light, QRE_LIGHT_F_FRAST, 0, 0, 0, fr != 0);
 			if (QR_GUI_ResetButton ("force_rasterize", QRE_LightFieldChanged (light, orig, QRE_LIGHT_F_FRAST)))
-				QRE_LightApplyOriginal (light, orig, QRE_LIGHT_F_FRAST);
+				QRE_LightResetField (light, QRE_LIGHT_F_FRAST);
 		}
 	}
 	else if (qre.sel_light_valid)
@@ -3293,10 +3357,12 @@ static void QRE_SessionSave (void)
 	remove (qre.editor_file);
 
 	QRE_StopEditor (false);
-	if (had_target)
-		QRE_Notify ("materials.yaml saved; backup_materials.yaml holds the previous file");
+	if (qre.mode == QRE_MODE_LIGHT)
+		QRE_Notify (had_target ? "lights.yaml saved; backup_lights.yaml holds the previous file"
+		                       : "lights.yaml saved");
 	else
-		QRE_Notify ("materials.yaml saved");
+		QRE_Notify (had_target ? "materials.yaml saved; backup_materials.yaml holds the previous file"
+		                       : "materials.yaml saved");
 }
 
 // "Discard": the session file goes away and the original values come back on

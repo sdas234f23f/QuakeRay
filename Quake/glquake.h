@@ -339,6 +339,11 @@ void     R_StoreEfrags (efrag_t **ppefrag);
 qboolean R_CullModelForEntity (entity_t *e);
 void     R_RotateForEntity (float matrix[16], vec3_t origin, vec3_t angles);
 mspriteframe_t *R_GetSpriteFrame (entity_t *e);
+// The four corners of the sprite quad the renderer draws, for the editor.
+void R_GetSpriteQuadCorners (entity_t *e, mspriteframe_t *frame, vec3_t corners[4]);
+// The draw task the editor's GUI has to wait for (the one that uploads the
+// frame's lights); invalid when tasks are off.
+extern task_handle_t rt_editor_draw_done_task;
 void     R_MarkLights (dlight_t *light, int num, mnode_t *node);
 
 void R_InitParticles (void);

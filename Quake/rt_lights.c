@@ -23,6 +23,7 @@ static atomic_uint32_t    rt_tracked_count;
 
 void RT_TRACK_BeginFrame(void)
 {
+    memset(rt_tracked, 0, sizeof(rt_tracked));
     Atomic_StoreUInt32(&rt_tracked_count, 0);
 }
 
@@ -44,6 +45,10 @@ void RT_TRACK_Light(const vec3_t position, float radius, const vec3_t color,
     light->uniqueID = uniqueID;
     light->kind = kind;
     q_strlcpy(light->name, name ? name : "", sizeof(light->name));
+    // published last: a reader that sees the count (or the ready flag) sees the
+    // fields too. The editor's readers also wait for the draw task that fills the
+    // list when tasks are on (gl_screen.c), so the frame's list is complete.
+    light->ready = 1;
 }
 
 const rt_tracked_light_t *RT_TRACK_Lights(int *outCount)
@@ -63,14 +68,17 @@ const rt_tracked_light_t *RT_TRACK_Lights(int *outCount)
 
 static const char *rt_light_header =
     "# Dynamic light overrides for the vkpt ray-traced renderer.\n"
-    "# A light belongs to an emitter -- the texture a model or a sprite draws\n"
-    "# (the same name materials.yaml uses for it), the model of the entity that\n"
-    "# asked for a legacy dlight, or the classname of a map light entity:\n"
+    "# A light belongs to an emitter: the texture a model or a sprite draws (the\n"
+    "# same name materials.yaml uses for it), the model of the entity that asked\n"
+    "# for a legacy dlight, or the classname of a map light entity -- classname\n"
+    "# entries apply where the legacy light system uploads those entities\n"
+    "# (rt_truelight 0); the editor itself runs on rt_truelight 1 and shows the\n"
+    "# lights that system builds.\n"
     "#   light_radius    -- the size of the light (rt_dlight_radius units)\n"
     "#   light_intensity -- the brightness of the light (a multiplier of its colour)\n"
     "#   light_offset    -- \"x y z\", the offset from the emitter's pivot point\n"
     "#   light_color     -- \"rrggbb\", an explicit colour for the light\n"
-    "#   force_rasterize -- draw the emitter in the rasterized path\n"
+    "#   force_rasterize -- draw the emitter in the rasterized path (material lights)\n"
     "#   group_edit      -- true (the default) when an edit of one light of the\n"
     "#                      group (the emitter's model) is written to all of them\n"
     "# An emitter without an entry uses the global rt_dlight_* settings.\n";

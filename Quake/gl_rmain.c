@@ -25,6 +25,9 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "tasks.h"
 #include "atomics.h"
 #include "rt_lights.h"
+
+// The editor's GUI depends on this task when tasks are on (see gl_screen.c).
+task_handle_t rt_editor_draw_done_task = INVALID_TASK_HANDLE;
 #include "qr_editor.h"
 
 int r_visframecount; // bumped when going to a new PVS
@@ -1006,6 +1009,12 @@ static void R_DrawViewModelTask (void *unused)
 
 	R_SetupContext (&vulkan_globals.secondary_cb_contexts[CBX_VIEW_MODEL]);
 
+	prof_start = RT_Prof_Begin ();
+	// The editor draws the lights of the frame as wireframes, so their upload
+	// (the map light entities) has to happen before the selection draw.
+	RT_UploadAllElights (); // RT
+	RT_Prof_End (RT_PROF_ELIGHTS, prof_start);
+
 	// Only the draw itself, so that the model upload cost can be told apart from
 	// the light and cluster list uploads that share this task.
 	prof_start = RT_Prof_Begin ();
@@ -1014,10 +1023,6 @@ static void R_DrawViewModelTask (void *unused)
 	R_ShowBoundingBoxes (&vulkan_globals.secondary_cb_contexts[CBX_VIEW_MODEL]); // johnfitz
 	QR_Editor_DrawSelection (&vulkan_globals.secondary_cb_contexts[CBX_VIEW_MODEL]); // qr light editor
 	RT_Prof_End (RT_PROF_VIEWMODEL_DRAW, prof_start);
-
-	prof_start = RT_Prof_Begin ();
-	RT_UploadAllElights (); // RT
-	RT_Prof_End (RT_PROF_ELIGHTS, prof_start);
 
 	prof_start = RT_Prof_Begin ();
 	RT_UploadAllWorldModelLights (); // RT
@@ -1045,6 +1050,8 @@ void R_RenderView (qboolean use_tasks, task_handle_t begin_rendering_task, task_
 
 	if (!cl.worldmodel)
 		Sys_Error ("R_RenderView: NULL worldmodel");
+
+	rt_editor_draw_done_task = INVALID_TASK_HANDLE;
 
 	// The light editor's list of the frame's lights starts empty every frame; the
 	// four upload sites fill it as they go.
@@ -1092,6 +1099,10 @@ void R_RenderView (qboolean use_tasks, task_handle_t begin_rendering_task, task_
 		Task_AddDependency (before_mark, draw_view_model_task);
 		Task_AddDependency (begin_rendering_task, draw_view_model_task);
 		Task_AddDependency (draw_view_model_task, draw_done_task);
+
+		// The editor's GUI reads what the draw tasks uploaded (the tracked lights
+		// of the frame), so it has to wait for the task that carries them.
+		rt_editor_draw_done_task = draw_view_model_task;
 
 		task_handle_t draw_entities_task = Task_AllocateAndAssignIndexedFunc (R_DrawEntitiesTask, NUM_ENTITIES_CBX, NULL, 0);
 		Task_AddDependency (store_efrags, draw_entities_task);

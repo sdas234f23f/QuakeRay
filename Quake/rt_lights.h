@@ -91,6 +91,7 @@ typedef struct rt_tracked_light_s
     uint64_t uniqueID;
     int      kind;
     char     name[MAX_QPATH];   // the emitter the light belongs to, "" when it has none
+    volatile uint32_t ready;    // set last: a reader skips a slot that is not filled
 } rt_tracked_light_t;
 
 void RT_TRACK_BeginFrame (void);
