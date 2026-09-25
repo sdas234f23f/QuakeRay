@@ -29,6 +29,7 @@
 #include "gl_texmgr.h"
 #include "gl_heap.h"
 #include "rt_material.h"
+#include "rt_lights.h"
 #include "keys.h"
 #include "client.h"
 #include "server.h"
@@ -62,6 +63,7 @@ extern atomic_uint32_t rt_require_static_submit; // gl_rmain.c
 // The editor edits what the new light system builds (TAL and the fake dlights
 // of materials); the old system has neither, so it refuses to start on it.
 extern cvar_t rt_truelight; // gl_vidsdl.c
+extern cvar_t rt_dlight_radius, rt_dlight_intensity; // gl_vidsdl.c
 
 // ---------------------------------------------------------------------------
 // Parameters
@@ -178,6 +180,15 @@ typedef struct qre_preview_s
 	unsigned    last_frame;
 } qre_preview_t;
 
+// What the editor edits: the surfaces (materials.yaml) or the dynamic lights
+// the emitters cast (lights.yaml). The camera, the picking and the session flow
+// (Apply / Cancel / the exit dialog) are shared; the panel and the files differ.
+enum
+{
+	QRE_MODE_MATERIAL = 0,
+	QRE_MODE_LIGHT    = 1,
+};
+
 static struct
 {
 	qboolean active;
@@ -215,6 +226,15 @@ static struct
 	int            snap_global_count;
 	rt_material_t *snap_map;
 	int            snap_map_count;
+
+	// snapshot of the light overrides, and the light names the session touched
+	rt_light_t *snap_lights;
+	int         snap_light_count;
+	char        light_touched[QRE_TOUCHED_MAX][MAX_QPATH];
+	int         light_touched_count;
+
+	// which of the two editors this is
+	int mode;
 
 	// the session files, resolved on start: <gamedir>/materials.yaml is the file
 	// the editor saves to (a mod's file overrides the id1 one), while
@@ -357,6 +377,36 @@ static void QRE_FreeSnapshot (void)
 }
 
 // ---------------------------------------------------------------------------
+// Light snapshot (for Cancel/Exit of the light editor)
+// ---------------------------------------------------------------------------
+
+static void QRE_TakeLightSnapshot (void)
+{
+	rt_light_t *list = RT_LIGHT_List (&qre.snap_light_count);
+
+	if (!qre.snap_lights)
+		qre.snap_lights = (rt_light_t *)Mem_Alloc (RT_LIGHT_NAMES_MAX * sizeof (rt_light_t));
+	memcpy (qre.snap_lights, list, (size_t)qre.snap_light_count * sizeof (rt_light_t));
+}
+
+static void QRE_RestoreLightSnapshot (void)
+{
+	rt_light_t *list = RT_LIGHT_List (NULL);
+
+	memcpy (list, qre.snap_lights, (size_t)qre.snap_light_count * sizeof (rt_light_t));
+	RT_LIGHT_SetCount (qre.snap_light_count);
+}
+
+static void QRE_FreeLightSnapshot (void)
+{
+	if (qre.snap_lights)
+		Mem_Free (qre.snap_lights);
+	qre.snap_lights = NULL;
+	qre.snap_light_count = 0;
+	qre.light_touched_count = 0;
+}
+
+// ---------------------------------------------------------------------------
 // Dirty tracking and live re-synthesis
 // ---------------------------------------------------------------------------
 
@@ -370,6 +420,17 @@ static qboolean QRE_NameInList (const char (*list)[MAX_QPATH], int count, const 
 			return true;
 	}
 	return false;
+}
+
+// The light names the session touched: what the session file writes besides the
+// entries the target already carried.
+static void QRE_TouchLight (const char *name)
+{
+	if (!name || !name[0])
+		return;
+	if (!QRE_NameInList (qre.light_touched, qre.light_touched_count, name) &&
+	    qre.light_touched_count < QRE_TOUCHED_MAX)
+		q_strlcpy (qre.light_touched[qre.light_touched_count++], name, MAX_QPATH);
 }
 
 static void QRE_MarkDirty (rt_material_t *m)
@@ -1168,11 +1229,19 @@ static void QRE_DoPick (qboolean select)
 			*dot = '\0';
 
 		q_strlcpy (qre.pick_name, texname, sizeof (qre.pick_name));
-		QRE_ResolveGroup (texname);
 
-		Con_Printf ("qr editor: picked '%s' (%d material(s) in the group)\n", texname, qre.group_count);
-		for (i = 0; i < qre.group_count; i++)
-			Con_Printf ("qr editor:   group material '%s'\n", qre.group[i]->name);
+		if (qre.mode == QRE_MODE_LIGHT)
+		{
+			Con_Printf ("qr light editor: picked emitter '%s'\n", texname);
+		}
+		else
+		{
+			QRE_ResolveGroup (texname);
+
+			Con_Printf ("qr editor: picked '%s' (%d material(s) in the group)\n", texname, qre.group_count);
+			for (i = 0; i < qre.group_count; i++)
+				Con_Printf ("qr editor:   group material '%s'\n", qre.group[i]->name);
+		}
 	}
 
 	qre.panel_open = true;
@@ -2021,6 +2090,115 @@ static void QRE_BuildPanelGUI (void)
 		QRE_RequestExit ();
 }
 
+// The light editor's panel: the dlight of the picked emitter. Its fields live in
+// lights.yaml (radius, intensity, offset); an emitter without an entry shows the
+// global defaults, and authoring a value creates one.
+static void QRE_BuildLightPanelGUI (void)
+{
+	int         panel_w = glwidth / 4;
+	qboolean    exit_requested = false;
+	rt_light_t *light = NULL;
+
+	if (panel_w < 352)
+		panel_w = 352;
+
+	QR_GUI_BeginPanel ("qr_light_editor", glwidth - panel_w, 0, panel_w, glheight);
+
+	QR_GUI_Label ("LIGHT EDITOR");
+	if (qre.pick_glt)
+	{
+		char buf[MAX_QPATH + 16];
+
+		q_snprintf (buf, sizeof (buf), "emitter: %s", qre.pick_name[0] ? qre.pick_name : qre.pick_glt->name);
+		QR_GUI_LabelDim (buf);
+	}
+	{
+		rt_material_t *m = qre.pick_name[0] ? RT_MAT_Find (qre.pick_name) : NULL;
+
+		if (m && m->has_light_color)
+			QR_GUI_LabelDim ("casts a dlight (light_color)");
+		else
+			QR_GUI_LabelDim ("no dlight: the material has no light_color");
+	}
+	QR_GUI_Spacing ();
+
+	if (QR_GUI_Button ("Apply"))
+		QRE_Apply ();
+	QR_GUI_SameLine ();
+	if (QR_GUI_Button ("Cancel"))
+		QRE_Cancel ();
+	QR_GUI_SameLine ();
+	if (QR_GUI_Button ("Exit"))
+		exit_requested = true;
+	QR_GUI_Separator ();
+	QR_GUI_BeginScroll ();
+
+	if (qre.pick_name[0])
+		light = RT_LIGHT_Ensure (qre.pick_name);
+
+	if (light)
+	{
+		float value;
+
+		value = light->has_radius ? light->radius : CVAR_TO_FLOAT (rt_dlight_radius);
+		if (QR_GUI_SliderFloat ("light_radius", &value, 0.0f, 1024.0f,
+		                        "The size of the light. Shows the global rt_dlight_radius until it is authored."))
+		{
+			light->radius = value;
+			light->has_radius = true;
+			QRE_TouchLight (light->name);
+		}
+
+		value = light->has_intensity ? light->intensity : CVAR_TO_FLOAT (rt_dlight_intensity);
+		if (QR_GUI_SliderFloat ("light_intensity", &value, 0.0f, 8.0f,
+		                        "The brightness of the light: a multiplier of its colour."))
+		{
+			light->intensity = value;
+			light->has_intensity = true;
+			QRE_TouchLight (light->name);
+		}
+
+		{
+			float offs[3];
+			int   changed = 0;
+
+			offs[0] = light->has_offset ? light->offset[0] : 0.0f;
+			offs[1] = light->has_offset ? light->offset[1] : 0.0f;
+			offs[2] = light->has_offset ? light->offset[2] : 0.0f;
+
+			changed |= QR_GUI_SliderFloat ("light_offset x", &offs[0], -128.0f, 128.0f,
+			                               "The offset of the light from the emitter's pivot point (its origin).");
+			changed |= QR_GUI_SliderFloat ("light_offset y", &offs[1], -128.0f, 128.0f, NULL);
+			changed |= QR_GUI_SliderFloat ("light_offset z", &offs[2], -128.0f, 128.0f, NULL);
+
+			if (changed)
+			{
+				VectorCopy (offs, light->offset);
+				light->has_offset = true;
+				QRE_TouchLight (light->name);
+			}
+		}
+
+		if (QR_GUI_Button ("Clear overrides"))
+		{
+			light->has_radius = false;
+			light->has_intensity = false;
+			light->has_offset = false;
+			QRE_TouchLight (light->name);
+		}
+	}
+	else
+	{
+		QR_GUI_Label (qre.pick_name[0] ? "the light list is full" : "nothing picked");
+	}
+
+	QR_GUI_EndScroll ();
+	QR_GUI_EndPanel ();
+
+	if (exit_requested)
+		QRE_RequestExit ();
+}
+
 static void QRE_BuildFlyingOverlay (void)
 {
 	static const char *const lines[] = {
@@ -2029,8 +2207,15 @@ static void QRE_BuildFlyingOverlay (void)
 		"WASD + mouse - fly    Shift - faster    jump/movedown - up/down",
 		"Esc - exit the editor    ~ - console",
 	};
+	static const char *const light_lines[] = {
+		"QR LIGHT EDITOR",
+		"LMB - select the emitter under the crosshair",
+		"WASD + mouse - fly    Shift - faster    jump/movedown - up/down",
+		"Esc - exit the editor    ~ - console",
+	};
+	const char *const *shown = (qre.mode == QRE_MODE_LIGHT) ? light_lines : lines;
 
-	QR_GUI_DrawHint (lines, (int)countof (lines));
+	QR_GUI_DrawHint (shown, (int)countof (light_lines));
 	QR_GUI_DrawCrosshair ();
 }
 
@@ -2087,7 +2272,9 @@ void QR_Editor_DrawPanel (cb_context_t *cbx)
 
 	if (qre.exit_prompt)
 	{
-		int answer = QR_GUI_Dialog ("Save materials?", "Save all materials changes?", "Save", "Discard");
+		int answer = QR_GUI_Dialog ((qre.mode == QRE_MODE_LIGHT) ? "Save lights?" : "Save materials?",
+		                            (qre.mode == QRE_MODE_LIGHT) ? "Save all light changes?" : "Save all materials changes?",
+		                            "Save", "Discard");
 
 		if (answer == 1)
 		{
@@ -2101,7 +2288,12 @@ void QR_Editor_DrawPanel (cb_context_t *cbx)
 		}
 	}
 	else if (qre.panel_open)
-		QRE_BuildPanelGUI ();
+	{
+		if (qre.mode == QRE_MODE_LIGHT)
+			QRE_BuildLightPanelGUI ();
+		else
+			QRE_BuildPanelGUI ();
+	}
 	else
 		QRE_BuildFlyingOverlay ();
 
@@ -2203,12 +2395,32 @@ static void QRE_Apply (void)
 		return;
 	}
 
+	if (qre.mode == QRE_MODE_LIGHT)
+	{
+		QRE_TakeLightSnapshot (); // Cancel now reverts to the state just saved
+		QRE_Notify ("session written to lights.editor.yaml");
+		return;
+	}
+
 	QRE_TakeSnapshot (); // Cancel now reverts to the state just saved
 	QRE_Notify ("session written to materials.editor.yaml");
 }
 
 static void QRE_Cancel (void)
 {
+	if (qre.mode == QRE_MODE_LIGHT)
+	{
+		// the light uploads read the live list every frame, so putting the
+		// snapshot back is enough
+		QRE_RestoreLightSnapshot ();
+
+		if (QRE_FileExists (qre.editor_file) && !QRE_WriteSession ())
+			remove (qre.editor_file);
+
+		QRE_Notify ("light overrides reverted to the values from lights.yaml");
+		return;
+	}
+
 	QRE_RestoreSnapshot ();
 	QRE_ReapplyTouched (); // put the yaml values back on screen
 
@@ -2480,8 +2692,35 @@ static int QRE_ReadTargetNames (char (*names)[MAX_QPATH], int max)
 // Writes materials.editor.yaml: everything the target file carries plus every
 // material the session touched (a touched entry wins by name). Apply writes it,
 // Save copies it over the target, Discard deletes it.
+// The light session file: the touched lights plus the names the target file
+// already carried, written by the lights module.
+static qboolean QRE_WriteLightSession (void)
+{
+	char (*names)[MAX_QPATH];
+	int   count = 0, i;
+	qboolean ok;
+
+	names = (char (*)[MAX_QPATH])Mem_Alloc (RT_LIGHT_NAMES_MAX * MAX_QPATH);
+	for (i = 0; i < qre.light_touched_count && count < RT_LIGHT_NAMES_MAX; i++)
+		q_strlcpy (names[count++], qre.light_touched[i], MAX_QPATH);
+	count += RT_LIGHT_ReadNames (qre.target_file, names + count, RT_LIGHT_NAMES_MAX - count);
+
+	if (count == 0)
+	{
+		Mem_Free (names);
+		return false;
+	}
+
+	ok = RT_LIGHT_Write (qre.editor_file, names, count);
+	Mem_Free (names);
+	return ok;
+}
+
 static qboolean QRE_WriteSession (void)
 {
+	if (qre.mode == QRE_MODE_LIGHT)
+		return QRE_WriteLightSession ();
+
 	char (*names)[MAX_QPATH];
 	int   count = 0, i, written = 0;
 	FILE *f;
@@ -2551,8 +2790,9 @@ static qboolean QRE_WriteSession (void)
 static void QRE_SessionSave (void)
 {
 	const qboolean had_target = QRE_FileExists (qre.target_file);
+	const qboolean touched = (qre.mode == QRE_MODE_LIGHT) ? (qre.light_touched_count > 0) : (qre.touched_count > 0);
 
-	if (qre.touched_count > 0 && !QRE_WriteSession ())
+	if (touched && !QRE_WriteSession ())
 	{
 		QRE_Notify ("nothing to save");
 		return;
@@ -2596,7 +2836,9 @@ static void QRE_SessionDiscard (void)
 // one, close straight away when nothing was changed.
 static void QRE_RequestExit (void)
 {
-	if (qre.touched_count == 0 && !QRE_FileExists (qre.editor_file))
+	const qboolean touched = (qre.mode == QRE_MODE_LIGHT) ? (qre.light_touched_count > 0) : (qre.touched_count > 0);
+
+	if (!touched && !QRE_FileExists (qre.editor_file))
 	{
 		QRE_StopEditor (true);
 		return;
@@ -2682,8 +2924,15 @@ static void QRE_StopEditor (qboolean restore)
 	// revert whatever was not applied, then restore the player's view
 	if (restore)
 	{
-		QRE_RestoreSnapshot ();
-		QRE_ReapplyTouched ();
+		if (qre.mode == QRE_MODE_LIGHT)
+		{
+			QRE_RestoreLightSnapshot ();
+		}
+		else
+		{
+			QRE_RestoreSnapshot ();
+			QRE_ReapplyTouched ();
+		}
 	}
 
 	qre.active = false;
@@ -2711,6 +2960,7 @@ static void QRE_StopEditor (qboolean restore)
 	VectorCopy (qre.player_viewangles, cl.viewangles);
 
 	QRE_FreeSnapshot ();
+	QRE_FreeLightSnapshot ();
 
 	IN_Activate ();
 	SDL_ShowCursor (SDL_ENABLE);
@@ -2719,45 +2969,61 @@ static void QRE_StopEditor (qboolean restore)
 	QRE_Notify ("editor closed");
 }
 
-static void QR_Editor_Start_f (void)
+static void QRE_StartEditor (int mode)
 {
+	const char *name = (mode == QRE_MODE_LIGHT) ? "light" : "material";
+
 	if (qre.active)
 	{
-		Con_Printf ("qr light editor: already running\n");
+		Con_Printf ("qr %s editor: already running\n", name);
 		return;
 	}
 	if (cls.state != ca_connected || !cl.worldmodel)
 	{
-		Con_Printf ("qr light editor: a level must be loaded first\n");
+		Con_Printf ("qr %s editor: a level must be loaded first\n", name);
 		return;
 	}
 	if (!sv.active || svs.maxclients > 1 || cls.demoplayback)
 	{
-		Con_Printf ("qr light editor: single player only (the world has to be frozen)\n");
+		Con_Printf ("qr %s editor: single player only (the world has to be frozen)\n", name);
 		return;
 	}
 	if (CVAR_TO_FLOAT (rt_truelight) != 1.0f)
 	{
-		Con_Printf ("qr material editor: rt_truelight must be 1 (the new light system)\n");
+		Con_Printf ("qr %s editor: rt_truelight must be 1 (the new light system)\n", name);
 		return;
 	}
 
 	memset (&qre, 0, sizeof (qre));
 	qre.active = true;
 	qre.panel_open = false;
+	qre.mode = mode;
 
 	VectorCopy (r_refdef.vieworg, qre.cam_origin);
 	VectorCopy (cl.viewangles, qre.player_viewangles);
 
-	QRE_TakeSnapshot ();
+	if (mode == QRE_MODE_LIGHT)
+	{
+		QRE_TakeLightSnapshot ();
 
-	// the session files: the target is the gamedir's own materials.yaml (for a
-	// mod that is the mod's file, which the loader reads after id1's and lets
-	// override it), the session file carries the edits until the exit dialog
-	// decides, and the backup keeps the target as it was before a save
-	q_snprintf (qre.target_file, sizeof (qre.target_file), "%s/materials.yaml", com_gamedir);
-	q_snprintf (qre.editor_file, sizeof (qre.editor_file), "%s/materials.editor.yaml", com_gamedir);
-	q_snprintf (qre.backup_file, sizeof (qre.backup_file), "%s/backup_materials.yaml", com_gamedir);
+		// the light session: the gamedir's lights.yaml is what the light editor
+		// saves to, with the session file and the backup the materials use too
+		q_snprintf (qre.target_file, sizeof (qre.target_file), "%s/lights.yaml", com_gamedir);
+		q_snprintf (qre.editor_file, sizeof (qre.editor_file), "%s/lights.editor.yaml", com_gamedir);
+		q_snprintf (qre.backup_file, sizeof (qre.backup_file), "%s/backup_lights.yaml", com_gamedir);
+	}
+	else
+	{
+		QRE_TakeSnapshot ();
+
+		// the session files: the target is the gamedir's own materials.yaml (for
+		// a mod that is the mod's file, which the loader reads after id1's and
+		// lets override it), the session file carries the edits until the exit
+		// dialog decides, and the backup keeps the target as it was before a save
+		q_snprintf (qre.target_file, sizeof (qre.target_file), "%s/materials.yaml", com_gamedir);
+		q_snprintf (qre.editor_file, sizeof (qre.editor_file), "%s/materials.editor.yaml", com_gamedir);
+		q_snprintf (qre.backup_file, sizeof (qre.backup_file), "%s/backup_materials.yaml", com_gamedir);
+	}
 
 	// a session file left by a crash or a map change belongs to a session that
 	// is over: it must not be saved by this one
@@ -2771,7 +3037,17 @@ static void QR_Editor_Start_f (void)
 	qre.sv_paused_prev = sv.paused;
 	sv.paused = true;
 
-	Con_Printf ("qr light editor: on (fly: WASD + mouse; LMB selects a face; ESC exits)\n");
+	Con_Printf ("qr %s editor: on (fly: WASD + mouse; LMB selects a face; ESC exits)\n", name);
+}
+
+static void QR_Editor_Start_f (void)
+{
+	QRE_StartEditor (QRE_MODE_MATERIAL);
+}
+
+static void QR_LightEditor_Start_f (void)
+{
+	QRE_StartEditor (QRE_MODE_LIGHT);
 }
 
 static void QR_Editor_Stop_f (void)
@@ -2798,6 +3074,9 @@ void QR_Editor_Init (void)
 
 	Cmd_AddCommand ("qr_material_editor_start", QR_Editor_Start_f);
 	Cmd_AddCommand ("qr_material_editor_stop", QR_Editor_Stop_f);
+
+	Cmd_AddCommand ("qr_light_editor_start", QR_LightEditor_Start_f);
+	Cmd_AddCommand ("qr_light_editor_stop", QR_Editor_Stop_f);
 
 	// the font is deployed next to the executable by the build
 	q_snprintf (font_path, sizeof (font_path), "%s/fonts/Roboto-Regular.ttf", host_parms->basedir);

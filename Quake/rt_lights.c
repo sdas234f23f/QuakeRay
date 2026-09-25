@@ -9,7 +9,7 @@
 #include "rt_material.h"
 #include "rt_lights.h"
 
-#define RT_LIGHT_CAP 256
+#define RT_LIGHT_CAP RT_LIGHT_NAMES_MAX
 
 static rt_light_t rt_lights[RT_LIGHT_CAP];
 static int        rt_light_count = 0;

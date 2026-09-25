@@ -14,6 +14,9 @@
 
 #include "quakedef.h"
 
+// The most entries a lights.yaml list (and a session) can hold.
+#define RT_LIGHT_NAMES_MAX 256
+
 typedef struct rt_light_s
 {
     char     name[MAX_QPATH];  // the emitter the light belongs to (a texture name)
