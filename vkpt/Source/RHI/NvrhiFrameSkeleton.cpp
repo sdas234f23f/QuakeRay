@@ -24,6 +24,7 @@
 
 #include "RhiAccelStructs.h"
 #include "RhiDebugTracePass.h"
+#include "RhiRtPrimaryPass.h"
 #include "RhiDescriptors.h"
 #include "RhiFrameContext.h"
 #include "RhiPipeline.h"
@@ -51,9 +52,11 @@ const char *const VERTEX_SHADER_FILE_NAME = "RhiSkeleton.vert.spv";
 const char *const PIXEL_SHADER_FILE_NAME = "RhiPresent.frag.spv";
 
 // The present's constant buffer: exposure.x scales the linear ALBEDO sample before the shader's
-// x / (1 + x) curve (RhiPresent.frag.hlsl:50-73). The engine's own exposure control (Tonemapping)
-// is not on the RHI path yet, so this first cut writes a fixed 1.0; the members stay a float4 to
-// keep the shader's block shape (RhiPresent.frag.hlsl:50-55).
+// x / (1 + x) curve, and exposure.y selects the vertical mirror of the sample coordinate - the
+// traced modes' ALBEDO follows the engine's ray-tracing convention and the raster modes follow
+// NVRHI's, and one present serves both (RhiPresent.frag.hlsl:50-80). The engine's own exposure
+// control (Tonemapping) is not on the RHI path yet, so this first cut writes a fixed 1.0; the
+// members stay a float4 to keep the shader's block shape.
 struct RhiPresentParams
 {
     float exposure[4];
@@ -78,14 +81,16 @@ NvrhiFrameSkeleton::NvrhiFrameSkeleton(nvrhi::IDevice *pDevice,
                                        rhi::RhiFrameContext *pFrameContext,
                                        rhi::RhiAccelStructs *pAccelStructs,
                                        RhiDebugTracePass *pDebugTracePass,
-                                       bool useDebugTrace,
+                                       RhiRtPrimaryPass *pRtPrimaryPass,
+                                       FrameMode mode,
                                        PrintFunction pfnPrint)
     : device(dynamic_cast<nvrhi::vulkan::IDevice *>(pDevice))
     , print(std::move(pfnPrint))
     , shaderFolderPath(pShaderFolderPath != nullptr ? pShaderFolderPath : "")
     , accelStructs(pAccelStructs)
     , debugTracePass(pDebugTracePass)
-    , debugTraceEnabled(useDebugTrace)
+    , rtPrimaryPass(pRtPrimaryPass)
+    , frameMode(mode)
     , textureTable(pTextureTable)
     , frameContext(pFrameContext)
     , unavailable(false)
@@ -114,7 +119,7 @@ NvrhiFrameSkeleton::NvrhiFrameSkeleton(nvrhi::IDevice *pDevice,
         return;
     }
 
-    // The acceleration-structure stream is recorded every frame, in both modes, so it is a hard
+    // The acceleration-structure stream is recorded every frame, in every mode, so it is a hard
     // dependency of the skeleton: a frame that cannot build its structures falls back to the legacy
     // renderer instead of recording a half-wired one.
     if (accelStructs == nullptr || !accelStructs->IsCreated())
@@ -124,11 +129,18 @@ NvrhiFrameSkeleton::NvrhiFrameSkeleton(nvrhi::IDevice *pDevice,
         return;
     }
 
-    // The debug pass is a hard dependency only of the traced mode; when 'rhitrace' is off it is not
-    // created by the host at all.
-    if (debugTraceEnabled && (debugTracePass == nullptr || !debugTracePass->IsCreated()))
+    // The two ray-tracing passes are hard dependencies only of their own modes; a pass whose flag
+    // is off is not created by the host at all.
+    if (frameMode == FrameMode::DebugTrace && (debugTracePass == nullptr || !debugTracePass->IsCreated()))
     {
-        print("Warning: RHI: the traced frame needs the debug ray-tracing pass of the RHI layer");
+        print("Warning: RHI: the debug-traced frame needs the debug ray-tracing pass of the RHI layer");
+        unavailable = true;
+        return;
+    }
+
+    if (frameMode == FrameMode::PrimaryTrace && (rtPrimaryPass == nullptr || !rtPrimaryPass->IsCreated()))
+    {
+        print("Warning: RHI: the primary-traced frame needs the primary ray-tracing pass of the RHI layer");
         unavailable = true;
         return;
     }
@@ -279,11 +291,11 @@ bool NvrhiFrameSkeleton::Render(const Swapchain *pSwapchain, uint32_t frameIndex
     }
 
     // The engine's GlobalUniform::Upload runs only from Scene::SubmitForFrame (Scene.cpp:112), which
-    // the RHI path does not call, so the device-local uniform would hold stale or zero data. Both
-    // modes read it - the world shader takes renderWidth from it (member 11, byte 644) for its
-    // checkerboard remap, and the debug trace's raygen takes the camera, the jitter, the ray limits
-    // and the cull masks - so this write is a common step of the frame. It is a static wrap of the
-    // engine's buffer, and under `rhiframe` nothing else touches that buffer.
+    // the RHI path does not call, so the device-local uniform would hold stale or zero data. Every
+    // mode reads it - the world shader takes renderWidth from it (member 11, byte 644) for its
+    // checkerboard remap, and the traced raygens take the camera, the jitter, the ray limits and the
+    // cull masks - so this write is a common step of the frame. It is a static wrap of the engine's
+    // buffer, and under `rhiframe` nothing else touches that buffer.
     // The world's wrap of the engine uniform is what the write below targets, and the traced mode
     // never runs PrepareWorld, so the wrap is created here, lazily, for both modes. The wrap's desc
     // mirrors the one PrepareWorld uses: isConstantBuffer (the validation device refuses a
@@ -304,28 +316,54 @@ bool NvrhiFrameSkeleton::Render(const Swapchain *pSwapchain, uint32_t frameIndex
             uniformDesc);
     }
 
-    if (sky.uniform != nullptr && worldUniformBuffer != nullptr)
-    {
-        rhi::writeBuffer(commandList, worldUniformBuffer, sky.uniform->GetData(), sizeof(ShGlobalUniform));
-    }
+    const bool tracedFrame = frameMode != FrameMode::Rasterized;
 
-    // The acceleration-structure stream of the frame, recorded in both modes and before anything
+    // The acceleration-structure stream of the frame, recorded in every mode and before anything
     // reads it: BuildStatic keeps the static BLAS in sync with the engine's components (it rebuilds
     // them when the engine's static generation changes) and BuildTopLevel records the slot's TLAS -
     // the module synthesises the instance list itself, from the engine's components and filters with
-    // our own BLAS handles, so nothing here depends on the engine's instance buffer any more.
+    // our own BLAS handles, so nothing here depends on the engine's instance buffer any more. Only
+    // the traced modes need the TLAS, so the rasterized frame records no top-level build.
     if (accelStructs != nullptr)
     {
         accelStructs->BuildStatic(commandList);
 
-        if (debugTraceEnabled)
+        if (tracedFrame)
         {
             accelStructs->BuildTopLevel(commandList, frameIndex, sky.rayCullMaskWorld,
                                         sky.allowGeometryWithSkyFlag, sky.disableRayTracedGeometry);
         }
     }
 
-    if (!debugTraceEnabled)
+    // The engine's device-local uniform (see the wrap above). The write follows the
+    // acceleration-structure stream because the traced modes build their instance list in
+    // RhiAccelStructs, and the per-instance geometry offsets the shaders read
+    // (globalUniform.instanceGeomInfoOffset/Count) must describe that list: the module fills them
+    // in its own TLAS order right after the build, and they are patched into the CPU copy here,
+    // before it is uploaded - the host's PrepareForBuildingTLAS fills only the static prefix of the
+    // engine's own list. A frame whose build produced no instance list leaves the CPU copy alone.
+    if (sky.uniform != nullptr && worldUniformBuffer != nullptr)
+    {
+        if (tracedFrame && accelStructs != nullptr)
+        {
+            int32_t instanceGeomInfoOffset[MAX_TOP_LEVEL_INSTANCE_COUNT] = {};
+            int32_t instanceGeomInfoCount[MAX_TOP_LEVEL_INSTANCE_COUNT] = {};
+            const uint32_t instanceCount = accelStructs->GetInstanceGeometryInfo(
+                instanceGeomInfoOffset, instanceGeomInfoCount);
+
+            if (instanceCount > 0)
+            {
+                memcpy(sky.uniform->GetData()->instanceGeomInfoOffset, instanceGeomInfoOffset,
+                       instanceCount * sizeof(int32_t));
+                memcpy(sky.uniform->GetData()->instanceGeomCount, instanceGeomInfoCount,
+                       instanceCount * sizeof(int32_t));
+            }
+        }
+
+        rhi::writeBuffer(commandList, worldUniformBuffer, sky.uniform->GetData(), sizeof(ShGlobalUniform));
+    }
+
+    if (!tracedFrame)
     {
         // The engine's rasterized sky, exactly the calls the pass's contract requires, on the one
         // open list: Prepare above selected the slot's ALBEDO target, SetSkyCamera carries the same
@@ -371,15 +409,47 @@ bool NvrhiFrameSkeleton::Render(const Swapchain *pSwapchain, uint32_t frameIndex
             skyPass->RenderWorld(commandList, sky.worldDraws, sky.worldDrawCount, sky.applyVertexColorGamma);
         }
     }
+    else if (frameMode == FrameMode::PrimaryTrace && rtPrimaryPass != nullptr && sky.framebuffers != nullptr)
+    {
+        // The real ray-tracing first cut: the engine's primary-visibility raygen fills the slot's
+        // checkerboard G-buffer images (ALBEDO included) over the TLAS the stream above built. The
+        // set 3 vertex-data buffers are the module's per-frame answer (RhiAccelStructs: the static
+        // collector's buffers wrapped, the dynamic data as the per-slot copies the BLAS builds from
+        // - the same bytes both consumers describe), in the engine's raw binding order. The pass
+        // resolves the 26 framebuffer image handles and wraps them itself, so only the Framebuffers
+        // object is passed on. The image is expected to look flat and unlit: the light-source set
+        // stays empty until A4.2. The present shows the raygen's ALBEDO, which - unlike the rest of
+        // the checkerboard G-buffer - the raygen writes in regular space (it maps the packed pixel
+        // back with getRegularPixFromCheckerboardPix, RaygenPrimary.hlsli:469), so the flat albedo
+        // image is artifact-free while the other G-buffer images stay packed for A4.2-A4.4.
+        const rhi::RhiAccelStructs::VertexDataBuffers vertexData = accelStructs->GetVertexDataBuffers(frameIndex);
+
+        RhiRtPrimaryPass::VertexData passVertexData;
+        passVertexData.staticVertices = vertexData.staticVertices;
+        passVertexData.dynamicVertices = vertexData.dynamicVertices;
+        passVertexData.staticIndices = vertexData.staticIndices;
+        passVertexData.dynamicIndices = vertexData.dynamicIndices;
+        passVertexData.geometryInstances = vertexData.geometryInstances;
+        passVertexData.dynamicVerticesPrev = vertexData.previousDynamicVertices;
+        passVertexData.prevDynamicIndices = vertexData.previousDynamicIndices;
+
+        rtPrimaryPass->Render(
+            commandList, frameIndex,
+            accelStructs != nullptr ? accelStructs->GetTopLevel(frameIndex) : nullptr,
+            worldUniformBuffer.Get(),
+            passVertexData,
+            sky.framebuffers,
+            sky.width, sky.height);
+    }
     else if (debugTracePass != nullptr && sky.framebuffers != nullptr)
     {
-        // The traced frame: one primary ray per pixel over the TLAS the stream above just built,
-        // into the slot's ALBEDO image. The handles are the same ones the sky pass resolves for its
-        // own target (Framebuffers resolves the slot's swap permutation inside), and the debug pass
-        // wraps them itself; the raster sky/world sub-passes are deliberately not recorded in this
-        // mode, so the trace is ALBEDO's first user of the list. A null TLAS (the stream has not
-        // built one yet) leaves the image untouched and the present shows the previous frame's
-        // content; the pass warns once about it.
+        // The debug trace frame: one primary ray per pixel over the TLAS the stream above just
+        // built, into the slot's ALBEDO image. The handles are the same ones the sky pass resolves
+        // for its own target (Framebuffers resolves the slot's swap permutation inside), and the
+        // debug pass wraps them itself; the raster sky/world sub-passes are deliberately not
+        // recorded in this mode, so the trace is ALBEDO's first user of the list. A null TLAS (the
+        // stream has not built one yet) leaves the image untouched and the present shows the
+        // previous frame's content; the pass warns once about it.
         const auto [albedoImage, albedoView, albedoFormat] =
             sky.framebuffers->GetImageHandles(FB_IMAGE_INDEX_ALBEDO, frameIndex);
 
@@ -411,7 +481,13 @@ bool NvrhiFrameSkeleton::Render(const Swapchain *pSwapchain, uint32_t frameIndex
     {
         // The exposure of the present: the write takes the next version of the volatile buffer and,
         // as every volatile-buffer write, has to follow the list's open(), which BeginSlot did.
-        rhi::writeBuffer(commandList, presentParamsBuffer, &PRESENT_PARAMS, sizeof(PRESENT_PARAMS));
+        // exposure.y is the mirror flag of the frame's mode: the engine-convention traced frames
+        // need the present to flip the sample coordinate (RhiPresent.frag.hlsl:64-76), the raster
+        // and debug-trace frames do not (the debug raygen flips its own store,
+        // RhiDebugTrace.rgen.hlsl:107-114).
+        RhiPresentParams presentParams = PRESENT_PARAMS;
+        presentParams.exposure[1] = frameMode == FrameMode::PrimaryTrace ? 1.0f : 0.0f;
+        rhi::writeBuffer(commandList, presentParamsBuffer, &presentParams, sizeof(presentParams));
 
         // The swapchain hands the image over in the present layout and expects it
         // back in the same layout, so the pass is wrapped into two transitions.
@@ -770,6 +846,14 @@ void NvrhiFrameSkeleton::DestroySwapchainResources()
     if (debugTracePass != nullptr)
     {
         debugTracePass->ReleaseTargets();
+    }
+
+    // The primary ray-tracing pass wraps the engine's 26 checkerboard G-buffer images and keeps its
+    // own per-slot wraps and sets over them, so it drops them here for the same reason as the two
+    // passes above.
+    if (rtPrimaryPass != nullptr)
+    {
+        rtPrimaryPass->ReleaseTargets();
     }
 
     // A present binding set references the ALBEDO wrap of one slot, so it goes with it; the next

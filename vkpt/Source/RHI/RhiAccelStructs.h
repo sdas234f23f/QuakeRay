@@ -8,6 +8,7 @@
 #include <nvrhi/nvrhi.h>
 
 #include "../Common.h"
+#include "../Generated/ShaderCommonC.h"
 
 namespace vkpt
 {
@@ -69,6 +70,23 @@ class RhiFrameContext;
 //    components were live: the same filters, the same cull decisions, the same order. That order is
 //    also what the engine's per-instance uniform arrays index by (WriteInstanceGeomInfo), so
 //    instanceGeomInfoOffset[i] describes instance i of the TLAS this module builds.
+//  - Vertex data (RT set 3): the eight buffers the traced passes fetch geometry from. The static
+//    vertex and index buffers are the collector's device-local buffers, which the engine's
+//    SubmitStaticGeometry fills even under `rhiframe`; this module wraps them a second time with the
+//    stride a StructuredBuffer binding needs, and leaves the dedicated AS-input wraps untouched.
+//    The dynamic vertex and index data is this module's per-slot copy buffers - under `rhiframe` the
+//    engine's shared device-local dynamic buffers are written only by SubmitDynamicGeometry, which
+//    the RHI path bypasses, and the per-slot copies are what the dynamic BLAS are built from, so the
+//    AS and the vertex fetch describe the same bytes. The remaining four buffers are RHI copies as
+//    well: the geometry records (geometryInstances), the previous-frame match table
+//    (geomIndexPrevToCur) and the previous-frame dynamic vertices and indices. The engine's copies of
+//    the first two live in GeomInfoManager::CopyFromStaging, which the RHI path never calls (only the
+//    level-load submission does, and only for slot 0), and its previous-frame buffers are fed from
+//    the never-filled device-local dynamic buffers, so all four would be stale under `rhiframe`.
+//    GetVertexDataBuffers() is the per-frame answer: the geometry records are copied for the ranges
+//    this frame's instances can read, and the previous-frame dynamic data is copied from the other
+//    slot's dynamic copy - the only source that still holds the previous frame's bytes. The
+//    per-instance geometry ranges the uniform needs are GetInstanceGeometryInfo().
 //  - Two-frame warm-up: none. The records are host-side and NVRHI copies them into its own upload
 //    buffer inside buildTopLevelAccelStruct, so the slot's TLAS of frame N describes frame N. The
 //    one-frame lag the A3.0 instance-buffer path documented came from reading the engine's
@@ -99,10 +117,10 @@ class RhiFrameContext;
 //   2. BuildTopLevel(commandList, frameIndex, rayCullMaskWorld, allowGeometryWithSkyFlag,
 //      disableRayTracedGeometry)                         - every frame the TLAS is wanted.
 // The one-time summary line (static figures as in A3.0, plus the dynamic BLAS/geometry/triangle
-// figures, the frame's dynamic copy volume and the total TLAS instance count) is printed on the
-// first BuildTopLevel after the static decision, with a grace period of 300 frames for a scene that
-// never brings static geometry. A filter that has geometry but no RHI BLAS (a failed create) is
-// reported once as well.
+// figures, the frame's dynamic and vertex-data copy volumes and the total TLAS instance count) is
+// printed on the first BuildTopLevel after the static decision, with a grace period of 300 frames
+// for a scene that never brings static geometry. A filter that has geometry but no RHI BLAS (a
+// failed create) is reported once as well.
 class RhiAccelStructs final
 {
 public:
@@ -176,6 +194,52 @@ public:
     // handle; a re-created TLAS replaces it, and the debug-trace pass has to re-read it.
     nvrhi::rt::IAccelStruct *GetTopLevel(uint32_t frameIndex) const;
 
+    // The eight buffers of the RT vertex-data set (set 3): the same descriptors
+    // ASManager::CreateDescriptors lays out, in the raw binding order the shaders spell with
+    // [[vk::binding(BINDING_*, DESC_SET_VERTEX_DATA)]] (Generated/ShaderCommonC.h:19-26) - static
+    // vertices, dynamic vertices, static indices, dynamic indices, the geometry records, the
+    // previous-frame match table, and the previous-frame dynamic vertices and indices. Every one is
+    // a structured buffer whose element stride is its shader type's (ShVertex 80 B, uint 4 B,
+    // ShGeometryInstance 256 B, int 4 B), so the caller creates the set 3 layout with
+    // BindingLayoutItem::StructuredBuffer_SRV(0..7) and the default binding offsets
+    // (RhiPipeline.h documents that slot N of a shader-resource item is raw binding N).
+    //
+    // A null handle means the module could not create that buffer for the slot (Create was never
+    // called, or a wrapper/copy buffer could not be created); the caller must not bind the set then.
+    // Create() pre-creates all eight with a minimal (for the match table, full) size, so a created
+    // module answers with eight non-null handles from the first frame on. Every non-null handle
+    // stays valid until the next BuildTopLevel of the same slot, and the per-slot copies keep the
+    // previous frame's content while its submission still runs.
+    struct VertexDataBuffers
+    {
+        nvrhi::IBuffer *staticVertices = nullptr;
+        nvrhi::IBuffer *dynamicVertices = nullptr;
+        nvrhi::IBuffer *staticIndices = nullptr;
+        nvrhi::IBuffer *dynamicIndices = nullptr;
+        nvrhi::IBuffer *geometryInstances = nullptr;
+        nvrhi::IBuffer *geometryInstancesMatchPrev = nullptr;
+        nvrhi::IBuffer *previousDynamicVertices = nullptr;
+        nvrhi::IBuffer *previousDynamicIndices = nullptr;
+    };
+
+    // The slot's vertex-data set as of its last BuildTopLevel. The caller does not own the buffers.
+    VertexDataBuffers GetVertexDataBuffers(uint32_t frameIndex) const;
+
+    // The per-instance geometry information the shaders read for the TLAS of the last BuildTopLevel
+    // (whichever slot it built): 'pInstanceGeomInfoOffset[i]' and 'pInstanceGeomInfoCount[i]' are
+    // exactly the values the engine's WriteInstanceGeomInfo writes into
+    // globalUniform.instanceGeomInfoOffset / instanceGeomCount for instance i
+    // (ASManager.cpp:1016-1028) - the filter's global-array offset and its geometry count - in the
+    // same order: the static components in GetStaticBlasComponents() order, then the slot's dynamic
+    // filters in filter-grid order. The caller uses them to patch the uniform's CPU copy after
+    // BuildTopLevel and before its upload.
+    // Both arrays must hold MAX_TOP_LEVEL_INSTANCE_COUNT (45) int32 values. Returns the number of
+    // entries written, i.e. that build's instance count; 0 means this frame's build produced no
+    // instance list (disabled, not built yet, or every instance culled), and the caller then leaves
+    // the uniform's CPU copy alone.
+    uint32_t GetInstanceGeometryInfo(int32_t *pInstanceGeomInfoOffset,
+                                     int32_t *pInstanceGeomInfoCount) const;
+
 private:
     struct StaticBlas
     {
@@ -213,13 +277,40 @@ private:
     };
 
     // The slot's copies of the used dynamic vertex/index prefix: the NVRHI buffers an NVRHI build
-    // may read (isAccelStructBuildInput) and their byte capacities.
+    // may read (isAccelStructBuildInput), the vertex-data set binds (they carry structStride for
+    // that), and their byte capacities. 'vertexBytes'/'indexBytes' are the used prefixes of the
+    // slot's last frame, i.e. what the next frame's previous-frame copies read.
     struct DynamicCopies
     {
         nvrhi::BufferHandle vertex;
         nvrhi::BufferHandle index;
         uint64_t vertexCapacity = 0;
         uint64_t indexCapacity = 0;
+        uint64_t vertexBytes = 0;
+        uint64_t indexBytes = 0;
+    };
+
+    // The per-slot vertex-data copies the engine cannot supply under `rhiframe` (see the class
+    // comment): the geometry records and, per slot, the previous-frame match table. The
+    // previous-frame dynamic vertices and indices are a single shared pair, mirroring the engine's
+    // own shared previousDynamicPositions/Indices buffers: they are written and read by the same
+    // frame's list, so no slot needs its own pair.
+    struct VertexDataCopies
+    {
+        nvrhi::BufferHandle geometryInstances;
+        uint64_t geometryInstancesCapacity = 0;
+
+        nvrhi::BufferHandle matchPrev;
+        uint64_t matchPrevCapacity = 0;
+    };
+
+    // One instance's values for globalUniform.instanceGeomInfoOffset/Count: the filter's offset in
+    // the global geometry array (VertexCollectorFilterTypeFlags_GetOffsetInGlobalArray) and the
+    // number of geometries in its BLAS, exactly what WriteInstanceGeomInfo writes.
+    struct InstanceGeomInfo
+    {
+        int32_t offset = 0;
+        int32_t count = 0;
     };
 
     // Retires and clears the whole static set (a level change, or teardown before the handles are
@@ -246,13 +337,36 @@ private:
 
     // Makes 'buffer' at least 'needed' bytes large: creates a new buffer sized to the doubled
     // capacity (capped at 'maxCapacity', the collector's staging size) and retires the replaced one.
-    // Returns false if the new buffer could not be created.
+    // The buffer carries 'structStride' and the build-input flag, so it serves the BLAS build and the
+    // vertex-data set (bindings 1 and 3) at once. Returns false if the new buffer could not be
+    // created.
     bool EnsureDynamicCopyBuffer(nvrhi::BufferHandle &buffer,
                                  uint64_t &capacity,
                                  uint64_t needed,
                                  uint64_t maxCapacity,
+                                 uint32_t structStride,
                                  uint32_t frameIndex,
                                  const char *kind);
+
+    // Same growth policy for a buffer only the RT shaders read (the vertex-data copies of the
+    // geometry records, the match table and the previous-frame dynamic data): no build-input flag,
+    // 'structStride' only, and the same doubled-capacity growth capped at 'maxCapacity'. Returns
+    // false if the new buffer could not be created.
+    bool EnsureVertexDataCopyBuffer(nvrhi::BufferHandle &buffer,
+                                    uint64_t &capacity,
+                                    uint64_t needed,
+                                    uint64_t maxCapacity,
+                                    uint32_t structStride,
+                                    uint32_t frameIndex,
+                                    const char *kind);
+
+    // Records this frame's vertex-data copies on the open list, after the instance synthesis of
+    // BuildTopLevel: one copy of the geometry-instance ranges the frame's instances can read (from
+    // the slot's geometry staging buffer) and, when the frame has a dynamic instance, the
+    // previous-frame dynamic vertices and indices (from the other slot's dynamic copy, the only
+    // source that still holds the previous frame's bytes under `rhiframe`). Does nothing when the
+    // frame produced no instance.
+    void RecordVertexDataCopies(nvrhi::ICommandList *pCommandList, uint32_t frameIndex);
 
     // The one-shot warning for a non-empty filter that has no RHI BLAS ('filter' is its grid filter).
     void WarnUnresolvedFilter(uint32_t filter);
@@ -280,8 +394,34 @@ private:
     nvrhi::BufferHandle stagingVertexBuffer[MAX_FRAMES_IN_FLIGHT];
     nvrhi::BufferHandle stagingIndexBuffer[MAX_FRAMES_IN_FLIGHT];
 
-    // The per-slot dynamic copy buffers (the dynamic BLAS build inputs).
+    // The per-slot dynamic copy buffers (the dynamic BLAS build inputs and vertex-data bindings 1
+    // and 3).
     DynamicCopies dynamicCopies[MAX_FRAMES_IN_FLIGHT];
+
+    // The vertex-data set the engine cannot supply: the second wraps of the static collector's
+    // device-local buffers (StructuredBuffer SRVs, the AS-input wraps above stay without a stride),
+    // the per-slot wraps of the geometry manager's staging buffer (copy sources), the per-slot RHI
+    // copies of the geometry records and the match table, and the shared previous-frame dynamic
+    // copies. The previous-frame pair is written from the other slot's dynamic copy: that source was
+    // written on the other slot's previous list and is read here before that slot's next list
+    // overwrites it, the same single-queue ordering the engine's own shared previousDynamicPositions
+    // buffers rely on.
+    nvrhi::BufferHandle staticVertexDataBuffer;
+    nvrhi::BufferHandle staticIndexDataBuffer;
+    nvrhi::BufferHandle geometryStagingBuffer[MAX_FRAMES_IN_FLIGHT];
+    VertexDataCopies vertexDataCopies[MAX_FRAMES_IN_FLIGHT];
+    nvrhi::BufferHandle previousVertexBuffer;
+    uint64_t previousVertexCapacity = 0;
+    nvrhi::BufferHandle previousIndexBuffer;
+    uint64_t previousIndexCapacity = 0;
+
+    // The per-instance geometry information of the slot's last BuildTopLevel, in instance order
+    // (see GetInstanceGeometryInfo). Entries beyond tlasInstanceCount are stale.
+    InstanceGeomInfo instanceGeomInfo[MAX_TOP_LEVEL_INSTANCE_COUNT];
+
+    // Set after a failure that makes the vertex-data set unavailable (a failed wrap or copy buffer):
+    // the module stops its vertex-data work instead of logging the same failure every frame.
+    bool vertexDataCreationFailed = false;
 
     // The static structures, one per non-empty static component of the current generation.
     std::vector<StaticBlas> staticBlas;
@@ -323,6 +463,9 @@ private:
     uint64_t dynamicVertexCount = 0;
     uint64_t dynamicPrimitiveCount = 0;
     uint64_t dynamicCopyBytes = 0;
+    // The current frame's vertex-data copy volume, for the summary: the RHI copies of the geometry
+    // records and of the previous-frame dynamic data (set 3).
+    uint64_t vertexDataCopyBytes = 0;
 
     // The instance count of the last BuildTopLevel, for the summary.
     uint32_t tlasInstanceCount = 0;

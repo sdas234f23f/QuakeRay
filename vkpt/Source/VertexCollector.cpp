@@ -117,10 +117,18 @@ void VertexCollector::InitStagingBuffers( const std::shared_ptr< MemoryAllocator
     assert( transformsBuffer && transformsBuffer->GetSize() > 0 );
     assert( geomInfoMgr );
 
+    // The staging buffers are the copy sources of the RHI layer's geometry copies
+    // (RHI/RhiAccelStructs.cpp) and are wrapped through NVRHI there; NVRHI's native-buffer wrap
+    // queries the device address of every buffer when the device has BDA unconditionally
+    // (vulkan-buffer.cpp:215-220), so the staging usage carries
+    // VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, as the device-local buffers already do
+    // (VertexCollector.cpp:66-84). Without it the wrap raises
+    // VUID-VkBufferDeviceAddressInfo-buffer-02601.
+
     // vertex buffers
     stagingVertBuffer.Init( allocator,
                             vertBuffer->GetSize(),
-                            VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                            VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
                             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                             filtersFlags & VertexCollectorFilterTypeFlagBits::CF_DYNAMIC
                                 ? "Dynamic Vertices data staging buffer"
@@ -129,7 +137,7 @@ void VertexCollector::InitStagingBuffers( const std::shared_ptr< MemoryAllocator
     // index buffers
     stagingIndexBuffer.Init( allocator,
                              indexBuffer->GetSize(),
-                             VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                             VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
                              VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                              filtersFlags & VertexCollectorFilterTypeFlagBits::CF_DYNAMIC
                                  ? "Dynamic Index data staging buffer"
@@ -138,7 +146,7 @@ void VertexCollector::InitStagingBuffers( const std::shared_ptr< MemoryAllocator
     // transforms buffer
     stagingTransformsBuffer.Init( allocator,
                                   transformsBuffer->GetSize(),
-                                  VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                                  VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
                                   VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                                   filtersFlags & VertexCollectorFilterTypeFlagBits::CF_DYNAMIC
                                       ? "Dynamic BLAS transforms staging buffer"

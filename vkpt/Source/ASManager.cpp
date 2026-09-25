@@ -1255,6 +1255,11 @@ const std::shared_ptr<VertexCollector> &ASManager::GetDynamicCollector(uint32_t 
     return collectorDynamic[frameIndex];
 }
 
+const std::shared_ptr<GeomInfoManager> &ASManager::GetGeomInfoManager() const
+{
+    return geomInfoMgr;
+}
+
 const std::vector<std::unique_ptr<BLASComponent>> &ASManager::GetStaticBlasComponents() const
 {
     return allStaticBlas;

@@ -37,6 +37,12 @@ namespace vkpt::LibraryConfig
         // Draws the frame through the RHI debug ray-tracing pass (A3) instead of the rasterized RHI
         // chain. Only for the bring-up of the acceleration structures and the first traced image.
         bool rhiDebugTrace = false;
+        // Draws the frame through the real ray-tracing passes of the RHI path (A4) instead of the
+        // rasterized chain. As of A4.1 this is the primary-visibility pass: the engine's primary
+        // raygen fills the checkerboard G-buffer (ALBEDO included) and the present shows it without
+        // lighting; the later A4 cuts add direct lighting, GI, the denoiser and the composition.
+        // Requires 'rhiframe'; when 'rhitrace' is set as well, this mode wins.
+        bool rhiRayTracing = false;
     };
 
     namespace detail
@@ -66,6 +72,10 @@ namespace vkpt::LibraryConfig
             else if (entry == "rhitrace")
             {
                 dst.rhiDebugTrace = true;
+            }
+            else if (entry == "rhirt")
+            {
+                dst.rhiRayTracing = true;
             }
         }
     }

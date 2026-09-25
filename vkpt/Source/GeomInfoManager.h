@@ -80,6 +80,22 @@ public:
     VkBuffer GetBuffer() const;
     VkBuffer GetMatchPrevBuffer() const;
     uint32_t GetStaticGeomBaseVertexIndex(uint32_t simpleIndex);
+
+    // Read-only views for the RHI layer's vertex-data copies (RHI/RhiAccelStructs.cpp): the engine's
+    // own GeomInfoManager::CopyFromStaging runs only from Scene::SubmitForFrame and from the
+    // level-load submission in ASManager::SubmitStaticGeometry (for slot 0 alone), neither of which
+    // is part of the `rhiframe` frame, so the RHI keeps per-slot copies of the geometry-instance
+    // buffer (GetBuffer) and of the match table (GetMatchPrevBuffer) itself. The staging buffer is
+    // the copy source of the former - the same host-visible buffer CopyFromStaging would read, per
+    // frame slot; the CPU shadow is the source of the latter, because its write into the staging
+    // buffer is part of the same CopyFromStaging. All four stay valid while this object lives.
+    // (Non-const for the staging buffer only: AutoBuffer's accessor is not const.)
+    VkBuffer GetStagingBuffer(uint32_t frameIndex);
+    // Byte size of the buffers GetBuffer/GetMatchPrevBuffer/GetStagingBuffer expose.
+    VkDeviceSize GetBufferSize() const;
+    VkDeviceSize GetMatchPrevSize() const;
+    // The current match table, one int32 per global geometry index.
+    const int32_t *GetMatchPrevData() const;
     
 private:
     struct GeomFrameInfo

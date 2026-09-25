@@ -114,6 +114,14 @@ public:
     const std::shared_ptr<VertexCollector> &GetStaticCollector() const;
     const std::shared_ptr<VertexCollector> &GetDynamicCollector(uint32_t frameIndex) const;
 
+    // The engine's geometry-instance manager: the owner of the geometryInstances and
+    // geomIndexPrevToCur buffers of the RT vertex-data set (set 3). The RHI layer reads it through
+    // this getter to keep its own per-slot copies of both, because the engine's own
+    // GeomInfoManager::CopyFromStaging runs only from the legacy frame (Scene::SubmitForFrame) and
+    // from the level-load submission, neither of which is part of the `rhiframe` frame
+    // (RHI/RhiAccelStructs.h).
+    const std::shared_ptr<GeomInfoManager> &GetGeomInfoManager() const;
+
     // Read-only views for the RHI layer's acceleration structures (RHI/RhiAccelStructs.cpp); no
     // behaviour change, the manager keeps owning everything below.
     // The static BLAS components, one per static filter: the RHI layer mirrors this set, creating

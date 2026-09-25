@@ -49,8 +49,9 @@
 
 struct RhiPresentParams_BT
 {
-    // x = exposure multiplier applied before the curve; y, z and w are unused and keep the block
-    // one float4, the shape the skeleton's colour parameters have.
+    // x = exposure multiplier applied before the curve; y = vertical mirror of the sample
+    // coordinate (0 or 1, set per frame mode); z and w are unused and keep the block one float4,
+    // the shape the skeleton's colour parameters have.
     float4 exposure;
 };
 
@@ -63,9 +64,17 @@ struct RhiPresentParams_BT
 
 float4 main( [[vk::location(0)]] float2 vUV : TEXCOORD0 ) : SV_Target0
 {
+    // The sample coordinate: params.exposure.y mirrors it vertically. The traced modes' ALBEDO is
+    // written by the engine's ray-tracing passes, whose pixel-to-UV convention puts the view's
+    // first row in the image's first row, while the raster passes of the frame feed this present in
+    // NVRHI's raster convention, which puts the view's first row in the image's last row (the two
+    // were measured in RhiDebugTrace.rgen.hlsl:107-114). The host sets the flag per frame mode, so
+    // one present serves both.
+    const float2 uv = float2( vUV.x, lerp( vUV.y, 1.0 - vUV.y, params.exposure.y ) );
+
     // LOD 0 is explicit, as in RhiSkeleton.frag: the target can differ in size from the source,
     // and an implicit LOD would make the presented image depend on the screen's derivative.
-    const float3 albedo = albedoTexture.SampleLevel( albedoTexture_Sampler, vUV, 0.0 ).rgb;
+    const float3 albedo = albedoTexture.SampleLevel( albedoTexture_Sampler, uv, 0.0 ).rgb;
 
     // The exposure scales the linear HDR value, then the monotone x / (1 + x) curve folds the
     // unbounded result into [0, 1) before it reaches the display attachment.

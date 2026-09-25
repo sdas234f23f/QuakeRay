@@ -39,6 +39,7 @@ namespace vkpt
 class Framebuffers;
 class GlobalUniform;
 class RhiDebugTracePass;
+class RhiRtPrimaryPass;
 class RhiSkyPass;
 class Swapchain;
 class Tonemapping;
@@ -125,6 +126,21 @@ public:
         bool disableRayTracedGeometry = false;
     };
 
+    // The frame mode of the whole run, chosen by the host from the library config flags:
+    //  - Rasterized:   'rhirt' and 'rhitrace' off - the raster sky and world sub-passes draw into
+    //                  ALBEDO and the present samples it;
+    //  - DebugTrace:   'rhitrace' - the A3.1 debug trace of the acceleration structures (the
+    //                  id-coloured image) replaces the raster sub-passes;
+    //  - PrimaryTrace: 'rhirt' - the real primary-visibility ray-tracing pass of A4.1 fills the
+    //                  engine's checkerboard G-buffer (ALBEDO included) and the present samples it.
+    // The host resolves 'rhirt' over 'rhitrace' when both are set.
+    enum class FrameMode
+    {
+        Rasterized,
+        DebugTrace,
+        PrimaryTrace,
+    };
+
     // 'pTextureTable' is the shared RHI texture table of the host (RHI/RhiTextureTable.h), bound by
     // the sky pass as descriptor set 0; the table owns every wrapped engine texture and its
     // samplers. Not owned, it has to outlive this object, and a null pointer makes the pass
@@ -134,13 +150,16 @@ public:
     // outlive this object, and a null pointer makes the pass unavailable.
     // 'pAccelStructs' is the host's acceleration-structure stream (rhi::RhiAccelStructs,
     // RHI/RhiAccelStructs.h): Render records its static and per-frame builds on the same open list,
-    // in both modes, before the sky/trace and the present. Not owned; a null or not-created one
+    // in every mode, before the sky/trace and the present. Not owned; a null or not-created one
     // makes the skeleton unavailable.
     // 'pDebugTracePass' is the host's debug ray-tracing pass (RhiDebugTracePass,
-    // RHI/RhiDebugTracePass.h): when 'useDebugTrace' is set, Render drives it - into the same ALBEDO
+    // RHI/RhiDebugTracePass.h): when 'mode' is DebugTrace, Render drives it - into the same ALBEDO
     // the raster chain would draw into - instead of the raster sky/world sub-passes. Not owned; a
-    // null or not-created one with 'useDebugTrace' set makes the skeleton unavailable.
-    // 'useDebugTrace' is the host's 'rhitrace' flag; it selects the traced frame for the whole run.
+    // null or not-created one with that mode makes the skeleton unavailable.
+    // 'pRtPrimaryPass' is the host's primary-visibility ray-tracing pass (RhiRtPrimaryPass,
+    // RHI/RhiRtPrimaryPass.h): when 'mode' is PrimaryTrace, Render drives it - into the engine's
+    // checkerboard G-buffer images, ALBEDO included. Not owned; a null or not-created one with
+    // that mode makes the skeleton unavailable.
     explicit NvrhiFrameSkeleton(nvrhi::IDevice *pDevice,
                                 const Swapchain *pSwapchain,
                                 const char *pShaderFolderPath,
@@ -148,7 +167,8 @@ public:
                                 rhi::RhiFrameContext *pFrameContext,
                                 rhi::RhiAccelStructs *pAccelStructs,
                                 RhiDebugTracePass *pDebugTracePass,
-                                bool useDebugTrace,
+                                RhiRtPrimaryPass *pRtPrimaryPass,
+                                FrameMode mode,
                                 PrintFunction pfnPrint);
     ~NvrhiFrameSkeleton() override;
 
@@ -164,15 +184,20 @@ public:
     // Records the frame for the image the swapchain acquired into the frame context's slot
     // 'frameIndex' and submits it on the RHI graphics queue; the context owns that slot's command
     // list and its submission. The acceleration-structure stream (RhiAccelStructs) is recorded
-    // first, then the sky pass's Prepare - which also prepares the ALBEDO wrap the present samples
-    // and, in the traced mode, the wrap the debug pass writes - and then the frame splits:
-    //  - the raster mode (the host's 'rhitrace' off): the sky pass's SetSkyCamera/Render run, the
-    //    rasterized world sub-pass (once it could be created) draws into the same target with the
-    //    engine's uniform and the avgLuminance stand-in, and the present samples the ALBEDO wrap of
-    //    the same slot into the swapchain image of the acquired index;
-    //  - the traced mode ('rhitrace' on): the debug pass traces one primary ray per pixel over the
-    //    front-end acceleration structure stream into the slot's ALBEDO and the same present
-    //    follows; the raster sky/world sub-passes are not recorded.
+    // first - its builds, and the patch of the uniform's per-instance geometry offsets the traced
+    // modes need - then the sky pass's Prepare (which prepares the ALBEDO wrap the present samples
+    // and, in the traced modes, the announcement the trace's own ALBEDO wrap relies on) and then
+    // the frame splits by frameMode:
+    //  - Rasterized: the sky pass's SetSkyCamera/Render run, the rasterized world sub-pass (once it
+    //    could be created) draws into the same target with the engine's uniform and the
+    //    avgLuminance stand-in, and the present samples the ALBEDO wrap of the same slot into the
+    //    swapchain image of the acquired index;
+    //  - DebugTrace: the debug pass traces one primary ray per pixel over the acceleration
+    //    structures into the slot's ALBEDO and the same present follows;
+    //  - PrimaryTrace: the engine's primary-visibility raygen writes the slot's checkerboard
+    //    G-buffer (ALBEDO included) over the same acceleration structures and the same present
+    //    follows.
+    // The raster sky/world sub-passes are not recorded in the two traced modes.
     // 'semaphoreToWait' is the semaphore the swapchain signals on acquire, 'semaphoreToSignal' is
     // the one the presentation engine waits on. Returns false if the pass is unavailable.
     bool Render(const Swapchain *pSwapchain, uint32_t frameIndex, const SkyFrameInputs &sky,
@@ -234,13 +259,19 @@ private:
     rhi::RhiAccelStructs *accelStructs = nullptr;
 
     // The host's debug ray-tracing pass (RhiDebugTracePass, RHI/RhiDebugTracePass.h), driven
-    // instead of the raster sky/world chain when debugTraceEnabled is set. Not owned; null when the
+    // instead of the raster sky/world chain when frameMode is DebugTrace. Not owned; null when the
     // host's 'rhitrace' flag is off.
     RhiDebugTracePass *debugTracePass = nullptr;
 
-    // The host's 'rhitrace' flag: true selects the traced frame (the debug pass into ALBEDO plus
-    // the same present) over the raster sky/world chain.
-    bool debugTraceEnabled = false;
+    // The host's primary-visibility ray-tracing pass (RhiRtPrimaryPass, RHI/RhiRtPrimaryPass.h),
+    // driven instead of the raster sky/world chain when frameMode is PrimaryTrace. Not owned; null
+    // when the host's 'rhirt' flag is off.
+    RhiRtPrimaryPass *rtPrimaryPass = nullptr;
+
+    // The frame mode of the whole run: which chain Render records into ALBEDO. The host picks it
+    // once from 'rhirt'/'rhitrace' (VulkanDevice_Init.cpp) and it does not change while the
+    // skeleton lives.
+    FrameMode frameMode = FrameMode::Rasterized;
 
     // Descriptor set 0 of the present: the constant buffer (binding 256), the ALBEDO texture
     // (binding 0) and its sampler (binding 128), the numbers the shader declares with

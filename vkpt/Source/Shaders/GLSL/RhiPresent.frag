@@ -32,7 +32,8 @@ layout(location = 0) out vec4 oColor;
 // image, so a table of its own would declare a descriptor the host would have to fill for nothing.
 layout(std140, set = 0, binding = 256) uniform RhiPresentParams
 {
-    vec4 exposure; // x = exposure multiplier applied before the curve; y, z and w are unused
+    vec4 exposure; // x = exposure multiplier applied before the curve; y = vertical mirror of the
+                   // sample coordinate (0 or 1); z and w are unused
 } params;
 
 layout(set = 0, binding = 0) uniform texture2D albedoTexture;
@@ -40,9 +41,17 @@ layout(set = 0, binding = 128) uniform sampler albedoTexture_Sampler;
 
 void main()
 {
+    // The sample coordinate: params.exposure.y mirrors it vertically. The traced modes' ALBEDO is
+    // written by the engine's ray-tracing passes, whose pixel-to-UV convention puts the view's
+    // first row in the image's first row, while the raster passes of the frame feed this present in
+    // NVRHI's raster convention, which puts the view's first row in the image's last row (the two
+    // were measured in RhiDebugTrace.rgen.hlsl:107-114). The host sets the flag per frame mode, so
+    // one present serves both.
+    const vec2 uv = vec2(vUV.x, mix(vUV.y, 1.0 - vUV.y, params.exposure.y));
+
     // LOD 0 is explicit, as in RhiSkeleton.frag: the target can differ in size from the source,
     // and an implicit LOD would make the presented image depend on the screen's derivative.
-    const vec3 albedo = textureLod(sampler2D(albedoTexture, albedoTexture_Sampler), vUV, 0.0).rgb;
+    const vec3 albedo = textureLod(sampler2D(albedoTexture, albedoTexture_Sampler), uv, 0.0).rgb;
 
     // The exposure scales the linear HDR value, then the monotone x / (1 + x) curve folds the
     // unbounded result into [0, 1) before it reaches the display attachment.

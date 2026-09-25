@@ -40,7 +40,13 @@ vkpt::GeomInfoManager::GeomInfoManager(VkDevice _device, std::shared_ptr<MemoryA
 
     const uint32_t allBottomLevelGeomsCount = VertexCollectorFilterTypeFlags_GetAllBottomLevelGeomsCount();
 
-    buffer->Create(allBottomLevelGeomsCount * sizeof(vkpt::ShGeometryInstance), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, "Geometry info buffer");
+    // The address bit on the geometry-info buffer follows the pointers that use it: the RHI layer
+    // wraps the staging buffers as copy sources for its own geometry-record copies
+    // (RHI/RhiAccelStructs.cpp), and NVRHI's native-buffer wrap queries the device address of every
+    // buffer when the device has BDA unconditionally (vulkan-buffer.cpp:215-220), so a wrap without
+    // the bit would raise VUID-VkBufferDeviceAddressInfo-buffer-02601. The match table is copied
+    // from its CPU shadow and is never wrapped, so it keeps the plain storage usage.
+    buffer->Create(allBottomLevelGeomsCount * sizeof(vkpt::ShGeometryInstance), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, "Geometry info buffer");
     matchPrev->Create(allBottomLevelGeomsCount * sizeof(int32_t), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, "Match previous Geometry infos buffer");
     matchPrevShadow = std::make_unique<int32_t[]>(allBottomLevelGeomsCount);
 
@@ -632,6 +638,26 @@ VkBuffer vkpt::GeomInfoManager::GetBuffer() const
 VkBuffer vkpt::GeomInfoManager::GetMatchPrevBuffer() const
 {
     return matchPrev->GetDeviceLocal();
+}
+
+VkBuffer vkpt::GeomInfoManager::GetStagingBuffer(uint32_t frameIndex)
+{
+    return buffer->GetStaging(frameIndex);
+}
+
+VkDeviceSize vkpt::GeomInfoManager::GetBufferSize() const
+{
+    return buffer->GetSize();
+}
+
+VkDeviceSize vkpt::GeomInfoManager::GetMatchPrevSize() const
+{
+    return matchPrev->GetSize();
+}
+
+const int32_t *vkpt::GeomInfoManager::GetMatchPrevData() const
+{
+    return matchPrevShadow.get();
 }
 
 uint32_t vkpt::GeomInfoManager::GetStaticGeomBaseVertexIndex(uint32_t simpleIndex)

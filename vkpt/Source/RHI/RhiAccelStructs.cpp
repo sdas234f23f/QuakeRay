@@ -5,6 +5,7 @@
 #include "../ASComponent.h"
 #include "../ASManager.h"
 #include "../Generated/ShaderCommonC.h"
+#include "../GeomInfoManager.h"
 #include "../VertexCollector.h"
 
 #include <algorithm>
@@ -39,6 +40,12 @@ static_assert(static_cast<uint32_t>(nvrhi::rt::InstanceFlags::ForceOpaque) ==
 static_assert(static_cast<uint32_t>(nvrhi::rt::InstanceFlags::ForceNonOpaque) ==
                   static_cast<uint32_t>(VK_GEOMETRY_INSTANCE_FORCE_NO_OPAQUE_BIT_KHR),
               "InstanceFlags and VkGeometryInstanceFlagsKHR must agree");
+
+// The element strides the vertex-data set binds with (its StructuredBuffer_SRV items): the sizes the
+// RT shaders' std430 types have, so a change to either struct has to change the bindings as well.
+static_assert(sizeof(ShVertex) == 80, "ShVertex must stay the 80-byte vertex the vertex-data set binds");
+static_assert(sizeof(ShGeometryInstance) == 256,
+              "ShGeometryInstance must stay the 256-byte geometry record the vertex-data set binds");
 
 namespace
 {
@@ -103,6 +110,32 @@ nvrhi::BufferDesc MakeCopySourceBufferDesc(uint64_t byteSize, std::string debugN
     nvrhi::BufferDesc desc;
     desc.byteSize = byteSize;
     desc.initialState = nvrhi::ResourceStates::CopySource;
+    desc.keepInitialState = true;
+    desc.debugName = std::move(debugName);
+    return desc;
+}
+
+// The descriptor of a native wrap of an engine device-local buffer that an RT shader reads as a
+// structured buffer (the static vertex and index buffers of the vertex-data set, set 3).
+//
+//  - structStride is what a StructuredBuffer binding requires: the validation device rejects a
+//    buffer whose desc has none (validation-device.cpp:1693-1699) and the binding-set creation
+//    asserts the same (vulkan-resource-bindings.cpp:535-536). The value is the shader's element
+//    stride, not the wrapped buffer's size, and on a native wrap it is bookkeeping only.
+//  - NonPixelShaderResource is the state the engine's own barriers leave these buffers in after the
+//    level load (CopyFromStaging's barrier declares SHADER_READ | SHADER_WRITE for the vertex data,
+//    VertexCollector.cpp:674-675) and the state a ray-tracing-visible binding layout requires of a
+//    shader-resource item (state-tracking.cpp:455-464 returns NonPixelShaderResource when the layout
+//    has no pixel visibility, which the RT sets use). Claiming it with keepInitialState makes the
+//    first bind transition-free and keeps the claim for every later list. The engine's writes are
+//    invisible to NVRHI, so without a claim the first use would report an unknown prior state
+//    (state-tracking.cpp:290-297).
+nvrhi::BufferDesc MakeVertexDataBufferDesc(uint64_t byteSize, uint32_t structStride, std::string debugName)
+{
+    nvrhi::BufferDesc desc;
+    desc.byteSize = byteSize;
+    desc.structStride = structStride;
+    desc.initialState = nvrhi::ResourceStates::NonPixelShaderResource;
     desc.keepInitialState = true;
     desc.debugName = std::move(debugName);
     return desc;
@@ -254,15 +287,29 @@ RhiAccelStructs::~RhiAccelStructs()
         dynamicCopies[i].index = nullptr;
         dynamicCopies[i].vertexCapacity = 0;
         dynamicCopies[i].indexCapacity = 0;
+        dynamicCopies[i].vertexBytes = 0;
+        dynamicCopies[i].indexBytes = 0;
 
         stagingVertexBuffer[i] = nullptr;
         stagingIndexBuffer[i] = nullptr;
+
+        geometryStagingBuffer[i] = nullptr;
+        vertexDataCopies[i].geometryInstances = nullptr;
+        vertexDataCopies[i].geometryInstancesCapacity = 0;
+        vertexDataCopies[i].matchPrev = nullptr;
+        vertexDataCopies[i].matchPrevCapacity = 0;
     }
 
     staticBlas.clear();
 
     vertexBuffer = nullptr;
     indexBuffer = nullptr;
+    staticVertexDataBuffer = nullptr;
+    staticIndexDataBuffer = nullptr;
+    previousVertexBuffer = nullptr;
+    previousVertexCapacity = 0;
+    previousIndexBuffer = nullptr;
+    previousIndexCapacity = 0;
 
     device = nullptr;
     frameContext = nullptr;
@@ -367,13 +414,128 @@ bool RhiAccelStructs::Create(nvrhi::IDevice *pDevice,
     frameContext = pFrameContext;
     asManager = pAsManager;
 
+    // The vertex-data set (RT set 3) the traced passes read. The static buffers are wrapped a second
+    // time, with the stride the StructuredBuffer bindings need and the state the engine's own level
+    // load leaves them in (MakeVertexDataBufferDesc); the AS-input wraps above are deliberately left
+    // without a stride, so the two uses never share a NVRHI tracking entry. The geometry manager's
+    // per-slot staging buffers become the copy sources of the per-frame geometry-record copies
+    // (MakeCopySourceBufferDesc holds the state rationale: the engine writes them with host stores).
+    // A missing engine object or a failed wrap does not disable the AS stream - it only makes the
+    // vertex-data getters answer with nulls, and the caller then keeps the set unbound.
+    nvrhi::BufferHandle staticVertexData;
+    nvrhi::BufferHandle staticIndexData;
+    nvrhi::BufferHandle geometryStaging[MAX_FRAMES_IN_FLIGHT];
+
+    const std::shared_ptr<GeomInfoManager> &geomInfoMgr = pAsManager->GetGeomInfoManager();
+    if (geomInfoMgr == nullptr)
+    {
+        print("Warning: RHI: the engine's geometry-instance manager is unavailable, the RT "
+              "vertex-data set is skipped");
+        vertexDataCreationFailed = true;
+    }
+
+    if (!vertexDataCreationFailed)
+    {
+        staticVertexData = pDevice->createHandleForNativeBuffer(
+            nvrhi::ObjectTypes::VK_Buffer,
+            nvrhi::Object(static_cast<uint64_t>(reinterpret_cast<uintptr_t>(staticCollector->GetVertexBuffer()))),
+            MakeVertexDataBufferDesc(staticCollector->GetVertexBufferSize(), sizeof(ShVertex),
+                                     "RHI static vertices (vertex data)"));
+
+        staticIndexData = pDevice->createHandleForNativeBuffer(
+            nvrhi::ObjectTypes::VK_Buffer,
+            nvrhi::Object(static_cast<uint64_t>(reinterpret_cast<uintptr_t>(staticCollector->GetIndexBuffer()))),
+            MakeVertexDataBufferDesc(staticCollector->GetIndexBufferSize(), sizeof(uint32_t),
+                                     "RHI static indices (vertex data)"));
+
+        if (staticVertexData == nullptr || staticIndexData == nullptr)
+        {
+            print("Warning: RHI: failed to wrap the engine's static geometry buffers for the "
+                  "vertex-data set");
+            vertexDataCreationFailed = true;
+        }
+    }
+
+    // Slot 0 and the other slots share one geometry buffer, but each slot has its own staging buffer
+    // (AutoBuffer.cpp:44-55 creates one per frame), and the RHI copies read the slot's own (dynamic
+    // records are written to the current slot's staging only, WriteGeomInfo's frameBegin/frameEnd).
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT && !vertexDataCreationFailed; i++)
+    {
+        const VkBuffer engineStaging = geomInfoMgr->GetStagingBuffer(i);
+        if (engineStaging == VK_NULL_HANDLE)
+        {
+            print("Warning: RHI: the engine's geometry staging buffer is unavailable, the RT "
+                  "vertex-data set is skipped");
+            vertexDataCreationFailed = true;
+            break;
+        }
+
+        geometryStaging[i] = pDevice->createHandleForNativeBuffer(
+            nvrhi::ObjectTypes::VK_Buffer,
+            nvrhi::Object(static_cast<uint64_t>(reinterpret_cast<uintptr_t>(engineStaging))),
+            MakeCopySourceBufferDesc(geomInfoMgr->GetBufferSize(),
+                                     "RHI geometry records staging slot " + std::to_string(i) + " (copy source)"));
+
+        if (geometryStaging[i] == nullptr)
+        {
+            print("Warning: RHI: failed to wrap the engine's geometry staging buffer, the RT "
+                  "vertex-data set is skipped");
+            vertexDataCreationFailed = true;
+        }
+    }
+
+    // Every RHI-side vertex-data copy is created here, with a minimal size (the match table with its
+    // full one), so that GetVertexDataBuffers answers with eight non-null handles from the first
+    // frame on and the caller never has to track which of them has been needed before; the first
+    // frame that brings more grows them under the doubling policy above. The contents are undefined
+    // until the frame that copies or writes them, and no instance references an undefined range.
+    if (!vertexDataCreationFailed)
+    {
+        for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT && !vertexDataCreationFailed; i++)
+        {
+            const std::shared_ptr<VertexCollector> &dynamicCollector = pAsManager->GetDynamicCollector(i);
+
+            vertexDataCreationFailed =
+                !EnsureDynamicCopyBuffer(dynamicCopies[i].vertex, dynamicCopies[i].vertexCapacity,
+                                         sizeof(ShVertex), uint64_t(dynamicCollector->GetVertexBufferSize()),
+                                         sizeof(ShVertex), i, "vertex") ||
+                !EnsureDynamicCopyBuffer(dynamicCopies[i].index, dynamicCopies[i].indexCapacity,
+                                         sizeof(uint32_t), uint64_t(dynamicCollector->GetIndexBufferSize()),
+                                         sizeof(uint32_t), i, "index") ||
+                !EnsureVertexDataCopyBuffer(vertexDataCopies[i].geometryInstances,
+                                            vertexDataCopies[i].geometryInstancesCapacity,
+                                            sizeof(ShGeometryInstance), uint64_t(geomInfoMgr->GetBufferSize()),
+                                            sizeof(ShGeometryInstance), i, "geometry records") ||
+                !EnsureVertexDataCopyBuffer(vertexDataCopies[i].matchPrev, vertexDataCopies[i].matchPrevCapacity,
+                                            uint64_t(geomInfoMgr->GetMatchPrevSize()),
+                                            uint64_t(geomInfoMgr->GetMatchPrevSize()), sizeof(int32_t), i,
+                                            "geometry match");
+        }
+
+        if (!vertexDataCreationFailed)
+        {
+            const std::shared_ptr<VertexCollector> &dynamicCollector = pAsManager->GetDynamicCollector(0);
+
+            vertexDataCreationFailed =
+                !EnsureVertexDataCopyBuffer(previousVertexBuffer, previousVertexCapacity, sizeof(ShVertex),
+                                            uint64_t(dynamicCollector->GetVertexBufferSize()), sizeof(ShVertex), 0,
+                                            "previous dynamic vertices") ||
+                !EnsureVertexDataCopyBuffer(previousIndexBuffer, previousIndexCapacity, sizeof(uint32_t),
+                                            uint64_t(dynamicCollector->GetIndexBufferSize()), sizeof(uint32_t), 0,
+                                            "previous dynamic indices");
+        }
+    }
+
     vertexBuffer = std::move(vertex);
     indexBuffer = std::move(index);
+    staticVertexDataBuffer = std::move(staticVertexData);
+    staticIndexDataBuffer = std::move(staticIndexData);
 
     for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
     {
         stagingVertexBuffer[i] = std::move(stagingVertex[i]);
         stagingIndexBuffer[i] = std::move(stagingIndex[i]);
+        geometryStagingBuffer[i] = std::move(geometryStaging[i]);
     }
 
     // The generation the "no static set built yet" state belongs to. A later value means the engine
@@ -605,6 +767,20 @@ void RhiAccelStructs::AppendStaticInstances(uint32_t rayCullMaskWorld,
             continue;
         }
 
+        // The uniform's per-instance geometry information for this instance (see
+        // GetInstanceGeometryInfo): the filter's global-array offset and its geometry count - the
+        // values the engine's WriteInstanceGeomInfo writes for the same filter
+        // (ASManager.cpp:1016-1028). One instance per static filter, so the count is the number of
+        // geometries this module's BLAS was built from, which equals the component's geometry count
+        // (BLASComponent::GetGeomCount, ASManager.cpp:450).
+        const uint32_t instanceIndex = static_cast<uint32_t>(instances.size());
+        if (instanceIndex < MAX_TLAS_INSTANCES)
+        {
+            instanceGeomInfo[instanceIndex].offset =
+                static_cast<int32_t>(VertexCollectorFilterTypeFlags_GetOffsetInGlobalArray(filter));
+            instanceGeomInfo[instanceIndex].count = static_cast<int32_t>(blas->geometries.size());
+        }
+
         instances.push_back(MakeInstanceDesc(record, blas->handle.Get()));
     }
 }
@@ -613,6 +789,7 @@ bool RhiAccelStructs::EnsureDynamicCopyBuffer(nvrhi::BufferHandle &buffer,
                                               uint64_t &capacity,
                                               uint64_t needed,
                                               uint64_t maxCapacity,
+                                              uint32_t structStride,
                                               uint32_t frameIndex,
                                               const char *kind)
 {
@@ -630,14 +807,19 @@ bool RhiAccelStructs::EnsureDynamicCopyBuffer(nvrhi::BufferHandle &buffer,
 
     // The copy destination: an RHI-created buffer (so it carries TRANSFER_SRC | TRANSFER_DST,
     // vulkan-buffer.cpp:48-49, and the build-input usage the flag adds, :72-73) that copyBuffer
-    // writes and the BLAS build reads in the same list. CopyDest is claimed as the initial state,
-    // so the copy itself is transition-free and NVRHI emits exactly the CopyDest ->
-    // AccelStructBuildInput barrier the build needs (vulkan-raytracing.cpp:708-711). The next list
-    // starts the buffer at CopyDest again; the shared queue, the per-slot buffers and the frame
-    // context's wait for the slot's previous submission (RhiFrameContext.h) cover the write-after-read
-    // against that submission.
+    // writes, the BLAS build reads and the RT shaders read as a structured buffer in the same list.
+    // structStride makes the same handle bindable as a StructuredBuffer_SRV of the vertex-data set
+    // (validation-device.cpp:1693-1699 and vulkan-resource-bindings.cpp:535-536 both require it);
+    // adding it does not change the build, which addresses the buffer by device address. CopyDest is
+    // claimed as the initial state, so the copy itself is transition-free and NVRHI emits exactly the
+    // barriers the build (CopyDest -> AccelStructBuildInput, vulkan-raytracing.cpp:708-711) and the
+    // shader read (-> the list's shader-resource state) need. The next list starts the buffer at
+    // CopyDest again; the shared queue, the per-slot buffers and the frame context's wait for the
+    // slot's previous submission (RhiFrameContext.h) cover the write-after-read against that
+    // submission.
     nvrhi::BufferDesc desc;
     desc.byteSize = newCapacity;
+    desc.structStride = structStride;
     desc.isAccelStructBuildInput = true;
     desc.initialState = nvrhi::ResourceStates::CopyDest;
     desc.keepInitialState = true;
@@ -648,6 +830,61 @@ bool RhiAccelStructs::EnsureDynamicCopyBuffer(nvrhi::BufferHandle &buffer,
     {
         print(("Warning: RHI: failed to create the slot " + std::to_string(frameIndex) + " dynamic " + kind +
                " copy buffer, the dynamic acceleration structures are skipped").c_str());
+        return false;
+    }
+
+    if (buffer != nullptr)
+    {
+        frameContext->Retire(std::move(buffer));
+    }
+
+    buffer = std::move(created);
+    capacity = newCapacity;
+    return true;
+}
+
+bool RhiAccelStructs::EnsureVertexDataCopyBuffer(nvrhi::BufferHandle &buffer,
+                                                 uint64_t &capacity,
+                                                 uint64_t needed,
+                                                 uint64_t maxCapacity,
+                                                 uint32_t structStride,
+                                                 uint32_t frameIndex,
+                                                 const char *kind)
+{
+    if (needed == 0 || (buffer != nullptr && capacity >= needed))
+    {
+        return true;
+    }
+
+    if (needed > maxCapacity)
+    {
+        // The engine's own bound is the maximum a frame can produce; a larger request means the
+        // engine's invariant broke, and a clamp here would silently drop records.
+        print(("Warning: RHI: the " + std::string(kind) + " copy needs " + std::to_string(needed) +
+               " bytes, more than the engine's " + std::to_string(maxCapacity) +
+               " byte buffer; the RT vertex-data set is skipped").c_str());
+        return false;
+    }
+
+    uint64_t newCapacity = std::max(needed, capacity * 2);
+    newCapacity = std::min(newCapacity, maxCapacity);
+
+    // A buffer only the RT shaders read: CopyDest claimed as the initial state so the frame's own
+    // copy (and the writeBuffer of the match table) is transition-free, and structStride for the
+    // StructuredBuffer binding. The replaced buffer is retired - a submission of this slot may still
+    // be reading it - and the slot's wait in BeginSlot covers the write-after-read.
+    nvrhi::BufferDesc desc;
+    desc.byteSize = newCapacity;
+    desc.structStride = structStride;
+    desc.initialState = nvrhi::ResourceStates::CopyDest;
+    desc.keepInitialState = true;
+    desc.debugName = std::string("RHI ") + kind + " slot " + std::to_string(frameIndex) + " (vertex data)";
+
+    nvrhi::BufferHandle created = device->createBuffer(desc);
+    if (created == nullptr)
+    {
+        print(("Warning: RHI: failed to create the slot " + std::to_string(frameIndex) + " " + kind +
+               " copy buffer, the RT vertex-data set is skipped").c_str());
         return false;
     }
 
@@ -685,6 +922,14 @@ void RhiAccelStructs::AppendDynamicSlot(nvrhi::ICommandList *pCommandList,
         return;
     }
 
+    DynamicCopies &copies = dynamicCopies[frameIndex];
+
+    // The used prefixes of this frame, and what the next frame's previous-frame copies must read
+    // from this slot. Reset before every early return, so a frame that fails or brings nothing does
+    // not leave the previous frame's lengths behind.
+    copies.vertexBytes = 0;
+    copies.indexBytes = 0;
+
     const VkDeviceAddress vertexBufferAddress = collector->GetVertexBufferAddress();
     const VkDeviceAddress indexBufferAddress = collector->GetIndexBufferAddress();
     const VkDeviceAddress transformsBufferAddress = collector->GetTransformsBufferAddress();
@@ -701,10 +946,11 @@ void RhiAccelStructs::AppendDynamicSlot(nvrhi::ICommandList *pCommandList,
         return;
     }
 
-    DynamicCopies &copies = dynamicCopies[frameIndex];
-
     const uint64_t vertexBytes = uint64_t(collector->GetCurrentVertexCount()) * sizeof(ShVertex);
     const uint64_t indexBytes = uint64_t(collector->GetCurrentIndexCount()) * sizeof(uint32_t);
+
+    copies.vertexBytes = vertexBytes;
+    copies.indexBytes = indexBytes;
 
     // The used prefix starts at 0 and is contiguous: AddGeometry aligns each geometry up from the
     // running counters starting at 0 (VertexCollector.cpp:221-232) and BeginDynamicGeometry resets
@@ -713,7 +959,8 @@ void RhiAccelStructs::AppendDynamicSlot(nvrhi::ICommandList *pCommandList,
     if (vertexBytes > 0)
     {
         if (!EnsureDynamicCopyBuffer(copies.vertex, copies.vertexCapacity, vertexBytes,
-                                     uint64_t(collector->GetVertexBufferSize()), frameIndex, "vertex"))
+                                     uint64_t(collector->GetVertexBufferSize()), sizeof(ShVertex), frameIndex,
+                                     "vertex"))
         {
             dynamicCreationFailed = true;
             return;
@@ -726,7 +973,8 @@ void RhiAccelStructs::AppendDynamicSlot(nvrhi::ICommandList *pCommandList,
     if (indexBytes > 0)
     {
         if (!EnsureDynamicCopyBuffer(copies.index, copies.indexCapacity, indexBytes,
-                                     uint64_t(collector->GetIndexBufferSize()), frameIndex, "index"))
+                                     uint64_t(collector->GetIndexBufferSize()), sizeof(uint32_t), frameIndex,
+                                     "index"))
         {
             dynamicCreationFailed = true;
             return;
@@ -854,8 +1102,145 @@ void RhiAccelStructs::AppendDynamicSlot(nvrhi::ICommandList *pCommandList,
                 return;
             }
 
+            // The uniform's per-instance geometry information for this instance (see
+            // GetInstanceGeometryInfo): the filter's global-array offset and its geometry count -
+            // the values the engine's WriteInstanceGeomInfo writes for the same filter
+            // (ASManager.cpp:1016-1028).
+            const uint32_t instanceIndex = static_cast<uint32_t>(instances.size());
+            if (instanceIndex < MAX_TLAS_INSTANCES)
+            {
+                instanceGeomInfo[instanceIndex].offset =
+                    static_cast<int32_t>(VertexCollectorFilterTypeFlags_GetOffsetInGlobalArray(filter));
+                instanceGeomInfo[instanceIndex].count = static_cast<int32_t>(blas->geometries.size());
+            }
+
             instances.push_back(MakeInstanceDesc(record, blas->handle.Get()));
         });
+}
+
+void RhiAccelStructs::RecordVertexDataCopies(nvrhi::ICommandList *pCommandList, uint32_t frameIndex)
+{
+    if (vertexDataCreationFailed || tlasInstanceCount == 0)
+    {
+        return;
+    }
+
+    const std::shared_ptr<GeomInfoManager> &geomInfoMgr = asManager->GetGeomInfoManager();
+    if (geomInfoMgr == nullptr || geometryStagingBuffer[frameIndex] == nullptr)
+    {
+        return;
+    }
+
+    VertexDataCopies &copies = vertexDataCopies[frameIndex];
+
+    // The geometry records: one copy per instance's geometry range, in the global geometry index
+    // space the shaders address (instanceGeomInfoOffset[i] .. + instanceGeomInfoCount[i], times the
+    // record size). The destination is sized to the highest range end, so the offsets stay absolute;
+    // a range the frame does not use is not copied, which also lets a frame without an instance list
+    // keep the records of the TLAS it still binds.
+    uint64_t geometryInstancesNeeded = 0;
+    for (uint32_t i = 0; i < tlasInstanceCount; i++)
+    {
+        geometryInstancesNeeded =
+            std::max(geometryInstancesNeeded,
+                     (uint64_t(instanceGeomInfo[i].offset) + uint64_t(instanceGeomInfo[i].count)) *
+                         sizeof(ShGeometryInstance));
+    }
+
+    if (geometryInstancesNeeded > 0)
+    {
+        if (!EnsureVertexDataCopyBuffer(copies.geometryInstances, copies.geometryInstancesCapacity,
+                                        geometryInstancesNeeded, uint64_t(geomInfoMgr->GetBufferSize()),
+                                        sizeof(ShGeometryInstance), frameIndex, "geometry records"))
+        {
+            vertexDataCreationFailed = true;
+        }
+        else
+        {
+            for (uint32_t i = 0; i < tlasInstanceCount; i++)
+            {
+                const uint64_t offset = uint64_t(instanceGeomInfo[i].offset) * sizeof(ShGeometryInstance);
+                const uint64_t size = uint64_t(instanceGeomInfo[i].count) * sizeof(ShGeometryInstance);
+
+                if (size == 0)
+                {
+                    continue;
+                }
+
+                pCommandList->copyBuffer(copies.geometryInstances.Get(), offset,
+                                         geometryStagingBuffer[frameIndex].Get(), offset, size);
+                vertexDataCopyBytes += size;
+            }
+        }
+    }
+
+    // The previous-frame match table: its write into the staging buffer happens inside the bypassed
+    // CopyFromStaging (GeomInfoManager.cpp:89-95), so the CPU shadow - the array the engine would
+    // memcpy into staging - is the source. The whole table is written, as the engine copies whole
+    // group ranges (GeomInfoManager.cpp:63-141).
+    const int32_t *matchPrev = geomInfoMgr->GetMatchPrevData();
+    const VkDeviceSize matchPrevSize = geomInfoMgr->GetMatchPrevSize();
+    if (matchPrev != nullptr && matchPrevSize > 0)
+    {
+        if (!EnsureVertexDataCopyBuffer(copies.matchPrev, copies.matchPrevCapacity, uint64_t(matchPrevSize),
+                                        uint64_t(matchPrevSize), sizeof(int32_t), frameIndex, "geometry match"))
+        {
+            vertexDataCreationFailed = true;
+        }
+        else
+        {
+            pCommandList->writeBuffer(copies.matchPrev.Get(), matchPrev, size_t(matchPrevSize), 0);
+            vertexDataCopyBytes += matchPrevSize;
+        }
+    }
+
+    // The previous-frame dynamic vertices and indices: the engine's previousDynamicPositions/Indices
+    // are filled from its own device-local dynamic buffers (ASManager.cpp:1158-1190), which the
+    // `rhiframe` path never writes, so the previous frame's bytes come from the other slot's dynamic
+    // copy - the only source that still holds them. Needed only when the frame has a dynamic
+    // instance; both are shared between the slots, like the engine's single pair.
+    if (dynamicActiveFilterCount == 0)
+    {
+        return;
+    }
+
+    const std::shared_ptr<VertexCollector> &collector = asManager->GetDynamicCollector(frameIndex);
+    if (collector == nullptr)
+    {
+        return;
+    }
+
+    const DynamicCopies &other = dynamicCopies[(frameIndex + 1) % MAX_FRAMES_IN_FLIGHT];
+
+    if (other.vertex != nullptr && other.vertexBytes > 0)
+    {
+        if (!EnsureVertexDataCopyBuffer(previousVertexBuffer, previousVertexCapacity, other.vertexBytes,
+                                        uint64_t(collector->GetVertexBufferSize()), sizeof(ShVertex), frameIndex,
+                                        "previous dynamic vertices"))
+        {
+            vertexDataCreationFailed = true;
+        }
+        else
+        {
+            pCommandList->copyBuffer(previousVertexBuffer.Get(), 0, other.vertex.Get(), 0, other.vertexBytes);
+            vertexDataCopyBytes += other.vertexBytes;
+        }
+    }
+
+    if (other.index != nullptr && other.indexBytes > 0)
+    {
+        if (!EnsureVertexDataCopyBuffer(previousIndexBuffer, previousIndexCapacity, other.indexBytes,
+                                        uint64_t(collector->GetIndexBufferSize()), sizeof(uint32_t), frameIndex,
+                                        "previous dynamic indices"))
+        {
+            vertexDataCreationFailed = true;
+        }
+        else
+        {
+            pCommandList->copyBuffer(previousIndexBuffer.Get(), 0, other.index.Get(), 0, other.indexBytes);
+            vertexDataCopyBytes += other.indexBytes;
+        }
+    }
 }
 
 void RhiAccelStructs::WarnUnresolvedFilter(uint32_t filter)
@@ -894,6 +1279,7 @@ void RhiAccelStructs::BuildTopLevel(nvrhi::ICommandList *pCommandList,
     dynamicVertexCount = 0;
     dynamicPrimitiveCount = 0;
     dynamicCopyBytes = 0;
+    vertexDataCopyBytes = 0;
     tlasInstanceCount = 0;
 
     std::vector<nvrhi::rt::InstanceDesc> instances;
@@ -921,6 +1307,12 @@ void RhiAccelStructs::BuildTopLevel(nvrhi::ICommandList *pCommandList,
     }
 
     tlasInstanceCount = static_cast<uint32_t>(instances.size());
+
+    // The vertex-data set's per-frame copies (set 3): the geometry records of the instances above
+    // and the previous-frame dynamic data. Recorded before the TLAS build so the pass that follows
+    // in the same list finds them current; a frame without an instance list copies nothing and keeps
+    // the previous frame's content, which is exactly what the TLAS it still binds describes.
+    RecordVertexDataCopies(pCommandList, frameIndex);
 
     if (tlasInstanceCount > 0)
     {
@@ -984,6 +1376,47 @@ nvrhi::rt::IAccelStruct *RhiAccelStructs::GetTopLevel(uint32_t frameIndex) const
     return topLevel[frameIndex].Get();
 }
 
+RhiAccelStructs::VertexDataBuffers RhiAccelStructs::GetVertexDataBuffers(uint32_t frameIndex) const
+{
+    VertexDataBuffers result;
+
+    if (frameIndex >= MAX_FRAMES_IN_FLIGHT || vertexDataCreationFailed)
+    {
+        return result;
+    }
+
+    const DynamicCopies &dynamic = dynamicCopies[frameIndex];
+    const VertexDataCopies &copies = vertexDataCopies[frameIndex];
+
+    result.staticVertices = staticVertexDataBuffer.Get();
+    result.dynamicVertices = dynamic.vertex.Get();
+    result.staticIndices = staticIndexDataBuffer.Get();
+    result.dynamicIndices = dynamic.index.Get();
+    result.geometryInstances = copies.geometryInstances.Get();
+    result.geometryInstancesMatchPrev = copies.matchPrev.Get();
+    result.previousDynamicVertices = previousVertexBuffer.Get();
+    result.previousDynamicIndices = previousIndexBuffer.Get();
+
+    return result;
+}
+
+uint32_t RhiAccelStructs::GetInstanceGeometryInfo(int32_t *pInstanceGeomInfoOffset,
+                                                  int32_t *pInstanceGeomInfoCount) const
+{
+    if (pInstanceGeomInfoOffset == nullptr || pInstanceGeomInfoCount == nullptr)
+    {
+        return 0;
+    }
+
+    for (uint32_t i = 0; i < tlasInstanceCount; i++)
+    {
+        pInstanceGeomInfoOffset[i] = instanceGeomInfo[i].offset;
+        pInstanceGeomInfoCount[i] = instanceGeomInfo[i].count;
+    }
+
+    return tlasInstanceCount;
+}
+
 bool RhiAccelStructs::IsSummaryDue()
 {
     if (summaryPrinted || print == nullptr)
@@ -1022,7 +1455,7 @@ void RhiAccelStructs::PrintSummary()
     snprintf(buffer, sizeof(buffer) / sizeof(buffer[0]),
              "RHI: acceleration structures: %u/%u static BLAS, %u geometries, %llu triangles, "
              "%llu vertices; %u/%u dynamic BLAS, %u geometries, %llu triangles, %llu vertices; "
-             "%llu KiB dynamic copies this frame; TLAS instances %u\n",
+             "%llu KiB dynamic copies and %llu KiB vertex-data copies this frame; TLAS instances %u\n",
              static_cast<uint32_t>(staticBlas.size()), componentCount, staticGeometryCount,
              static_cast<unsigned long long>(staticPrimitiveCount),
              static_cast<unsigned long long>(staticVertexCount),
@@ -1030,6 +1463,7 @@ void RhiAccelStructs::PrintSummary()
              static_cast<unsigned long long>(dynamicPrimitiveCount),
              static_cast<unsigned long long>(dynamicVertexCount),
              static_cast<unsigned long long>(dynamicCopyBytes / 1024),
+             static_cast<unsigned long long>(vertexDataCopyBytes / 1024),
              tlasInstanceCount);
     print(buffer);
 }

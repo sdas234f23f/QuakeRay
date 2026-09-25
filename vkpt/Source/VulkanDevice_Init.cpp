@@ -35,6 +35,7 @@
 #include "RHI/NvrhiRequirements.h"
 #include "RHI/RhiAccelStructs.h"
 #include "RHI/RhiDebugTracePass.h"
+#include "RHI/RhiRtPrimaryPass.h"
 #include "RHI/RhiFrameContext.h"
 #include "RHI/RhiSkyPass.h"
 #include "RHI/RhiTextureTable.h"
@@ -407,10 +408,49 @@ VulkanDevice::VulkanDevice( const RgInstanceCreateInfo* info )
                 }
             }
 
+            // The real ray-tracing pass of A4.1 (RHI/RhiRtPrimaryPass.h), created only when 'rhirt'
+            // is on: the engine's primary-visibility raygen with the engine's two misses and its two
+            // hit groups, dispatched over the same RHI acceleration structures. Its set 4 is the
+            // shared texture table, so the host hands the table over; the engine's framebuffer
+            // images are resolved per frame by the pass itself, so no wrap is created here. A
+            // failure leaves the pointer null: with the flag on the skeleton then refuses to be
+            // available and the legacy renderer keeps the frame.
+            if (libconfig.rhiRayTracing)
+            {
+                rhiRtPrimaryPass = std::make_shared<RhiRtPrimaryPass>();
+                if (!rhiRtPrimaryPass->Create(nvrhi->GetDevice(), rhiFrameContext.get(),
+                                              rhiTextureTable.get(), info->pShaderFolderPath,
+                                              [this](const char *pMessage) { Print(pMessage); }))
+                {
+                    rhiRtPrimaryPass.reset();
+                    Print("Warning: RHI: the primary ray-tracing pass is unavailable, the legacy renderer is kept");
+                }
+            }
+
             // The pass binds the shared RHI texture table (its slot 0 holds the engine's empty
             // texture: 1x1, VK_FORMAT_R8G8B8A8_UNORM, created and left in the read-only layout by
             // TextureManager) and records through the shared frame context, so the host hands both
             // over here.
+            //
+            // The mode the skeleton records for the whole run: 'rhirt' selects the real
+            // ray-tracing pass of A4.1, 'rhitrace' the A3.1 debug trace, and neither the rasterized
+            // chain. 'rhirt' wins when both are set (LibraryConfig.h documents it), and the
+            // skeleton itself refuses to be available when its mode's pass failed to be created.
+            if (libconfig.rhiRayTracing && libconfig.rhiDebugTrace)
+            {
+                Print("Warning: RHI: both 'rhirt' and 'rhitrace' are set, the primary ray-tracing pass is used");
+            }
+
+            NvrhiFrameSkeleton::FrameMode frameMode = NvrhiFrameSkeleton::FrameMode::Rasterized;
+            if (libconfig.rhiRayTracing)
+            {
+                frameMode = NvrhiFrameSkeleton::FrameMode::PrimaryTrace;
+            }
+            else if (libconfig.rhiDebugTrace)
+            {
+                frameMode = NvrhiFrameSkeleton::FrameMode::DebugTrace;
+            }
+
             nvrhiFrameSkeleton = std::make_shared<NvrhiFrameSkeleton>(
                 nvrhi->GetDevice(),
                 swapchain.get(),
@@ -419,7 +459,8 @@ VulkanDevice::VulkanDevice( const RgInstanceCreateInfo* info )
                 rhiFrameContext.get(),
                 rhiAccelStructs.get(),
                 rhiDebugTracePass.get(),
-                libconfig.rhiDebugTrace,
+                rhiRtPrimaryPass.get(),
+                frameMode,
                 [this](const char *pMessage) { Print(pMessage); });
 
             swapchain->Subscribe(nvrhiFrameSkeleton);
@@ -496,9 +537,11 @@ VulkanDevice::~VulkanDevice()
     // be released before both of them
     nvrhiFrameSkeleton.reset();
 
-    // The skeleton references both, so they follow it immediately; both wrap engine buffers and
-    // quote the RHI device, so they precede the table/context and the device below.
+    // The skeleton references all of them, so they follow it immediately; all three wrap engine
+    // buffers/images and quote the RHI device, so they precede the table/context and the device
+    // below.
     rhiDebugTracePass.reset();
+    rhiRtPrimaryPass.reset();
     rhiAccelStructs.reset();
 
     // The table's wrapped textures reference engine images and its samplers belong to the NVRHI
