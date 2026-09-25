@@ -238,10 +238,6 @@ static struct
 	// and sun (the global settings)
 	int light_tab;
 
-	// the light editor's panel never closes: with this set the camera flies
-	// while the panel is still drawn (ESC swaps the two)
-	qboolean light_flying;
-
 	// which of the two editors this is
 	int mode;
 
@@ -1231,6 +1227,30 @@ static int QRE_LightUnderCrosshair (void)
 	return best;
 }
 
+// The cursor mode: the panel is on screen and owns the cursor and the keyboard,
+// and the camera stays where it stopped. Tab turns it on and off (from the
+// flying side it arrives as a plain key, from the panel side through the SDL
+// event hook), and picking a surface or a light turns it on too.
+static void QRE_CursorMode (qboolean on)
+{
+	if (on == qre.panel_open)
+		return;
+
+	if (on)
+	{
+		qre.panel_open = true;
+
+		// free the cursor, keeping its motion events for ImGui
+		IN_FreeCursorForGui ();
+		SDL_ShowCursor (SDL_DISABLE);
+		QR_GUI_SetMouseCursor (1);
+	}
+	else
+	{
+		QRE_ClosePanel ();
+	}
+}
+
 // Hover (flying) or select (fire button) a light by its wireframe.
 static void QRE_DoLightPick (qboolean select)
 {
@@ -1263,13 +1283,7 @@ static void QRE_DoLightPick (qboolean select)
 	            qre.sel_light.kind == RT_LIGHT_KIND_MATERIAL ? "material" :
 	            qre.sel_light.kind == RT_LIGHT_KIND_DLIGHT ? "legacy dlight" : "map light");
 
-	if (!qre.panel_open)
-	{
-		qre.panel_open = true;
-		IN_FreeCursorForGui ();
-		SDL_ShowCursor (SDL_DISABLE);
-		QR_GUI_SetMouseCursor (1);
-	}
+	QRE_CursorMode (true);
 }
 
 // Keeps the selected light's live values in step with the frame's uploads.
@@ -1466,13 +1480,9 @@ static void QRE_DoPick (qboolean select)
 		}
 	}
 
-	qre.panel_open = true;
-
 	// the panel owns the mouse: free the cursor (keeping its motion events
 	// for ImGui), freeze the camera
-	IN_FreeCursorForGui ();
-	SDL_ShowCursor (SDL_DISABLE);
-	QR_GUI_SetMouseCursor (1);
+	QRE_CursorMode (true);
 }
 
 // ---------------------------------------------------------------------------
@@ -2831,7 +2841,7 @@ static void QRE_BuildLightPanelGUI (void)
 	}
 	else
 	{
-		QR_GUI_LabelDim ("no light: ESC frees the camera, then aim and press the fire button");
+		QR_GUI_LabelDim ("aim at a light wireframe and press the fire button");
 	}
 	QR_GUI_Spacing ();
 
@@ -2995,13 +3005,15 @@ static void QRE_BuildFlyingOverlay (void)
 		"QR MATERIAL EDITOR",
 		"LMB - select the face under the crosshair",
 		"WASD + mouse - fly    Shift - faster    jump/movedown - up/down",
+		"Tab - the cursor mode (the panel) / fly again",
 		"Esc - exit the editor    ~ - console",
 	};
 	static const char *const light_lines[] = {
 		"QR LIGHT EDITOR",
 		"LMB - select the emitter under the crosshair",
 		"WASD + mouse - fly    Shift - faster    jump/movedown - up/down",
-		"Esc - hand the panel the cursor / take it back    Exit - leave the editor",
+		"Tab - the cursor mode (the panel) / fly again",
+		"Esc - exit the editor    ~ - console",
 	};
 	const char *const *shown = (qre.mode == QRE_MODE_LIGHT) ? light_lines : lines;
 
@@ -3027,7 +3039,7 @@ static void QRE_Frame (void)
 
 	// While the console is up it owns the input; coming back, the panel needs
 	// its free cursor again (the console re-activated the relative mouse mode).
-	if (qre.panel_open && !qre.light_flying && prev_key_dest != key_game && key_dest == key_game)
+	if (qre.panel_open && prev_key_dest != key_game && key_dest == key_game)
 	{
 		IN_FreeCursorForGui ();
 		SDL_ShowCursor (SDL_DISABLE);
@@ -3080,48 +3092,14 @@ void QR_Editor_DrawPanel (cb_context_t *cbx)
 	else if (qre.panel_open)
 	{
 		if (qre.mode == QRE_MODE_LIGHT)
-		{
 			QRE_BuildLightPanelGUI ();
-
-			// the panel stays while the camera flies: the crosshair and the
-			// hints are what the picking needs then
-			if (qre.light_flying)
-				QRE_BuildFlyingOverlay ();
-		}
 		else
-		{
 			QRE_BuildPanelGUI ();
-		}
 	}
 	else
 		QRE_BuildFlyingOverlay ();
 
 	QR_GUI_EndFrame ();
-}
-
-// The light editor's panel never closes: it stays on screen and either flies
-// with the camera (the crosshair picks, the keys move, the mouse looks) or holds
-// the cursor and the keyboard. A press of ESC swaps the two, so the sky can be
-// tuned while the map is still there to look at.
-static void QRE_LightSetFlying (qboolean flying)
-{
-	if (qre.light_flying == flying)
-		return;
-
-	qre.light_flying = flying;
-
-	if (flying)
-	{
-		IN_Activate ();
-		SDL_ShowCursor (SDL_ENABLE);
-		QR_GUI_SetMouseCursor (0);
-	}
-	else
-	{
-		IN_FreeCursorForGui ();
-		SDL_ShowCursor (SDL_DISABLE);
-		QR_GUI_SetMouseCursor (1);
-	}
 }
 
 // ---------------------------------------------------------------------------
@@ -3133,21 +3111,20 @@ qboolean QR_Editor_KeyEvent (int key, qboolean down)
 	if (!qre.active)
 		return false;
 
-	// while the cursor owns the panel its events are consumed at the SDL level
+	// while the panel is open its events are consumed at the SDL level
 	// (QR_Editor_GuiProcessEvent); only the flying mode is left here
-	if (qre.panel_open && !qre.light_flying)
+	if (qre.panel_open)
 		return false;
+
+	if (key == K_TAB && down)
+	{
+		// the other half of the Tab toggle: the panel takes the cursor
+		QRE_CursorMode (true);
+		return true;
+	}
 
 	if (key == K_ESCAPE && down)
 	{
-		if (qre.mode == QRE_MODE_LIGHT)
-		{
-			// the light panel never closes: ESC hands it the cursor (its own
-			// ESC, handled above, hands the mouse back to the camera)
-			QRE_LightSetFlying (false);
-			return true;
-		}
-
 		QRE_RequestExit ();
 		return true;
 	}
@@ -3160,7 +3137,7 @@ qboolean QR_Editor_GuiProcessEvent (const void *sdl_event)
 {
 	const SDL_Event *e = (const SDL_Event *)sdl_event;
 
-	if (!qre.active || !qre.panel_open || qre.light_flying)
+	if (!qre.active || !qre.panel_open)
 		return false;
 
 	// while the console is up the engine owns the input
@@ -3172,6 +3149,14 @@ qboolean QR_Editor_GuiProcessEvent (const void *sdl_event)
 	if ((e->type == SDL_KEYDOWN || e->type == SDL_KEYUP) &&
 	    e->key.keysym.scancode == SDL_SCANCODE_GRAVE && !QR_GUI_WantsKeyboard ())
 		return false;
+
+	// Tab hands the mouse back to the camera (the flying mode picks with the
+	// fire button and flies again); a text field keeps its own Tab
+	if (e->type == SDL_KEYDOWN && e->key.keysym.scancode == SDL_SCANCODE_TAB && !QR_GUI_WantsKeyboard ())
+	{
+		QRE_CursorMode (false);
+		return true;
+	}
 
 	// ESC dismisses the exit question, or closes the panel, unless an ImGui
 	// text field is editing
@@ -3193,8 +3178,8 @@ qboolean QR_Editor_GuiProcessEvent (const void *sdl_event)
 
 qboolean QR_Editor_TextEntryActive (void)
 {
-	// while the cursor owns the panel SDL text input must stay on for its fields
-	return qre.active && qre.panel_open && !qre.light_flying;
+	// while the panel is open SDL text input must stay on for ImGui fields
+	return qre.active && qre.panel_open;
 }
 
 // ---------------------------------------------------------------------------
@@ -3205,14 +3190,6 @@ static void QRE_ClosePanel (void)
 {
 	if (!qre.panel_open)
 		return;
-
-	if (qre.mode == QRE_MODE_LIGHT)
-	{
-		// the light editor's panel never closes: it stays on screen while the
-		// camera takes the mouse back
-		QRE_LightSetFlying (true);
-		return;
-	}
 
 	qre.panel_open = false;
 	qre.pick_model = NULL;
@@ -3711,14 +3688,10 @@ static void QRE_RequestExit (void)
 		return;
 	}
 
-	if (!qre.panel_open || qre.light_flying)
+	if (!qre.panel_open)
 	{
-		qre.panel_open = true;
-		qre.light_flying = false;
 		qre.prompt_from_flying = true;
-		IN_FreeCursorForGui ();
-		SDL_ShowCursor (SDL_DISABLE);
-		QR_GUI_SetMouseCursor (1);
+		QRE_CursorMode (true);
 	}
 	qre.exit_prompt = true;
 }
@@ -3805,7 +3778,6 @@ static void QRE_StopEditor (qboolean restore)
 
 	qre.active = false;
 	qre.panel_open = false;
-	qre.light_flying = false;
 	qre.exit_prompt = false;
 	qre.pick_model = NULL;
 	qre.pick_surf = NULL;
@@ -3867,14 +3839,6 @@ static void QRE_StartEditor (int mode)
 	qre.active = true;
 	qre.panel_open = false;
 	qre.mode = mode;
-
-	if (mode == QRE_MODE_LIGHT)
-	{
-		// the light editor's panel is always there: drawn from the start, with
-		// the camera flying until ESC hands the panel the cursor
-		qre.panel_open = true;
-		qre.light_flying = true;
-	}
 
 	VectorCopy (r_refdef.vieworg, qre.cam_origin);
 	VectorCopy (cl.viewangles, qre.player_viewangles);
@@ -3976,9 +3940,7 @@ qboolean QR_Editor_PanelOpen (void)
 
 qboolean QR_Editor_Flying (void)
 {
-	// the light editor's panel is on screen while the camera flies: it takes the
-	// mouse only when it has the cursor
-	return qre.active && (!qre.panel_open || (qre.mode == QRE_MODE_LIGHT && qre.light_flying));
+	return qre.active && !qre.panel_open;
 }
 
 void QR_Editor_Pick (void)
