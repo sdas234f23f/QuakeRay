@@ -220,7 +220,7 @@ void R_DrawSpriteModel (cb_context_t *cbx, entity_t *e, int entuniqueid)
 
 	qboolean is_decal = psprite->type == SPR_ORIENTED;
 	qboolean is_rasterized = is_decal;
-	rt_light_t *light_ov = tx ? RT_LIGHT_Find (tx->name) : NULL;
+	rt_light_t *light_ov = tx ? RT_LIGHT_FindInstance (tx->name, RT_GetSpriteModelUniqueId (entuniqueid)) : NULL;
 
 	if (tx && (tx->rtforcerasterize || (light_ov && light_ov->force_rasterize)))
 		is_rasterized = true;

@@ -406,7 +406,7 @@ static void RT_UploadAllDlights ()
 		if (l->key > 0 && l->key < cl.num_entities && cl.entities[l->key].model)
 			light_name = cl.entities[l->key].model->name;
 		if (light_name)
-			ov = RT_LIGHT_Find (light_name);
+			ov = RT_LIGHT_FindInstance (light_name, (uint64_t)i);
 		if (ov)
 		{
 			if (ov->has_intensity)

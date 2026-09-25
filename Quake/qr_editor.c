@@ -2537,6 +2537,8 @@ static rt_light_t *QRE_LightGroupShared (const char *name, const rt_light_t *sel
 	{
 		if (!list[i].valid || !list[i].group_edit || &list[i] == self)
 			continue;
+		if (!RT_LIGHT_HasFields (&list[i]))
+			continue; // a member with nothing authored has no values to share
 		RT_MAT_GroupBaseOf (list[i].name, g2, sizeof (g2));
 		if (!strcmp (g2, group))
 			return &list[i];
@@ -2572,6 +2574,9 @@ static void QRE_BuildLightPanelGUI (void)
 	int         panel_w = glwidth / 4;
 	qboolean    exit_requested = false;
 	rt_light_t *light = NULL;
+	rt_light_t *inst = NULL;
+	rt_light_t *shared = NULL;
+	char        ikey[MAX_QPATH];
 
 	if (panel_w < 352)
 		panel_w = 352;
@@ -2580,11 +2585,22 @@ static void QRE_BuildLightPanelGUI (void)
 
 	QR_GUI_Label ("LIGHT EDITOR");
 	QRE_RefreshSelectedLight ();
+	if (qre.sel_light_valid && qre.sel_light.name[0])
+	{
+		// A light that left its group has an entry of its own, keyed by the
+		// emitter and the instance id; otherwise the emitter's shared entry is
+		// what the panel edits (and an edit of it touches the whole group).
+		RT_LIGHT_MakeKey (qre.sel_light.name, qre.sel_light.uniqueID, ikey, sizeof (ikey));
+		inst = RT_LIGHT_Find (ikey);
+		shared = RT_LIGHT_Ensure (qre.sel_light.name);
+		light = inst ? inst : shared;
+	}
 	if (qre.sel_light_valid)
 	{
 		char buf[MAX_QPATH + 64];
 
-		q_snprintf (buf, sizeof (buf), "light: %s", qre.sel_light.name[0] ? qre.sel_light.name : "(no emitter name)");
+		q_snprintf (buf, sizeof (buf), "light: %s%s", qre.sel_light.name[0] ? qre.sel_light.name : "(no emitter name)",
+		            inst ? "  (own)" : "");
 		QR_GUI_LabelDim (buf);
 		q_snprintf (buf, sizeof (buf), "at %.0f %.0f %.0f   radius %.1f",
 		            qre.sel_light.position[0], qre.sel_light.position[1], qre.sel_light.position[2],
@@ -2622,9 +2638,6 @@ static void QRE_BuildLightPanelGUI (void)
 	QR_GUI_Separator ();
 	QR_GUI_BeginScroll ();
 
-	if (qre.sel_light_valid && qre.sel_light.name[0])
-		light = RT_LIGHT_Ensure (qre.sel_light.name);
-
 	if (light)
 	{
 		const rt_light_t *orig = QRE_LightOriginal (light->name);
@@ -2632,28 +2645,72 @@ static void QRE_BuildLightPanelGUI (void)
 
 		// group_edit at the very top: whether an edit touches the whole group
 		{
-			int ge = light->group_edit ? 1 : 0;
+			int ge = inst ? 0 : 1;
 
 			if (QR_GUI_Checkbox ("group_edit", &ge,
-			                     "Edit every light of this group (the emitter's model) at once. Off keeps this light's own values; on takes the group's values back."))
+			                     "Edit every light of this group (the emitter's model) at once. Off gives this light an entry of its own; on drops it and takes the group's values back."))
 			{
 				if (ge)
-					QRE_LightJoinGroup (light);
+				{
+					// back into the group: the instance entry goes and the
+					// group's values apply again
+					RT_LIGHT_Remove (ikey);
+					inst = NULL;
+					light = RT_LIGHT_Ensure (qre.sel_light.name);
+					if (light)
+					{
+						light->group_edit = true;
+						if (!RT_LIGHT_HasFields (light))
+							QRE_LightJoinGroup (light);
+						else
+							QRE_TouchLight (light->name);
+					}
+				}
 				else
 				{
-					light->group_edit = false;
-					QRE_TouchLight (light->name);
+					// its own entry: the values in effect move into it and the
+					// group stops touching this light
+					rt_light_t *own = RT_LIGHT_Ensure (ikey);
+
+					if (own)
+					{
+						if (light)
+						{
+							own->has_radius = light->has_radius;
+							own->radius = light->radius;
+							own->has_intensity = light->has_intensity;
+							own->intensity = light->intensity;
+							own->has_offset = light->has_offset;
+							VectorCopy (light->offset, own->offset);
+							own->has_color = light->has_color;
+							VectorCopy (light->color, own->color);
+							own->force_rasterize = light->force_rasterize;
+						}
+						own->group_edit = false;
+						QRE_TouchLight (own->name);
+						inst = own;
+						light = own;
+					}
 				}
 			}
 		}
-		if (QR_GUI_ResetButton ("group_edit", light->group_edit != (orig ? orig->group_edit : true)))
+		if (QR_GUI_ResetButton ("group_edit", inst != NULL ||
+		                        (light->group_edit != (orig ? orig->group_edit : true))))
 		{
-			if (orig ? orig->group_edit : true)
-				QRE_LightJoinGroup (light);
-			else
+			// the reset goes back to following the group
+			if (inst)
 			{
-				light->group_edit = false;
-				QRE_TouchLight (light->name);
+				RT_LIGHT_Remove (ikey);
+				inst = NULL;
+				light = RT_LIGHT_Ensure (qre.sel_light.name);
+			}
+			if (light)
+			{
+				light->group_edit = true;
+				if (!RT_LIGHT_HasFields (light))
+					QRE_LightJoinGroup (light);
+				else
+					QRE_TouchLight (light->name);
 			}
 		}
 

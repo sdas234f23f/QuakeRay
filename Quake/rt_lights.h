@@ -55,6 +55,17 @@ rt_light_t *RT_LIGHT_Find (const char *name);
 // when something changes. NULL when the list is full.
 rt_light_t *RT_LIGHT_Ensure (const char *name);
 
+// A light that left its group is keyed by its emitter and its instance id
+// ("progs/flame.mdl:frame0#123"), so several lights of one emitter keep their
+// own values. The runtime looks the instance key up first and falls back to the
+// emitter's shared entry.
+void        RT_LIGHT_MakeKey (const char *name, uint64_t uniqueID, char *out, size_t outsize);
+rt_light_t *RT_LIGHT_FindInstance (const char *name, uint64_t uniqueID);
+rt_light_t *RT_LIGHT_EnsureInstance (const char *name, uint64_t uniqueID);
+// Drops an entry (the editor drops an instance entry when the light rejoins its
+// group). Entries after it move down; pointers into the list do not survive.
+void        RT_LIGHT_Remove (const char *name);
+
 // The file format (the editor owns the paths and the session flow).
 void RT_LIGHT_WriteEntry (FILE *f, const rt_light_t *l);
 // The header comment of a lights.yaml the writer creates from scratch.

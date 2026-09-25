@@ -906,7 +906,7 @@ void RT_UploadAllElights ()
 
 		if (accept)
 		{
-			rt_light_t *ov = RT_LIGHT_Find (src->classname);
+			rt_light_t *ov = RT_LIGHT_FindInstance (src->classname, (uint64_t)UINT16_MAX + i);
 			float       radius = CVAR_TO_FLOAT (rt_elight_radius);
 			vec3_t      position = {src->origin[0], src->origin[1], src->origin[2]};
 			float       intens = quake_intensity / CVAR_TO_FLOAT (rt_elight_normaliz);

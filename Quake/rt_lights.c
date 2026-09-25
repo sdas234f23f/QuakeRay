@@ -84,16 +84,36 @@ static const char *rt_light_header =
     "# An emitter without an entry uses the global rt_dlight_* settings.\n";
 
 // The name the editor and the renderer agree on: the normalized texture name
-// with a file extension stripped (a model skin keeps its ":frameN").
+// with a file extension stripped (a model skin keeps its ":frameN"). An
+// instance key ("name#id") keeps its id and normalizes the name before it.
 static void rt_light_norm(const char *name, char *out, size_t outsize)
 {
+    char  buf[MAX_QPATH];
+    char *hash;
     char *dot;
 
-    RT_MAT_NormalizeName(name, out, outsize);
+    q_strlcpy(buf, name, sizeof(buf));
+    hash = strchr(buf, '#');
+    if (hash)
+    {
+        *hash = '\0';
+    }
+
+    RT_MAT_NormalizeName(buf, out, outsize);
     dot = strrchr(out, '.');
     if (dot && !strchr(dot, ':'))
     {
         *dot = '\0';
+    }
+
+    if (hash)
+    {
+        size_t len = strlen(out);
+
+        if (len + 1 < outsize)
+        {
+            q_snprintf(out + len, outsize - len, "#%s", hash + 1);
+        }
     }
 }
 
@@ -172,6 +192,63 @@ rt_light_t *RT_LIGHT_Ensure(const char *name)
     light->group_edit = true; // part of its group until the flag says otherwise
     q_strlcpy(light->name, normalized, sizeof(light->name));
     return light;
+}
+
+void RT_LIGHT_MakeKey(const char *name, uint64_t uniqueID, char *out, size_t outsize)
+{
+    char normalized[MAX_QPATH];
+
+    rt_light_norm(name, normalized, sizeof(normalized));
+    q_snprintf(out, outsize, "%s#%llu", normalized, (unsigned long long)uniqueID);
+}
+
+rt_light_t *RT_LIGHT_FindInstance(const char *name, uint64_t uniqueID)
+{
+    char  key[MAX_QPATH];
+    rt_light_t *light;
+
+    if (!rt_light_initialized || !name || !name[0])
+    {
+        return NULL;
+    }
+
+    RT_LIGHT_MakeKey(name, uniqueID, key, sizeof(key));
+    light = rt_light_find_in(key);
+    return light ? light : RT_LIGHT_Find(name);
+}
+
+rt_light_t *RT_LIGHT_EnsureInstance(const char *name, uint64_t uniqueID)
+{
+    char key[MAX_QPATH];
+
+    RT_LIGHT_MakeKey(name, uniqueID, key, sizeof(key));
+    return RT_LIGHT_Ensure(key);
+}
+
+void RT_LIGHT_Remove(const char *name)
+{
+    char        normalized[MAX_QPATH];
+    rt_light_t *light;
+    int         index;
+
+    if (!rt_light_initialized || !name || !name[0])
+    {
+        return;
+    }
+
+    rt_light_norm(name, normalized, sizeof(normalized));
+    light = rt_light_find_in(normalized);
+    if (!light)
+    {
+        return;
+    }
+
+    index = (int)(light - rt_lights);
+    for (; index + 1 < rt_light_count; index++)
+    {
+        rt_lights[index] = rt_lights[index + 1];
+    }
+    rt_light_count--;
 }
 
 qboolean RT_LIGHT_HasFields(const rt_light_t *l)

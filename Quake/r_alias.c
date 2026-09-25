@@ -195,7 +195,7 @@ static void GL_DrawAliasFrame(
     qboolean rasterize = entity_alpha < 1.0f;
     qboolean isfirstperson = (e == &cl.viewent);
     qboolean isviewer = (e == &cl.entities[cl.viewentity]) && !CVAR_TO_BOOL(chase_active);
-    rt_light_t *light_ov = tx ? RT_LIGHT_Find (tx->name) : NULL;
+    rt_light_t *light_ov = tx ? RT_LIGHT_FindInstance (tx->name, RT_GetAliasModelUniqueId (entuniqueid)) : NULL;
 
     if (tx && (tx->rtforcerasterize || (light_ov && light_ov->force_rasterize)))
         rasterize = true;
