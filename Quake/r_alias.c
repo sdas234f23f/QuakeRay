@@ -24,6 +24,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 // r_alias.c -- alias model rendering
 
 #include "quakedef.h"
+#include "rt_lights.h"
 
 extern cvar_t r_drawflat, gl_fullbrights, r_lerpmodels, r_lerpmove, r_showtris; // johnfitz
 extern cvar_t scr_fov;
@@ -200,23 +201,37 @@ static void GL_DrawAliasFrame(
 
     if (tx && tx->rthaslightcolor && RT_AllowFakeLights ())
     {
-        vec3_t color = {tx->rtlightcolor[0], tx->rtlightcolor[1], tx->rtlightcolor[2]};
-        VectorScale(color, CVAR_TO_FLOAT(rt_dlight_intensity), color);
+        rt_light_t *ov = RT_LIGHT_Find (tx->name);
+        vec3_t      color = {tx->rtlightcolor[0], tx->rtlightcolor[1], tx->rtlightcolor[2]};
+        vec3_t      lightorigin;
+        float       intensity = (ov && ov->has_intensity) ? ov->intensity : CVAR_TO_FLOAT (rt_dlight_intensity);
+        float       radius = (ov && ov->has_radius) ? ov->radius : CVAR_TO_FLOAT (rt_dlight_radius);
+
+        VectorScale(color, intensity, color);
         RT_FIXUP_LIGHT_INTENSITY(color, true);
+
+        VectorCopy(lerpdata.origin, lightorigin);
+        if (ov && ov->has_offset)
+        {
+            lightorigin[0] += ov->offset[0];
+            lightorigin[1] += ov->offset[1];
+            lightorigin[2] += ov->offset[2];
+        }
+        else
+        {
+            lightorigin[2] += tx->rtupoffset;
+        }
 
         RgSphericalLightUploadInfo light_info = {
             .uniqueID = RT_GetAliasModelUniqueId(entuniqueid),
             .color = {color[0], color[1], color[2]},
-            .position = {lerpdata.origin[0], lerpdata.origin[1], lerpdata.origin[2] + tx->rtupoffset},
-            .radius = METRIC_TO_QUAKEUNIT(CVAR_TO_FLOAT (rt_dlight_radius)),
+            .position = {lightorigin[0], lightorigin[1], lightorigin[2]},
+            .radius = METRIC_TO_QUAKEUNIT(radius),
         };
 
         RgResult r = rgUploadSphericalLight(vulkan_globals.instance, &light_info);
         RG_CHECK(r);
 
-        vec3_t lightorigin;
-        VectorCopy(lerpdata.origin, lightorigin);
-        lightorigin[2] += tx->rtupoffset;
         if (CVAR_TO_FLOAT (rt_cluster_dlights) != 0)
             RT_ClusterLightAdd(light_info.uniqueID, lightorigin, RT_ClusterLightReach ());
     }

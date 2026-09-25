@@ -28,6 +28,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "bgmusic.h"
 #include "palette.h"
 #include "rt_material.h"
+#include "rt_lights.h"
 #include "qr_editor.h"
 #include "SDL.h"
 #include "SDL_syswm.h"
@@ -1490,6 +1491,7 @@ static void GL_InitInstance (void)
 	RG_CHECK (r);
 
 	RT_MAT_Init ();
+	RT_LIGHT_Init ();
 
 	QR_Editor_Init (); // qr light editor console commands
 
@@ -2222,6 +2224,7 @@ void VID_Shutdown (void)
 		if (vulkan_globals.instance != RG_NULL_HANDLE)
 		{
 		    RT_MAT_Shutdown ();
+		    RT_LIGHT_Shutdown ();
 		    RgResult r = rgDestroyInstance (vulkan_globals.instance);
 			RG_CHECK (r);
 

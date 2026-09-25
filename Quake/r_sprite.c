@@ -24,6 +24,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 
 #include "quakedef.h"
 #include "gl_heap.h"
+#include "rt_lights.h"
 
 extern cvar_t rt_model_metal, rt_model_rough;
 extern cvar_t rt_dlight_intensity, rt_dlight_radius;
@@ -202,22 +203,35 @@ void R_DrawSpriteModel (cb_context_t *cbx, entity_t *e, int entuniqueid)
 
 	if (tx && tx->rthaslightcolor && RT_AllowFakeLights ())
 	{
-		vec3_t color = {tx->rtlightcolor[0], tx->rtlightcolor[1], tx->rtlightcolor[2]};
-		VectorScale (color, CVAR_TO_FLOAT (rt_dlight_intensity), color);
+		rt_light_t *ov = RT_LIGHT_Find (tx->name);
+		vec3_t      color = {tx->rtlightcolor[0], tx->rtlightcolor[1], tx->rtlightcolor[2]};
+		vec3_t      lightorigin;
+		float       intensity = (ov && ov->has_intensity) ? ov->intensity : CVAR_TO_FLOAT (rt_dlight_intensity);
+		float       radius = (ov && ov->has_radius) ? ov->radius : CVAR_TO_FLOAT (rt_dlight_radius);
+
+		VectorScale (color, intensity, color);
 		RT_FIXUP_LIGHT_INTENSITY (color, true);
+
+		VectorCopy (e->origin, lightorigin);
+		if (ov && ov->has_offset)
+		{
+			lightorigin[0] += ov->offset[0];
+			lightorigin[1] += ov->offset[1];
+			lightorigin[2] += ov->offset[2];
+		}
 
 		RgSphericalLightUploadInfo light_info = {
 			.uniqueID = RT_GetSpriteModelUniqueId (entuniqueid),
 			.color = {color[0], color[1], color[2]},
-			.position = {e->origin[0], e->origin[1], e->origin[2]},
-			.radius = METRIC_TO_QUAKEUNIT (CVAR_TO_FLOAT (rt_dlight_radius)),
+			.position = {lightorigin[0], lightorigin[1], lightorigin[2]},
+			.radius = METRIC_TO_QUAKEUNIT (radius),
 		};
 
 		RgResult r = rgUploadSphericalLight (vulkan_globals.instance, &light_info);
 		RG_CHECK (r);
 
 		if (CVAR_TO_FLOAT (rt_cluster_dlights) != 0)
-			RT_ClusterLightAdd (light_info.uniqueID, e->origin, RT_ClusterLightReach ());
+			RT_ClusterLightAdd (light_info.uniqueID, lightorigin, RT_ClusterLightReach ());
 	}
 
 	if (is_rasterized)
