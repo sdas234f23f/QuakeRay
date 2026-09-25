@@ -93,6 +93,71 @@ nvrhi::TextureHandle wrapEngineTexture(nvrhi::IDevice *device,
     return device->createHandleForNativeTexture(nvrhi::ObjectTypes::VK_Image, nativeImage, desc);
 }
 
+nvrhi::TextureHandle wrapEngineTextureArray(nvrhi::IDevice *device,
+                                            uint64_t vkImage,
+                                            uint64_t imageView,
+                                            uint32_t vkFormat,
+                                            uint32_t width,
+                                            uint32_t height,
+                                            uint32_t arraySize,
+                                            uint32_t mipLevels,
+                                            std::string_view debugName)
+{
+    if (device == nullptr || vkImage == 0 || width == 0 || height == 0 || arraySize == 0)
+    {
+        return nullptr;
+    }
+
+    const nvrhi::Format format = convertVkFormat(VkFormat(vkFormat));
+    if (format == nvrhi::Format::UNKNOWN)
+    {
+        return nullptr;
+    }
+
+    // As in wrapEngineRenderTarget: no NVRHI entry point adopts a native view - the only entry
+    // point, createHandleForNativeTexture, takes the image alone (vulkan-texture.cpp:805-822) and
+    // the backend rebuilds every view from the desc (:287-349) - so the engine's view stays with
+    // the caller and the parameter is unused.
+    (void)imageView;
+
+    nvrhi::TextureDesc desc;
+    // The array shape is the point of this wrap: Texture2DArray with the caller's layer count, so
+    // the backend's view is an e2DArray view over every layer (vulkan-texture.cpp:72-74,
+    // :287-349) and a `Texture2DArray` load in the shader is legal. wrapEngineTexture keeps
+    // Texture2D and arraySize = 1 instead.
+    desc.dimension = nvrhi::TextureDimension::Texture2DArray;
+    desc.format = format;
+    desc.width = width;
+    desc.height = height;
+    desc.arraySize = arraySize;
+    desc.mipLevels = mipLevels;
+    desc.sampleCount = 1;
+
+    desc.isShaderResource = true;
+    desc.isRenderTarget = false;
+    desc.isUAV = false;
+
+    // Same state contract as wrapEngineTexture: the engine leaves the image in
+    // VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL (BlueNoise.cpp:157-161), which is ShaderResource in
+    // NVRHI terms (vulkan-constants.cpp:234-241), and keepInitialState makes every command list
+    // start from that state and return the image there on close (state-tracking.cpp:350-361).
+    // StateInitialized is still false on the first list that samples the handle, so the caller
+    // announces ShaderResource there (RhiTextureSource.h documents the rule); the same pair is what
+    // wrapEngineTexture and rhi::createWhiteTexture use for their resting textures
+    // (RhiResources.cpp:53-54).
+    desc.initialState = nvrhi::ResourceStates::ShaderResource;
+    desc.keepInitialState = true;
+
+    desc.debugName = std::string(debugName);
+
+    const nvrhi::Object nativeImage(vkImage);
+
+    // Same tail as wrapEngineTexture: the backend rejects a null Object and any object type other
+    // than VK_Image (vulkan-texture.cpp:805-811) and marks the wrapper managed = false (:819), so
+    // neither the handle nor NVRHI owns the image.
+    return device->createHandleForNativeTexture(nvrhi::ObjectTypes::VK_Image, nativeImage, desc);
+}
+
 nvrhi::TextureHandle wrapEngineRenderTarget(nvrhi::IDevice *device,
                                            uint64_t image,
                                            uint64_t imageView,

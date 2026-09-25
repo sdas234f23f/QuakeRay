@@ -74,6 +74,7 @@ class NvrhiFrameSkeleton;
 class RhiDebugTracePass;
 class RhiRtComposePass;
 class RhiRtDirectPass;
+class RhiRtIndirectPass;
 class RhiRtPrimaryPass;
 struct NvrhiRequirements;
 
@@ -291,6 +292,12 @@ private:
     // flag is off or the creation failed; with the flag on and no pair the skeleton stays
     // unavailable and the legacy renderer is kept.
     std::shared_ptr<RhiRtDirectPass>        rhiRtDirectPass;
+    // The RHI indirect / GI pass (RHI/RhiRtIndirectPass.h): the bounce-light term of the traced
+    // chain (A4.3), created next to the direct pass - it borrows the primary's layout handles and
+    // the direct pass's light set, so both have to outlive it and be destroyed after it - and
+    // referenced by the skeleton. Null when the flag is off or the creation failed; with the flag
+    // on and no pass the skeleton stays unavailable and the legacy renderer is kept.
+    std::shared_ptr<RhiRtIndirectPass>      rhiRtIndirectPass;
     // The RHI compose preview (RHI/RhiRtComposePass.h): the real adapter -> interleave ->
     // checkerboard chain writing FINAL for the traced frame, created only when 'rhicompose' is on
     // and referenced by the skeleton, which then presents its FINAL image. Null when the flag is

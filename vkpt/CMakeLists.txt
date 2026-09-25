@@ -93,6 +93,7 @@ set(vkpt_SOURCES
     Source/RHI/RhiPipeline.cpp
     Source/RHI/RhiRtComposePass.cpp
     Source/RHI/RhiRtDirectPass.cpp
+    Source/RHI/RhiRtIndirectPass.cpp
     Source/RHI/RhiRtPrimaryPass.cpp
     Source/RHI/RhiSkyPass.cpp
     Source/RHI/RhiResources.cpp

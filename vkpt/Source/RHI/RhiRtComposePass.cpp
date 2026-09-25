@@ -2,7 +2,6 @@
 
 #include "RhiFrameContext.h"
 #include "RhiPipeline.h"
-#include "RhiResources.h"
 #include "RhiTextureSource.h"
 
 #include "../Framebuffers.h"
@@ -43,14 +42,14 @@ constexpr uint32_t COMPOSE_GROUP_SIZE = 16;
 constexpr uint32_t FRAMEBUFFER_UAV_OFFSET = 0;
 constexpr uint32_t FRAMEBUFFER_SRV_OFFSET = 124;
 
-// The union of the engine images the three passes touch, deduplicated: 20 images, each wrapped once
+// The union of the engine images the three passes touch, deduplicated: 23 images, each wrapped once
 // per slot and shared by the three sets, so NVRHI's own UAV -> SRV -> UAV transitions on one wrap
 // order the pass-to-pass hand-offs (Q2_COLOR 117 is written by the adapter and read by the
 // interleave; PRE_FINAL 27 is written by the interleave and read by the checkerboard). The three
-// UNFILTERED_INDIRECT_S_H images (16-18) are deliberately not here: nothing writes them under
-// `rhiframe` (the indirect raygen is A4.3), so the adapter's set binds the module's zero texture
-// for them instead (a42b_recon.md §3.2, option 3).
-constexpr uint32_t COMPOSE_IMAGE_COUNT = 20;
+// UNFILTERED_INDIRECT_S_H images (16-18) are written by the A4.3 indirect pass earlier on the same
+// command list (RhiRtIndirectPass), and the adapter samples them through the 140/141/142 bindings
+// below like the rest of the union.
+constexpr uint32_t COMPOSE_IMAGE_COUNT = 23;
 constexpr FramebufferImageIndex COMPOSE_IMAGES[COMPOSE_IMAGE_COUNT] =
 {
     FB_IMAGE_INDEX_ALBEDO,                //   0  framebufAlbedo           (adapter SRV)
@@ -59,6 +58,9 @@ constexpr FramebufferImageIndex COMPOSE_IMAGES[COMPOSE_IMAGE_COUNT] =
     FB_IMAGE_INDEX_METALLIC_ROUGHNESS,    //   7  framebufMetallicRoughness (adapter SRV)
     FB_IMAGE_INDEX_UNFILTERED_DIRECT,     //  14  framebufUnfilteredDirect  (adapter SRV)
     FB_IMAGE_INDEX_UNFILTERED_SPECULAR,   //  15  framebufUnfilteredSpecular (adapter SRV)
+    FB_IMAGE_INDEX_UNFILTERED_INDIRECT_S_H_R, //  16  framebufUnfilteredIndirectSH_R (adapter SRV; written by the indirect pass)
+    FB_IMAGE_INDEX_UNFILTERED_INDIRECT_S_H_G, //  17  framebufUnfilteredIndirectSH_G (adapter SRV; written by the indirect pass)
+    FB_IMAGE_INDEX_UNFILTERED_INDIRECT_S_H_B, //  18  framebufUnfilteredIndirectSH_B (adapter SRV; written by the indirect pass)
     FB_IMAGE_INDEX_THROUGHPUT,            //  26  framebufThroughput        (adapter/interleave/checkerboard SRV)
     FB_IMAGE_INDEX_PRE_FINAL,             //  27  framebufPreFinal          (interleave UAV, checkerboard SRV)
     FB_IMAGE_INDEX_FINAL,                 //  28  framebufFinal             (checkerboard UAV)
@@ -75,66 +77,64 @@ constexpr FramebufferImageIndex COMPOSE_IMAGES[COMPOSE_IMAGE_COUNT] =
     FB_IMAGE_INDEX_Q2_COLOR,              // 117  framebufQ2Color           (adapter UAV, interleave SRV)
 };
 
-static_assert(COMPOSE_IMAGE_COUNT == 20,
-              "the per-slot image arrays of RhiRtComposePass.h are sized 20 (COMPOSE_IMAGES)");
+static_assert(COMPOSE_IMAGE_COUNT == 23,
+              "the per-slot image arrays of RhiRtComposePass.h are sized 23 (COMPOSE_IMAGES)");
 
-// One item of a pass's set 0: the engine image, the binding kind, and whether the module
-// substitutes its zero texture for that binding (the unwritten unfiltered indirect SH images).
-// 'isUAV' selects both the layout item and the set item type; 'image' also carries the raw binding,
-// through the generated array of the matching kind.
+// One item of a pass's set 0: the engine image and the binding kind. 'isUAV' selects both the
+// layout item and the set item type; 'image' also carries the raw binding, through the generated
+// array of the matching kind.
 struct ComposeBinding
 {
     FramebufferImageIndex image;
     bool isUAV;
-    bool isZeroTexture;
 };
 
 // CmQ2Adapter: 5 storage images and 12 sampled images (measured: exactly these 17 bindings, all in
 // set 0; the module's own uniform layout carries set 1). The order is the reconnaissance's table
-// order - the UAVs first, then the SRVs. 16/17/18 are bound to the zero texture (isZeroTexture),
-// the rest to the engine wraps.
+// order - the UAVs first, then the SRVs. 16-18 are sampled like the rest; the A4.3 indirect pass
+// writes them earlier on the same command list.
 constexpr uint32_t ADAPTER_BINDING_COUNT = 17;
 constexpr ComposeBinding ADAPTER_BINDINGS[ADAPTER_BINDING_COUNT] =
 {
-    { FB_IMAGE_INDEX_Q2_COLOR_L_F_S_H,      true,  false }, //  73  framebufQ2ColorLF_SH
-    { FB_IMAGE_INDEX_Q2_COLOR_L_F_C_O_C_G,  true,  false }, //  75  framebufQ2ColorLF_COCG
-    { FB_IMAGE_INDEX_Q2_COLOR_H_F,          true,  false }, //  77  framebufQ2ColorHF
-    { FB_IMAGE_INDEX_Q2_COLOR_SPEC,         true,  false }, //  79  framebufQ2ColorSpec
-    { FB_IMAGE_INDEX_Q2_COLOR,              true,  false }, // 117  framebufQ2Color
-    { FB_IMAGE_INDEX_ALBEDO,                false, false }, // 124  framebufAlbedo_Sampled
-    { FB_IMAGE_INDEX_IS_SKY,                false, false }, // 126  framebufIsSky_Sampled
-    { FB_IMAGE_INDEX_NORMAL,                false, false }, // 127  framebufNormal_Sampled
-    { FB_IMAGE_INDEX_METALLIC_ROUGHNESS,    false, false }, // 131  framebufMetallicRoughness_Sampled
-    { FB_IMAGE_INDEX_UNFILTERED_DIRECT,     false, false }, // 138  framebufUnfilteredDirect_Sampled
-    { FB_IMAGE_INDEX_UNFILTERED_SPECULAR,   false, false }, // 139  framebufUnfilteredSpecular_Sampled
-    { FB_IMAGE_INDEX_UNFILTERED_INDIRECT_S_H_R, false, true }, // 140  framebufUnfilteredIndirectSH_R_Sampled
-    { FB_IMAGE_INDEX_UNFILTERED_INDIRECT_S_H_G, false, true }, // 141  framebufUnfilteredIndirectSH_G_Sampled
-    { FB_IMAGE_INDEX_UNFILTERED_INDIRECT_S_H_B, false, true }, // 142  framebufUnfilteredIndirectSH_B_Sampled
-    { FB_IMAGE_INDEX_THROUGHPUT,            false, false }, // 150  framebufThroughput_Sampled
-    { FB_IMAGE_INDEX_Q2_TRANSPARENT,        false, false }, // 212  framebufQ2Transparent_Sampled
-    { FB_IMAGE_INDEX_Q2_FOG_ACCUM,          false, false }, // 214  framebufQ2FogAccum_Sampled
+    { FB_IMAGE_INDEX_Q2_COLOR_L_F_S_H,     true  }, //  73  framebufQ2ColorLF_SH
+    { FB_IMAGE_INDEX_Q2_COLOR_L_F_C_O_C_G, true  }, //  75  framebufQ2ColorLF_COCG
+    { FB_IMAGE_INDEX_Q2_COLOR_H_F,         true  }, //  77  framebufQ2ColorHF
+    { FB_IMAGE_INDEX_Q2_COLOR_SPEC,        true  }, //  79  framebufQ2ColorSpec
+    { FB_IMAGE_INDEX_Q2_COLOR,             true  }, // 117  framebufQ2Color
+    { FB_IMAGE_INDEX_ALBEDO,               false }, // 124  framebufAlbedo_Sampled
+    { FB_IMAGE_INDEX_IS_SKY,               false }, // 126  framebufIsSky_Sampled
+    { FB_IMAGE_INDEX_NORMAL,               false }, // 127  framebufNormal_Sampled
+    { FB_IMAGE_INDEX_METALLIC_ROUGHNESS,   false }, // 131  framebufMetallicRoughness_Sampled
+    { FB_IMAGE_INDEX_UNFILTERED_DIRECT,    false }, // 138  framebufUnfilteredDirect_Sampled
+    { FB_IMAGE_INDEX_UNFILTERED_SPECULAR,  false }, // 139  framebufUnfilteredSpecular_Sampled
+    { FB_IMAGE_INDEX_UNFILTERED_INDIRECT_S_H_R, false }, // 140  framebufUnfilteredIndirectSH_R_Sampled
+    { FB_IMAGE_INDEX_UNFILTERED_INDIRECT_S_H_G, false }, // 141  framebufUnfilteredIndirectSH_G_Sampled
+    { FB_IMAGE_INDEX_UNFILTERED_INDIRECT_S_H_B, false }, // 142  framebufUnfilteredIndirectSH_B_Sampled
+    { FB_IMAGE_INDEX_THROUGHPUT,           false }, // 150  framebufThroughput_Sampled
+    { FB_IMAGE_INDEX_Q2_TRANSPARENT,       false }, // 212  framebufQ2Transparent_Sampled
+    { FB_IMAGE_INDEX_Q2_FOG_ACCUM,         false }, // 214  framebufQ2FogAccum_Sampled
 };
 
 // CmQ2Interleave: 1 storage image and 2 sampled images.
 constexpr uint32_t INTERLEAVE_BINDING_COUNT = 3;
 constexpr ComposeBinding INTERLEAVE_BINDINGS[INTERLEAVE_BINDING_COUNT] =
 {
-    { FB_IMAGE_INDEX_PRE_FINAL, true,  false }, //  27  framebufPreFinal
-    { FB_IMAGE_INDEX_THROUGHPUT, false, false }, // 150  framebufThroughput_Sampled
-    { FB_IMAGE_INDEX_Q2_COLOR,  false, false }, // 241  framebufQ2Color_Sampled
+    { FB_IMAGE_INDEX_PRE_FINAL, true  }, //  27  framebufPreFinal
+    { FB_IMAGE_INDEX_THROUGHPUT, false }, // 150  framebufThroughput_Sampled
+    { FB_IMAGE_INDEX_Q2_COLOR,  false }, // 241  framebufQ2Color_Sampled
 };
 
 // CmCheckerboard: 3 storage images and 4 sampled images.
 constexpr uint32_t CHECKERBOARD_BINDING_COUNT = 7;
 constexpr ComposeBinding CHECKERBOARD_BINDINGS[CHECKERBOARD_BINDING_COUNT] =
 {
-    { FB_IMAGE_INDEX_FINAL,            true,  false }, //  28  framebufFinal
-    { FB_IMAGE_INDEX_ACID_FOG,         true,  false }, //  60  framebufAcidFog
-    { FB_IMAGE_INDEX_SCREEN_EMISSION,  true,  false }, //  62  framebufScreenEmission
-    { FB_IMAGE_INDEX_THROUGHPUT,       false, false }, // 150  framebufThroughput_Sampled
-    { FB_IMAGE_INDEX_PRE_FINAL,        false, false }, // 151  framebufPreFinal_Sampled
-    { FB_IMAGE_INDEX_ACID_FOG_R_T,     false, false }, // 183  framebufAcidFogRT_Sampled
-    { FB_IMAGE_INDEX_SCREEN_EMIS_R_T,  false, false }, // 185  framebufScreenEmisRT_Sampled
+    { FB_IMAGE_INDEX_FINAL,            true  }, //  28  framebufFinal
+    { FB_IMAGE_INDEX_ACID_FOG,         true  }, //  60  framebufAcidFog
+    { FB_IMAGE_INDEX_SCREEN_EMISSION,  true  }, //  62  framebufScreenEmission
+    { FB_IMAGE_INDEX_THROUGHPUT,       false }, // 150  framebufThroughput_Sampled
+    { FB_IMAGE_INDEX_PRE_FINAL,        false }, // 151  framebufPreFinal_Sampled
+    { FB_IMAGE_INDEX_ACID_FOG_R_T,     false }, // 183  framebufAcidFogRT_Sampled
+    { FB_IMAGE_INDEX_SCREEN_EMIS_R_T,  false }, // 185  framebufScreenEmisRT_Sampled
 };
 
 // The engine raw binding of one entry: the storage-image array for the UAVs, the sampled array for
@@ -155,7 +155,7 @@ uint32_t GetComposeSlot(const ComposeBinding &binding)
 constexpr uint32_t COMPOSE_IMAGE_NONE = COMPOSE_IMAGE_COUNT;
 
 // The union-table position of an engine image, or COMPOSE_IMAGE_NONE when the image is not wrapped
-// by the module (which is only legal for a zero-texture binding).
+// by the module (which no table entry may name).
 constexpr uint32_t FindComposeImage(FramebufferImageIndex image)
 {
     for (uint32_t i = 0; i < COMPOSE_IMAGE_COUNT; i++)
@@ -169,10 +169,9 @@ constexpr uint32_t FindComposeImage(FramebufferImageIndex image)
     return COMPOSE_IMAGE_NONE;
 }
 
-// The three pass tables have to agree with the union table item by item: every engine-bound entry
-// resolves to a wrap, and every zero-texture entry is exactly one of the images the module does not
-// wrap. The static assertion below runs at compile time, so a hand-edited table cannot produce a
-// half-filled binding set at run time.
+// The three pass tables have to agree with the union table item by item: every entry has to
+// resolve to an image the module wraps. The static assertion below runs at compile time, so a
+// hand-edited table cannot produce a half-filled binding set at run time.
 constexpr bool ComposeTablesAreConsistent()
 {
     const ComposeBinding *const tables[] =
@@ -192,9 +191,7 @@ constexpr bool ComposeTablesAreConsistent()
     {
         for (uint32_t i = 0; i < counts[table]; i++)
         {
-            const bool wrapped = FindComposeImage(tables[table][i].image) != COMPOSE_IMAGE_NONE;
-
-            if (tables[table][i].isZeroTexture == wrapped)
+            if (FindComposeImage(tables[table][i].image) == COMPOSE_IMAGE_NONE)
             {
                 return false;
             }
@@ -223,10 +220,12 @@ constexpr bool AreComposeImagesDistinct()
 // The images that end the chain in a sampled read. NVRHI moves a sampled image to
 // VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL (vulkan-resource-bindings.cpp:398-435), while the engine
 // leaves every framebuffer image in VK_IMAGE_LAYOUT_GENERAL (= UnorderedAccess) and the next
-// frame's primary/direct passes write most of these through their own wraps, so the compose pass
-// has to move each one back after the checkerboard. The 7 images left as the last pass's UAV
-// outputs (73, 75, 77, 79, 28, 60, 62) already rest in GENERAL.
-constexpr uint32_t COMPOSE_RESTORE_COUNT = 13;
+// frame's primary/direct/indirect passes write most of these through their own wraps, so the
+// compose pass has to move each one back after the checkerboard. The restore of 16-18 is what lets
+// the next frame's indirect pass write them: its own UnorderedAccess announcement finds the
+// read-only state and emits no transition. The 7 images left as the last pass's UAV outputs
+// (73, 75, 77, 79, 28, 60, 62) already rest in GENERAL.
+constexpr uint32_t COMPOSE_RESTORE_COUNT = 16;
 constexpr FramebufferImageIndex COMPOSE_RESTORE_IMAGES[COMPOSE_RESTORE_COUNT] =
 {
     FB_IMAGE_INDEX_ALBEDO,
@@ -235,6 +234,9 @@ constexpr FramebufferImageIndex COMPOSE_RESTORE_IMAGES[COMPOSE_RESTORE_COUNT] =
     FB_IMAGE_INDEX_METALLIC_ROUGHNESS,
     FB_IMAGE_INDEX_UNFILTERED_DIRECT,
     FB_IMAGE_INDEX_UNFILTERED_SPECULAR,
+    FB_IMAGE_INDEX_UNFILTERED_INDIRECT_S_H_R,
+    FB_IMAGE_INDEX_UNFILTERED_INDIRECT_S_H_G,
+    FB_IMAGE_INDEX_UNFILTERED_INDIRECT_S_H_B,
     FB_IMAGE_INDEX_THROUGHPUT,
     FB_IMAGE_INDEX_ACID_FOG_R_T,
     FB_IMAGE_INDEX_SCREEN_EMIS_R_T,
@@ -258,7 +260,7 @@ constexpr bool AreRestoreImagesWrapped()
 }
 
 static_assert(ComposeTablesAreConsistent(),
-              "every compose binding has to be either a wrapped engine image or a zero-texture entry");
+              "every compose binding has to resolve to an image in the compose image union");
 static_assert(AreComposeImagesDistinct(), "the compose image union must not repeat an image");
 static_assert(AreRestoreImagesWrapped(), "every restored image has to be in the compose image union");
 
@@ -312,15 +314,13 @@ nvrhi::ComputePipelineHandle CreateComposePipeline(nvrhi::IDevice *device,
     return rhi::createComputePipeline(device, desc, "RhiRtComposePass");
 }
 
-// The set over one exact layout. The engine-bound entries take the slot's wrap of that image; the
-// zero-texture entries take the module's cleared stand-in (a42b_recon.md §3.2, option 3). Returns
+// The set over one exact layout. Every entry takes the slot's wrap of that engine image. Returns
 // null when an entry cannot be filled, which the module's static assertions make unreachable for
 // the shipped tables.
 nvrhi::BindingSetHandle CreateFramebufferSet(nvrhi::IDevice *device,
                                              const ComposeBinding *pBindings,
                                              uint32_t count,
                                              const nvrhi::TextureHandle *pEngineTextures,
-                                             nvrhi::ITexture *pZeroTexture,
                                              nvrhi::IBindingLayout *pLayout)
 {
     if (device == nullptr || pLayout == nullptr)
@@ -332,21 +332,9 @@ nvrhi::BindingSetHandle CreateFramebufferSet(nvrhi::IDevice *device,
 
     for (uint32_t i = 0; i < count; i++)
     {
-        nvrhi::ITexture *texture = nullptr;
-
-        if (pBindings[i].isZeroTexture)
-        {
-            texture = pZeroTexture;
-        }
-        else
-        {
-            const uint32_t imageSlot = FindComposeImage(pBindings[i].image);
-
-            if (imageSlot != COMPOSE_IMAGE_NONE)
-            {
-                texture = pEngineTextures[imageSlot].Get();
-            }
-        }
+        const uint32_t imageSlot = FindComposeImage(pBindings[i].image);
+        nvrhi::ITexture *texture =
+            imageSlot != COMPOSE_IMAGE_NONE ? pEngineTextures[imageSlot].Get() : nullptr;
 
         if (texture == nullptr)
         {
@@ -377,9 +365,9 @@ RhiRtComposePass::~RhiRtComposePass()
 {
     if (device != nullptr)
     {
-        // The wraps reference engine images and the zero texture is an NVRHI image; the host
-        // destroys the pass while it can still idle the device (VulkanDevice does that before the
-        // skeleton as well), so nothing has to go through a retire queue here.
+        // The wraps reference engine images; the host destroys the pass while it can still idle
+        // the device (VulkanDevice does that before the skeleton as well), so nothing has to go
+        // through a retire queue here.
         device->waitForIdle();
     }
 
@@ -400,10 +388,6 @@ RhiRtComposePass::~RhiRtComposePass()
         target.width = 0;
         target.height = 0;
     }
-
-    zeroTexture = nullptr;
-    zeroTextureWidth = 0;
-    zeroTextureHeight = 0;
 
     checkerboardPipeline = nullptr;
     interleavePipeline = nullptr;
@@ -540,11 +524,11 @@ void RhiRtComposePass::Render(nvrhi::ICommandList *pCommandList,
 
     Target &target = targets[frameIndex];
 
-    // The 20 images of this slot. `GetImageHandles` resolves the engine's ping-pong swap
+    // The 23 images of this slot. `GetImageHandles` resolves the engine's ping-pong swap
     // (Framebuffers.cpp:33-53), so the handle of a `_Prev`-paired variable is the slot's current
     // image, which is the one the engine's own per-slot descriptor set binds to the variable's
     // fixed raw binding - the shader never sees the swap. The 4-tuple overload supplies each
-    // image's extent, which every image here has to answer with the render size: all 20 are
+    // image's extent, which every image here has to answer with the render size: all 23 are
     // render-sized by their generated flags (none carries a FORCE_SIZE/UPSCALED/SINGLE_PIXEL flag),
     // and the shaders access them at `globalUniform.renderWidth/renderHeight`, so a different
     // extent is a wrongly sized wrap and the compose is skipped instead of sampling outside the
@@ -600,7 +584,7 @@ void RhiRtComposePass::Render(nvrhi::ICommandList *pCommandList,
         // The engine re-created its framebuffers (a resize or an image-format change): the wraps
         // and the sets over them are retired and rebuilt. Retiring first is safe even if the
         // rebuild below fails - the next frame retries, and the compose is skipped until it
-        // succeeds. The zero texture is size-keyed separately in PrepareZeroTexture.
+        // succeeds.
         ReleaseFramebufferTarget(target);
 
         for (uint32_t i = 0; i < COMPOSE_IMAGE_COUNT; i++)
@@ -625,14 +609,6 @@ void RhiRtComposePass::Render(nvrhi::ICommandList *pCommandList,
         target.height = height;
     }
 
-    // The stand-in for images 16-18, before the sets that bind it. It is created and cleared on
-    // this list when it is new or the resolution changed; the clear is recorded once per wrap
-    // lifetime, which is sound because nothing ever writes the texture.
-    if (!PrepareZeroTexture(pCommandList, width, height))
-    {
-        return;
-    }
-
     if (!PrepareFramebufferSets(target) || !PrepareUniformSet(target, pUniformBuffer))
     {
         return;
@@ -640,11 +616,11 @@ void RhiRtComposePass::Render(nvrhi::ICommandList *pCommandList,
 
     // The image state contract, spelled out on the class: the engine leaves every framebuffer image
     // in VK_IMAGE_LAYOUT_GENERAL - NVRHI's UnorderedAccess - and this native wrap keeps no state
-    // between command lists (RhiTextureSource.h), so every list announces that state for all 20
-    // images before the first use. The primary and direct passes wrote some of them on this very
-    // list through their own wraps; the physical layout they left them in is exactly this GENERAL
-    // state, so the announcement is the truth and the SRV bindings' automatic transitions start
-    // from it.
+    // between command lists (RhiTextureSource.h), so every list announces that state for all 23
+    // images before the first use. The primary, direct and indirect passes wrote some of them on
+    // this very list through their own wraps; the physical layout they left them in is exactly this
+    // GENERAL state, so the announcement is the truth and the SRV bindings' automatic transitions
+    // start from it.
     for (uint32_t i = 0; i < COMPOSE_IMAGE_COUNT; i++)
     {
         pCommandList->beginTrackingTextureState(
@@ -666,10 +642,12 @@ void RhiRtComposePass::Render(nvrhi::ICommandList *pCommandList,
     RecordDispatch(pCommandList, interleavePipeline, target.interleaveSet, target.uniformSet, groupsX, groupsY);
     RecordDispatch(pCommandList, checkerboardPipeline, target.checkerboardSet, target.uniformSet, groupsX, groupsY);
 
-    // The 13 images whose last use was a sampled read rest in the read-only layout now; move them
-    // back to UnorderedAccess, the engine's GENERAL, so the next frame's primary/direct UAV writes
-    // start from the state their own announcements claim. The last pass's three UAV images (28, 60,
-    // 62) and the adapter's four channel UAVs already end in GENERAL.
+    // The 16 images whose last use was a sampled read rest in the read-only layout now; move them
+    // back to UnorderedAccess, the engine's GENERAL, so the next frame's primary/direct/indirect
+    // UAV writes start from the state their own announcements claim. The restore includes 16-18:
+    // without it the next frame's indirect UAV write would run against a read-only image. The last
+    // pass's three UAV images (28, 60, 62) and the adapter's four channel UAVs already end in
+    // GENERAL.
     for (uint32_t i = 0; i < COMPOSE_RESTORE_COUNT; i++)
     {
         const uint32_t imageSlot = FindComposeImage(COMPOSE_RESTORE_IMAGES[i]);
@@ -698,22 +676,6 @@ void RhiRtComposePass::ReleaseTargets()
     {
         ReleaseTarget(target);
     }
-
-    // The zero texture is shared by both slots and is not an engine image, but a recorded list may
-    // still sample it, so it goes through the retire queue too. The next Render re-creates and
-    // re-clears it.
-    if (zeroTexture != nullptr)
-    {
-        if (frameContext != nullptr)
-        {
-            frameContext->Retire(zeroTexture);
-        }
-
-        zeroTexture = nullptr;
-    }
-
-    zeroTextureWidth = 0;
-    zeroTextureHeight = 0;
 }
 
 void RhiRtComposePass::ReleaseFramebufferTarget(Target &target)
@@ -778,7 +740,7 @@ bool RhiRtComposePass::PrepareFramebufferSets(Target &target)
     if (target.adapterSet == nullptr)
     {
         target.adapterSet = CreateFramebufferSet(device, ADAPTER_BINDINGS, ADAPTER_BINDING_COUNT,
-                                                 target.engineTextures, zeroTexture,
+                                                 target.engineTextures,
                                                  adapterFramebufferLayout);
 
         if (target.adapterSet == nullptr)
@@ -795,7 +757,7 @@ bool RhiRtComposePass::PrepareFramebufferSets(Target &target)
     if (target.interleaveSet == nullptr)
     {
         target.interleaveSet = CreateFramebufferSet(device, INTERLEAVE_BINDINGS, INTERLEAVE_BINDING_COUNT,
-                                                    target.engineTextures, zeroTexture,
+                                                    target.engineTextures,
                                                     interleaveFramebufferLayout);
 
         if (target.interleaveSet == nullptr)
@@ -812,7 +774,7 @@ bool RhiRtComposePass::PrepareFramebufferSets(Target &target)
     if (target.checkerboardSet == nullptr)
     {
         target.checkerboardSet = CreateFramebufferSet(device, CHECKERBOARD_BINDINGS, CHECKERBOARD_BINDING_COUNT,
-                                                      target.engineTextures, zeroTexture,
+                                                      target.engineTextures,
                                                       checkerboardFramebufferLayout);
 
         if (target.checkerboardSet == nullptr)
@@ -868,71 +830,6 @@ bool RhiRtComposePass::PrepareUniformSet(Target &target, nvrhi::IBuffer *pUnifor
     }
 
     target.uniformBuffer = pUniformBuffer;
-    return true;
-}
-
-bool RhiRtComposePass::PrepareZeroTexture(nvrhi::ICommandList *pCommandList, uint32_t width, uint32_t height)
-{
-    if (zeroTexture != nullptr && zeroTextureWidth == width && zeroTextureHeight == height)
-    {
-        return true;
-    }
-
-    if (zeroTexture != nullptr)
-    {
-        // A new resolution: the replaced texture goes through the retire queue like every other
-        // resource a recorded list may still sample.
-        if (frameContext != nullptr)
-        {
-            frameContext->Retire(zeroTexture);
-        }
-
-        zeroTexture = nullptr;
-        zeroTextureWidth = 0;
-        zeroTextureHeight = 0;
-    }
-
-    nvrhi::TextureDesc desc;
-    desc.width = width;
-    desc.height = height;
-    desc.format = nvrhi::Format::RGBA16_FLOAT;
-    // isShaderResource is the eSampled usage the Texture_SRV binding needs. isUAV is what
-    // clearTextureFloat's validation requires: it refuses a texture with both isRenderTarget and
-    // isUAV false (validation-commandlist.cpp:205-244). An NVRHI-created texture always carries
-    // TRANSFER_SRC | TRANSFER_DST (vulkan-texture.cpp:106-107), so the clear is legal here - unlike
-    // on the engine's images 16-18, whose usage set lacks TRANSFER_DST and where
-    // `clearTextureFloat` would trip a new VUID (a42b_recon.md §3.2).
-    desc.isShaderResource = true;
-    desc.isUAV = true;
-    // The resting state of a compute-visibility SRV binding (state-tracking.cpp:455-464, mapping in
-    // vulkan-constants.cpp:238-241). keepInitialState makes every later list start from it instead
-    // of Unknown, so the once-cleared zero contents are not discarded by an undefined-sourced
-    // transition on the second frame.
-    desc.initialState = nvrhi::ResourceStates::NonPixelShaderResource;
-    desc.keepInitialState = true;
-
-    zeroTexture = rhi::createTexture(device, desc, "RhiRtComposePass zero indirect SH (temporary, A4.3)");
-
-    if (zeroTexture == nullptr)
-    {
-        if (!warnedZeroTexture)
-        {
-            warnedZeroTexture = true;
-            LogMessage(print, "Warning: RHI: the compose pass cannot create its zero indirect-SH texture, the compose is skipped");
-        }
-        return false;
-    }
-
-    // One clear per wrap lifetime is enough: only the adapter samples the texture and nothing ever
-    // writes it. clearTextureFloat moves it to CopyDest and clears it; the setTextureState below is
-    // the CopyDest -> NonPixelShaderResource transition the first SRV use would emit anyway, made
-    // explicit so the desc's resting state is the truth at the list's close.
-    pCommandList->clearTextureFloat(zeroTexture, nvrhi::AllSubresources, nvrhi::Color(0.f));
-    pCommandList->setTextureState(zeroTexture, nvrhi::AllSubresources,
-                                  nvrhi::ResourceStates::NonPixelShaderResource);
-
-    zeroTextureWidth = width;
-    zeroTextureHeight = height;
     return true;
 }
 

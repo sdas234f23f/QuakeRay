@@ -520,7 +520,10 @@ void main()
     q2ShadeIndirect( surf, hitPos, hitRadiance * halfResScale, oneOverSourcePdf, diffuse, specular );
 
     {
-        const float3 direct = texelFetchUnfilteredSpecular( pix );
+        // Read the unfiltered specular through the storage image, not the sampled view: this
+        // raygen also writes framebufUnfilteredSpecular, and binding both views of one image in
+        // one set makes the SRV and the UAV disagree about the image layout (A4.3).
+        const float3 direct = decodeE5B9G9R9( framebufUnfilteredSpecular.Load( pix ).r );
         if ( getLuminance( direct ) < getLuminance( specular ) )
         {
             framebufViewDirection[pix] =

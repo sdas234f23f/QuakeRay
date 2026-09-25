@@ -91,31 +91,30 @@ class RhiFrameContext;
 // unfilled (validation-device.cpp:1855-1871), so adapter, interleave and checkerboard own a 17-,
 // a 3- and a 7-item layout, and each pipeline declares its own set 0 beside the shared set 1.
 //
-// 20 engine images are wrapped per slot (the .cpp's COMPOSE_IMAGES table), each once, and the
+// 23 engine images are wrapped per slot (the .cpp's COMPOSE_IMAGES table), each once, and the
 // three sets share the wraps, so the pass-to-pass hand-offs (117 written by the adapter and read
 // by the interleave, 27 written by the interleave and read by the checkerboard) are covered by
 // NVRHI's own UAV -> SRV -> UAV transitions on one wrap. The three UNFILTERED_INDIRECT_S_H images
-// (16-18) are the exception: no pass writes them under `rhiframe` (the indirect raygen is A4.3),
-// and no legal engine clear exists for them - `clearTextureFloat` on an engine wrap would need
-// TRANSFER_DST, which these images do not carry, and that is a new VUID class - so the adapter's
-// set binds a module-owned RGBA16F zero texture of the render size for them (a42b_recon.md §3.2,
-// option 3). That substitute is a temporary preview mechanism: when A4.3 lands and the indirect
-// raygen writes 16-18, the module must drop the zero texture and bind the engine images like the
-// rest of the union.
+// (16-18) are written by the A4.3 indirect pass (RhiRtIndirectPass), which runs earlier on the
+// same command list, so the adapter's 140/141/142 sampled bindings read real data. The invariant
+// this module relies on is the host order primary -> direct -> indirect -> compose: without the
+// indirect pass the adapter would sample the images' engine-initialized contents.
 //
 // The image-state contract: the engine leaves every framebuffer image in VK_IMAGE_LAYOUT_GENERAL
 // (= NVRHI's UnorderedAccess) and a native wrap keeps no state between command lists
-// (RhiTextureSource.h), so every list announces UnorderedAccess for all 20 wraps before the first
-// pass and moves the 13 images whose last use is a sampled read back to UnorderedAccess after the
+// (RhiTextureSource.h), so every list announces UnorderedAccess for all 23 wraps before the first
+// pass and moves the 16 images whose last use is a sampled read back to UnorderedAccess after the
 // checkerboard (the A4.2a discipline: an unannounced first SRV use would discard the contents, and
 // a finish in SHADER_READ_ONLY_OPTIMAL would mismatch the next frame's UAV announcements). The
-// zero texture rests in NonPixelShaderResource - the state a compute-visibility SRV requires
-// (state-tracking.cpp:455-464) - with keepInitialState, and is cleared once per wrap lifetime when
-// it is created.
+// restore is also what lets the next frame's indirect pass write 16-18: its own UnorderedAccess
+// announcement finds the read-only state and emits no transition, so an unrestored image would be
+// written as read-only.
 //
 // Host contract (the skeleton wires the pass, the pass only records):
-//  - Record after RhiRtDirectPass::Render on the same list: the adapter samples the G-buffer, the
-//    direct images and the throughput the primary/direct chain wrote.
+//  - Record after the frame's ray-tracing passes (RhiRtDirectPass::Render and
+//    RhiRtIndirectPass::Render) on the same list: the adapter samples the G-buffer, the direct
+//    images, the indirect SH the indirect pass wrote and the throughput the primary/direct chain
+//    wrote.
 //  - 'width'/'height' are the render resolution the shaders read as `globalUniform.renderWidth/
 //    renderHeight` and the images are sized to; the dispatch has to run over the same numbers, or
 //    pixels beyond the smaller one keep their previous content.
@@ -127,10 +126,9 @@ class RhiFrameContext;
 //    the next Render re-reads the handles and re-wraps, so the pass survives a resize.
 //
 // The pass is a no-op until Create succeeded and while an input is missing (no framebuffers, no
-// uniform, an image handle or extent the RHI cannot wrap, a failed zero-texture creation); every
-// early return is quiet after the first warning. It is not thread-safe: Render uses the per-slot
-// target of the frameIndex it is given, which is the engine's single-threaded per-slot frame
-// model (RhiFrameContext).
+// uniform, an image handle or extent the RHI cannot wrap); every early return is quiet after the
+// first warning. It is not thread-safe: Render uses the per-slot target of the frameIndex it is
+// given, which is the engine's single-threaded per-slot frame model (RhiFrameContext).
 class RhiRtComposePass final
 {
 public:
@@ -145,8 +143,8 @@ public:
     RhiRtComposePass &operator=(RhiRtComposePass &&other) noexcept = delete;
 
     // 'pDevice' is the RHI device; 'pFrameContext' is the host's frame model (RHI/RhiFrameContext.h)
-    // that owns the per-slot command lists and the retire queue every replaced wrap, set and
-    // texture goes through. Neither is owned; both have to outlive this object, and a null or
+    // that owns the per-slot command lists and the retire queue every replaced wrap and set goes
+    // through. Neither is owned; both have to outlive this object, and a null or
     // unusable one makes Create fail. 'pShaderFolderPath' is the folder ShaderManager loads the
     // engine blobs from, with the trailing separator; the three compose blobs above are read from
     // it. The pass logs through 'pfnPrint'. Returns false and leaves the pass unusable if a shader,
@@ -158,17 +156,18 @@ public:
 
     bool IsCreated() const { return created; }
 
-    // One call per frame, on the frame context's open command list of 'frameIndex', after
-    // RhiRtDirectPass::Render of the same slot. 'pFramebuffers' is the engine's framebuffer
-    // registry, 'width'/'height' the render resolution, and 'pUniformBuffer' the engine's global
-    // uniform as a static constant-buffer wrap (the same wrap the primary and direct passes take).
+    // One call per frame, on the frame context's open command list of 'frameIndex', after the
+    // frame's ray-tracing passes (RhiRtDirectPass::Render and RhiRtIndirectPass::Render) of the
+    // same slot. 'pFramebuffers' is the engine's framebuffer registry, 'width'/'height' the render
+    // resolution, and 'pUniformBuffer' the engine's global uniform as a static constant-buffer wrap
+    // (the same wrap the primary and direct passes take).
     //
-    // What is recorded: the wraps of the 20 engine images (created on first use, re-created when
+    // What is recorded: the wraps of the 23 engine images (created on first use, re-created when
     // the engine re-created an image or the size changed; the replaced wraps and the sets over them
-    // go through the frame context's retire queue), the module's zero texture (created and cleared
-    // on this list when it is new), the per-slot sets, the UnorderedAccess announcement of the 20
-    // images, then three `setComputeState` + `dispatch` pairs - adapter, interleave, checkerboard -
-    // and the UnorderedAccess restore of the 13 images that end in the read-only state.
+    // go through the frame context's retire queue), the per-slot sets, the UnorderedAccess
+    // announcement of the 23 images, then three `setComputeState` + `dispatch` pairs - adapter,
+    // interleave, checkerboard - and the UnorderedAccess restore of the 16 images that end in the
+    // read-only state.
     void Render(nvrhi::ICommandList *pCommandList,
                 uint32_t frameIndex,
                 const Framebuffers *pFramebuffers,
@@ -192,12 +191,11 @@ public:
     // checkerboard UAV write runs against a read-only layout.
     nvrhi::ITexture *GetFinalTexture(uint32_t frameIndex) const;
 
-    // Drops every slot's image wraps and the three sets over them, the per-slot uniform sets on the
-    // shared uniform layout, and the module's zero texture, and retires them through the frame
-    // context's queue. The caller has to call it before the engine destroys its framebuffer images
-    // (the Framebuffers::PrepareForSize path) - otherwise the wraps reference destroyed VkImages.
-    // The next Render re-reads the handles, re-wraps and re-creates the zero texture, so the pass
-    // survives a resize without a second Create.
+    // Drops every slot's image wraps and the three sets over them and the per-slot uniform sets on
+    // the shared uniform layout, and retires them through the frame context's queue. The caller has
+    // to call it before the engine destroys its framebuffer images (the Framebuffers::PrepareForSize
+    // path) - otherwise the wraps reference destroyed VkImages. The next Render re-reads the
+    // handles and re-wraps, so the pass survives a resize without a second Create.
     void ReleaseTargets();
 
 private:
@@ -207,15 +205,15 @@ private:
     // under the same pointer-change rule the other passes use.
     struct Target
     {
-        // The 20 engine images (the .cpp's COMPOSE_IMAGES table) the slot currently wraps and the
+        // The 23 engine images (the .cpp's COMPOSE_IMAGES table) the slot currently wraps and the
         // three sets over them. The handles are kept in the form Render received them, not as
         // VkImages, because they are what the change detection compares; a change in any of them
         // or in the size means the engine re-created the framebuffers and the wraps and the sets
         // have to follow.
-        uint64_t imageHandles[20] = {};
+        uint64_t imageHandles[23] = {};
         uint32_t width = 0;
         uint32_t height = 0;
-        nvrhi::TextureHandle engineTextures[20];
+        nvrhi::TextureHandle engineTextures[23];
         nvrhi::BindingSetHandle adapterSet;
         nvrhi::BindingSetHandle interleaveSet;
         nvrhi::BindingSetHandle checkerboardSet;
@@ -237,10 +235,6 @@ private:
     // false when the buffer is not the static constant-buffer wrap the shader's
     // `ConstantBuffer<ShGlobalUniform>` requires.
     bool PrepareUniformSet(Target &target, nvrhi::IBuffer *pUniformBuffer);
-
-    // Creates the module's zero texture (RGBA16F, render size) and clears it on this list when the
-    // size changed or it does not exist yet; the replaced one goes through the retire queue.
-    bool PrepareZeroTexture(nvrhi::ICommandList *pCommandList, uint32_t width, uint32_t height);
 
     // One `setComputeState` + `dispatch` for one of the three passes: set 0 is the pass's
     // framebuffer set, set 1 the shared uniform set (the pipeline's layout order).
@@ -281,15 +275,6 @@ private:
     nvrhi::ComputePipelineHandle interleavePipeline;
     nvrhi::ComputePipelineHandle checkerboardPipeline;
 
-    // The stand-in for images 16-18 (a42b_recon.md §3.2): one RGBA16F texture of the render size,
-    // cleared once per wrap lifetime, shared by both slots because nothing ever writes it. It is a
-    // temporary preview mechanism and goes away when A4.3 binds the engine images instead. The
-    // size is the key that tells whether the engine re-created its framebuffers at a new
-    // resolution.
-    nvrhi::TextureHandle zeroTexture;
-    uint32_t zeroTextureWidth = 0;
-    uint32_t zeroTextureHeight = 0;
-
     // One entry per engine frame slot (MAX_FRAMES_IN_FLIGHT, Common.h:31).
     Target targets[MAX_FRAMES_IN_FLIGHT];
 
@@ -299,7 +284,6 @@ private:
     bool warnedUnexpectedSize = false;
     bool warnedMissingUniform = false;
     bool warnedBadUniform = false;
-    bool warnedZeroTexture = false;
     bool warnedBadTable = false;
 
     bool created = false;

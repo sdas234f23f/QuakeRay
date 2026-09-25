@@ -199,6 +199,26 @@ public:
 
     bool IsCreated() const { return created; }
 
+    // The module's set-6 layout and one slot's light set, handed over read-only to the
+    // indirect-lighting sibling (RhiRtIndirectPass, A4.3): that pass declares the same layout handle
+    // at its own position 6 and binds the set below instead of wrapping the engine's light buffers a
+    // second time. The five wraps, the four light copies and the statistics fill stay this module's,
+    // single-consumer work - the copies must be consumed once, and a second consumer would record
+    // them twice. NVRHI accepts the shared set only because its layout is the very handle returned
+    // here (validation-commandlist.cpp:509-520). Both handles are owned here and stay valid while
+    // this object is created; GetLightSet returns null for a slot this pass has not rendered yet or
+    // whose light wraps were just released (a light-buffer handle change, ReleaseTargets), which the
+    // caller has to treat as "no light data for this frame" instead of binding it.
+    nvrhi::BindingLayoutHandle GetLightLayout() const { return lightLayout; }
+    nvrhi::BindingSetHandle GetLightSet(uint32_t frameIndex) const
+    {
+        if (frameIndex >= MAX_FRAMES_IN_FLIGHT)
+        {
+            return nullptr;
+        }
+        return targets[frameIndex].lightSet;
+    }
+
     // One call per frame, on the frame context's open command list of 'frameIndex', after
     // RhiRtPrimaryPass::Render of the same slot. 'frameId' is the engine counter
     // (`ShGlobalUniform::frameId`, i.e. sky.uniform->GetData()->frameId) and 'lightStatsMode' the

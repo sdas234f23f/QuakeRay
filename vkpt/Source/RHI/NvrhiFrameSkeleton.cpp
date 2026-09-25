@@ -26,6 +26,7 @@
 #include "RhiDebugTracePass.h"
 #include "RhiRtComposePass.h"
 #include "RhiRtDirectPass.h"
+#include "RhiRtIndirectPass.h"
 #include "RhiRtPrimaryPass.h"
 #include "RhiTextureSource.h"
 #include "RhiDescriptors.h"
@@ -86,6 +87,7 @@ NvrhiFrameSkeleton::NvrhiFrameSkeleton(nvrhi::IDevice *pDevice,
                                        RhiDebugTracePass *pDebugTracePass,
                                        RhiRtPrimaryPass *pRtPrimaryPass,
                                        RhiRtDirectPass *pRtDirectPass,
+                                       RhiRtIndirectPass *pRtIndirectPass,
                                        RhiRtComposePass *pRtComposePass,
                                        FrameMode mode,
                                        PrintFunction pfnPrint)
@@ -96,6 +98,7 @@ NvrhiFrameSkeleton::NvrhiFrameSkeleton(nvrhi::IDevice *pDevice,
     , debugTracePass(pDebugTracePass)
     , rtPrimaryPass(pRtPrimaryPass)
     , rtDirectPass(pRtDirectPass)
+    , rtIndirectPass(pRtIndirectPass)
     , rtComposePass(pRtComposePass)
     , frameMode(mode)
     , textureTable(pTextureTable)
@@ -148,9 +151,10 @@ NvrhiFrameSkeleton::NvrhiFrameSkeleton(nvrhi::IDevice *pDevice,
 
     if (frameMode == FrameMode::Traced &&
         (rtPrimaryPass == nullptr || !rtPrimaryPass->IsCreated() ||
-         rtDirectPass == nullptr || !rtDirectPass->IsCreated()))
+         rtDirectPass == nullptr || !rtDirectPass->IsCreated() ||
+         rtIndirectPass == nullptr || !rtIndirectPass->IsCreated()))
     {
-        print("Warning: RHI: the traced frame needs the primary and the direct ray-tracing passes of the RHI layer");
+        print("Warning: RHI: the traced frame needs the primary, direct and indirect ray-tracing passes of the RHI layer");
         unavailable = true;
         return;
     }
@@ -461,17 +465,19 @@ bool NvrhiFrameSkeleton::Render(const Swapchain *pSwapchain, uint32_t frameIndex
             sky.framebuffers,
             sky.width, sky.height);
 
+        // The uniform bytes the traced raygens read; the passes below take their per-frame inputs
+        // from the same CPU copy the write above uploaded.
+        const ShGlobalUniform *uniform = sky.uniform != nullptr ? sky.uniform->GetData() : nullptr;
+
         // The direct-lighting pass reads what the primary just wrote (the G-buffer, the Q2 cluster
         // and the seed) and the frame's light buffers; it records on the same list right after the
         // primary, the order the legacy frame uses (VulkanDevice.cpp:901 then :1039) and the order
-        // its state announcements and the present's direct read assume.
-        if (rtDirectPass != nullptr && sky.uniform != nullptr)
+        // its state announcements and the present's direct read assume. The light-statistics
+        // bookkeeping follows the uniform bytes the raygen reads, not the frame slot: the statistics
+        // buffer has three rotating slots and the raygen addresses frameId % 3 (RhiRtDirectPass.h
+        // documents the contract).
+        if (rtDirectPass != nullptr && uniform != nullptr)
         {
-            // The light-statistics bookkeeping follows the uniform bytes the raygen reads, not the
-            // frame slot: the statistics buffer has three rotating slots and the raygen addresses
-            // frameId % 3 (RhiRtDirectPass.h documents the contract).
-            const ShGlobalUniform *uniform = sky.uniform->GetData();
-
             rtDirectPass->Render(
                 commandList, frameIndex,
                 uniform->frameId, uniform->q2LightStatsMode,
@@ -482,9 +488,25 @@ bool NvrhiFrameSkeleton::Render(const Swapchain *pSwapchain, uint32_t frameIndex
                 sky.width, sky.height);
         }
 
+        // The indirect / GI pass reads the G-buffer and the direct outputs and writes the unfiltered
+        // indirect images the compose pass then filters; it records right after the direct pass. The
+        // half-resolution switch is the engine's own giBounceRays[0], applied inside the pass
+        // (RhiRtIndirectPass.h documents the sizing).
+        if (rtIndirectPass != nullptr && uniform != nullptr)
+        {
+            rtIndirectPass->Render(
+                commandList, frameIndex,
+                uniform->giBounceRays[0],
+                accelStructs != nullptr ? accelStructs->GetTopLevel(frameIndex) : nullptr,
+                worldUniformBuffer.Get(),
+                passVertexData,
+                sky.framebuffers,
+                sky.width, sky.height);
+        }
+
         // The compose preview: the real adapter -> interleave -> checkerboard chain over the
-        // G-buffer and the direct buffers, writing FINAL, which the present samples when the pass
-        // exists. It records after the direct pass for the same reason it does.
+        // G-buffer and the direct and indirect buffers, writing FINAL, which the present samples
+        // when the pass exists. It records after the indirect pass for the same reason it does.
         if (rtComposePass != nullptr)
         {
             rtComposePass->Render(commandList, frameIndex, sky.framebuffers, sky.width, sky.height,
@@ -1011,6 +1033,13 @@ void NvrhiFrameSkeleton::DestroySwapchainResources()
     if (rtComposePass != nullptr)
     {
         rtComposePass->ReleaseTargets();
+    }
+
+    // The indirect pass wraps its fourteen set-1 images - the indirect SH images among them - so it
+    // drops them here as well; the blue-noise wrap is the host's and outlives the pass.
+    if (rtIndirectPass != nullptr)
+    {
+        rtIndirectPass->ReleaseTargets();
     }
 
     // A present binding set references the ALBEDO wrap and the direct-term image of one slot, so it

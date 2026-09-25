@@ -205,6 +205,32 @@ VkDescriptorSet BlueNoise::GetDescSet() const
     return descSet;
 }
 
+VkImage BlueNoise::GetImage() const
+{
+    return blueNoiseImages;
+}
+
+VkImageView BlueNoise::GetImageView() const
+{
+    return blueNoiseImagesView;
+}
+
+VkFormat BlueNoise::GetFormat() const
+{
+    // The format the constructor checks the loaded file against and creates the image with.
+    return VK_FORMAT_R8G8B8A8_UNORM;
+}
+
+VkExtent2D BlueNoise::GetExtent() const
+{
+    return { BLUE_NOISE_TEXTURE_SIZE, BLUE_NOISE_TEXTURE_SIZE };
+}
+
+uint32_t BlueNoise::GetLayerCount() const
+{
+    return BLUE_NOISE_TEXTURE_COUNT;
+}
+
 void BlueNoise::CreateDescriptors()
 {
     VkResult r;

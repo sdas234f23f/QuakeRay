@@ -41,6 +41,7 @@ class GlobalUniform;
 class RhiDebugTracePass;
 class RhiRtComposePass;
 class RhiRtDirectPass;
+class RhiRtIndirectPass;
 class RhiRtPrimaryPass;
 class RhiSkyPass;
 class Swapchain;
@@ -168,6 +169,10 @@ public:
     // borrows the primary's shared layout handles, so the primary has to outlive it and be
     // destroyed after it. Not owned; a null or not-created one with that mode makes the skeleton
     // unavailable.
+    // 'pRtIndirectPass' is the host's indirect / GI pass (RhiRtIndirectPass, RHI/RhiRtIndirectPass.h):
+    // when 'mode' is Traced, Render drives it after the direct pass - it borrows the primary's
+    // layout handles and the direct pass's light set, so both have to outlive it and be destroyed
+    // after it. Not owned; a null or not-created one with that mode makes the skeleton unavailable.
     // 'pRtComposePass' is the host's compose preview (RhiRtComposePass, RHI/RhiRtComposePass.h):
     // when it is non-null, the traced chain runs it after the direct pass and the present samples
     // its FINAL image instead of ALBEDO plus the direct term. Optional: a null one keeps the A4.2a
@@ -181,6 +186,7 @@ public:
                                 RhiDebugTracePass *pDebugTracePass,
                                 RhiRtPrimaryPass *pRtPrimaryPass,
                                 RhiRtDirectPass *pRtDirectPass,
+                                RhiRtIndirectPass *pRtIndirectPass,
                                 RhiRtComposePass *pRtComposePass,
                                 FrameMode mode,
                                 PrintFunction pfnPrint);
@@ -295,6 +301,12 @@ private:
     // right after the primary when frameMode is Traced. It borrows the primary's layout handles, so
     // the host destroys it before the primary. Not owned; null when the host's 'rhirt' flag is off.
     RhiRtDirectPass *rtDirectPass = nullptr;
+
+    // The host's indirect / GI pass (RhiRtIndirectPass, RHI/RhiRtIndirectPass.h), driven right after
+    // the direct pass when frameMode is Traced. It borrows the primary's layout handles and the
+    // direct pass's light set, so the host destroys it before both. Not owned; null when the host's
+    // 'rhirt' flag is off.
+    RhiRtIndirectPass *rtIndirectPass = nullptr;
 
     // The host's compose preview (RhiRtComposePass, RHI/RhiRtComposePass.h), driven after the direct
     // pass when it is non-null; the present then samples its FINAL image. Not owned; null when the

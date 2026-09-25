@@ -53,6 +53,59 @@ nvrhi::TextureHandle wrapEngineTexture(nvrhi::IDevice *device,
                                        uint32_t mipLevels = 1,
                                        std::string_view debugName = {});
 
+// Wraps an engine image that is a texture array, i.e. one whose layers a shader addresses as
+// Texture2DArray. The blue-noise image is the first instance: the indirect raygen's set 5 binding 0
+// declares `Texture2DArray<float4> blueNoiseTextures` (Random.hlsli:249-250), the image is
+// R8G8B8A8_UNORM, 128 x 128, with 128 array layers and one mip (BlueNoise.cpp:104-119), and it rests
+// in VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL (BlueNoise.cpp:157-161).
+//
+// wrapEngineTexture cannot wrap it: that helper hard-codes dimension = Texture2D and arraySize = 1,
+// while NVRHI builds every view from the desc shape (vulkan-texture.cpp:287-349), so the view would
+// carry a single layer, the shader's layer index would be out of range, and the validation device
+// would reject a Texture2DArray binding whose dimension does not match the texture's
+// (textureDimensionsCompatible, validation-device.cpp:1512-1524, used at :1638-1646). This helper
+// takes the array size from the caller instead: dimension = Texture2DArray and arraySize = arraySize
+// make textureDimensionToImageViewType emit an e2DArray view (vulkan-texture.cpp:72-74) spanning
+// every layer the binding's subresources resolve to (vulkan-resource-bindings.cpp:402-405).
+//
+// The state contract is wrapEngineTexture's, unchanged:
+//  - initialState = ShaderResource with keepInitialState = true, because
+//    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL is the layout the engine leaves the image in and
+//    declares on its descriptor (BlueNoise.cpp:157-161, :249), and ShaderResource maps to exactly
+//    that layout with shader read access (vulkan-constants.cpp:234-241).
+//  - On the very first command list that samples the handle, NVRHI's tracker still starts from
+//    ResourceStates::Common instead of initialState - stateInitialized only becomes true when a
+//    command list that used the texture closes (state-tracking.cpp:395-399), and until then the
+//    seeded state is Common (:422-425) - while Common lowers to Undefined (vulkan-constants.cpp:
+//    214-217). The first use would therefore emit an Undefined -> ShaderReadOnlyOptimal barrier that
+//    Vulkan is allowed to satisfy by discarding the contents (vulkan-state-tracking.cpp:242-252).
+//    The caller must announce the true state before the first binding on that list:
+//        commandList->beginTrackingTextureState(texture, nvrhi::AllSubresources,
+//                                              nvrhi::ResourceStates::ShaderResource);
+//    (the same call RhiTextureTable::TrackPendingTextures makes for the engine textures it wraps,
+//    RhiTextureTable.cpp:301-319). After that command list closes, every later list starts from
+//    initialState (state-tracking.cpp:350-361) and no barrier is emitted for the image again, as
+//    long as the engine keeps it in the read-only layout.
+//
+// The image is static - BlueNoise creates it once and never updates it - so the handle never has to
+// be re-wrapped or released.
+//
+// Returns a null handle if 'device' or the image is null, if 'width', 'height' or 'arraySize' is
+// zero, or if 'vkFormat' is one the pinned NVRHI cannot map (including VK_FORMAT_UNDEFINED);
+// VK_FORMAT_R8G8B8A8_UNORM maps to Format::RGBA8_UNORM (vulkan-constants.cpp:59). 'imageView' is
+// not consumed: NVRHI wraps the VkImage and builds its own views (vulkan-texture.cpp:805-822), so
+// the engine's view stays with the caller and the parameter is kept for call-site symmetry with
+// wrapEngineRenderTarget and wrapEngineStorageImage.
+nvrhi::TextureHandle wrapEngineTextureArray(nvrhi::IDevice *device,
+                                            uint64_t vkImage,
+                                            uint64_t imageView,
+                                            uint32_t vkFormat,
+                                            uint32_t width,
+                                            uint32_t height,
+                                            uint32_t arraySize,
+                                            uint32_t mipLevels = 1,
+                                            std::string_view debugName = {});
+
 // Wraps an engine image that the pass renders into. The engine's offscreen images live in
 // VK_IMAGE_LAYOUT_GENERAL and are recreated on resize, so the caller re-wraps on size change. The
 // state rules of wrapEngineTexture apply unchanged: NVRHI cannot see the engine's own layout, so the

@@ -37,9 +37,11 @@
 #include "RHI/RhiDebugTracePass.h"
 #include "RHI/RhiRtComposePass.h"
 #include "RHI/RhiRtDirectPass.h"
+#include "RHI/RhiRtIndirectPass.h"
 #include "RHI/RhiRtPrimaryPass.h"
 #include "RHI/RhiFrameContext.h"
 #include "RHI/RhiSkyPass.h"
+#include "RHI/RhiTextureSource.h"
 #include "RHI/RhiTextureTable.h"
 
 using namespace vkpt;
@@ -446,6 +448,46 @@ VulkanDevice::VulkanDevice( const RgInstanceCreateInfo* info )
                     }
                 }
 
+                // The indirect / GI pass of A4.3 (RHI/RhiRtIndirectPass.h): the bounce-light term of
+                // the traced chain, created only with the primary and the direct pass - it borrows
+                // their layout handles and the light set, so it is destroyed before both. Its set 5
+                // is the engine's blue-noise array, wrapped once here (the image is static) and
+                // announced by the pass on the list that first binds it. A failure leaves the
+                // pointer null: with the flag on the skeleton then refuses to be available and the
+                // legacy renderer keeps the frame.
+                if (rhiRtDirectPass != nullptr)
+                {
+                    const nvrhi::TextureHandle blueNoiseTexture = rhi::wrapEngineTextureArray(
+                        nvrhi->GetDevice(),
+                        static_cast<uint64_t>(reinterpret_cast<uintptr_t>(blueNoise->GetImage())),
+                        static_cast<uint64_t>(reinterpret_cast<uintptr_t>(blueNoise->GetImageView())),
+                        static_cast<uint32_t>(blueNoise->GetFormat()),
+                        blueNoise->GetExtent().width, blueNoise->GetExtent().height,
+                        blueNoise->GetLayerCount(), 1,
+                        "RHI blue noise (indirect set 5)");
+
+                    if (blueNoiseTexture == nullptr)
+                    {
+                        Print("Warning: RHI: failed to wrap the blue-noise texture, the indirect ray-tracing pass is unavailable");
+                    }
+                    else
+                    {
+                        rhiRtIndirectPass = std::make_shared<RhiRtIndirectPass>();
+                        if (!rhiRtIndirectPass->Create(nvrhi->GetDevice(), rhiFrameContext.get(),
+                                                       rhiTextureTable.get(), rhiRtPrimaryPass.get(),
+                                                       rhiRtDirectPass.get(), info->pShaderFolderPath,
+                                                       [this](const char *pMessage) { Print(pMessage); }))
+                        {
+                            rhiRtIndirectPass.reset();
+                            Print("Warning: RHI: the indirect ray-tracing pass is unavailable, the legacy renderer is kept");
+                        }
+                        else
+                        {
+                            rhiRtIndirectPass->SetBlueNoiseTexture(blueNoiseTexture);
+                        }
+                    }
+                }
+
                 // The compose preview of A4.2b (RHI/RhiRtComposePass.h), created only under
                 // 'rhicompose': the real adapter -> interleave -> checkerboard chain ending in
                 // FINAL, which the skeleton then presents. A failure leaves the pointer null: the
@@ -497,6 +539,7 @@ VulkanDevice::VulkanDevice( const RgInstanceCreateInfo* info )
                 rhiDebugTracePass.get(),
                 rhiRtPrimaryPass.get(),
                 rhiRtDirectPass.get(),
+                rhiRtIndirectPass.get(),
                 rhiRtComposePass.get(),
                 frameMode,
                 [this](const char *pMessage) { Print(pMessage); });
@@ -575,12 +618,14 @@ VulkanDevice::~VulkanDevice()
     // be released before both of them
     nvrhiFrameSkeleton.reset();
 
-    // The skeleton references all of them, so they follow it immediately; all five wrap engine
+    // The skeleton references all of them, so they follow it immediately; all six wrap engine
     // buffers/images and quote the RHI device, so they precede the table/context and the device
-    // below. The direct pass borrows the primary's layout handles, so it goes before the primary.
+    // below. The direct pass borrows the primary's layout handles and the indirect pass borrows
+    // both, so the indirect goes before the direct, and the direct before the primary.
     rhiDebugTracePass.reset();
-    rhiRtDirectPass.reset();
     rhiRtComposePass.reset();
+    rhiRtIndirectPass.reset();
+    rhiRtDirectPass.reset();
     rhiRtPrimaryPass.reset();
     rhiAccelStructs.reset();
 

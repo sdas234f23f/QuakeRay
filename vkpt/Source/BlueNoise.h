@@ -47,6 +47,21 @@ public:
     VkDescriptorSetLayout GetDescSetLayout() const;
     VkDescriptorSet GetDescSet() const;
 
+    // The engine handles of the layered blue-noise image the shaders fetch from. The image is
+    // created once in the constructor from the KTX2 file, is never recreated, updated or resized,
+    // and is left in VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL (BlueNoise.cpp:157-161), so the
+    // handles are valid for the object's lifetime and need no separate release path.
+    VkImage GetImage() const;
+    VkImageView GetImageView() const;
+
+    // The shape of that image, for a caller that has to describe it without knowing the constants:
+    // R8G8B8A8_UNORM, BLUE_NOISE_TEXTURE_SIZE x BLUE_NOISE_TEXTURE_SIZE, one mip and
+    // BLUE_NOISE_TEXTURE_COUNT array layers (BlueNoise.cpp:104-119). These are what the RHI's
+    // array-texture wrap (rhi::wrapEngineTextureArray) needs besides the two handles.
+    VkFormat GetFormat() const;
+    VkExtent2D GetExtent() const;
+    uint32_t GetLayerCount() const;
+
 private:
     void CreateDescriptors();
 
