@@ -791,6 +791,12 @@ static void QRE_ResolveGroup (const char *texname)
 
 			if (!list[i].valid)
 				continue;
+			// A model's own base name is not a texture the engine has: only
+			// its :frameN names resolve, so a stale base entry stays hidden
+			// (for a texture ring the base is a real material and is shown).
+			if (qre.pick_model && qre.pick_model->type != mod_brush &&
+			    !q_strcasecmp (list[i].name, groupbase))
+				continue;
 			if (!QRE_NameInGroup (list[i].name, groupbase))
 				continue;
 			for (k = 0; k < qre.group_count; k++)
