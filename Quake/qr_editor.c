@@ -88,20 +88,18 @@ enum
 	PARAM_ROUGH,
 	PARAM_METAL,
 	PARAM_EMISF,
+	PARAM_EBLEND,
 	PARAM_BASEF,
 	PARAM_LBRIGHT,
 	PARAM_LUPOFF,
-	PARAM_CEMIS,
-	PARAM_ETHRESH,
-	PARAM_EFEATHER,
-	PARAM_EBLEND,
+	PARAM_LCOLOR,
 	PARAM_ISLIGHT,
 	PARAM_LSTYLES,
 	PARAM_METALALPHA,
 	PARAM_MIRROR,
 	PARAM_EXACTN,
 	PARAM_FRAST,
-	PARAM_LCOLOR,
+	PARAM_CEMIS,
 	PARAM_COUNT,
 };
 
@@ -135,13 +133,9 @@ static const struct qre_param_s
 	[PARAM_LUPOFF]   = { "light_upoffset",   QRE_T_FLOAT, -64, 64, 0.5f,
 	                     "Lifts the cast light above the model's origin (alias models)." },
 	[PARAM_CEMIS]    = { "color_emissive",   QRE_T_BOOL,  0, 0, 0,
-	                     "Glow by colour: the pixels that match a colour below light up. \"+\" adds a colour, the preview's eyedropper picks one." },
-	[PARAM_ETHRESH]  = { "color_emissive_threshold", QRE_T_FLOAT, 0, 1, 0.01f,
-	                     "How far a pixel's colour may differ from a colour entry and still glow." },
-	[PARAM_EFEATHER] = { "color_emissive_feather", QRE_T_FLOAT, 0, 16, 1.0f,
-	                     "Softens the mask's edge over this many pixels, on both sides of it, without comparing colours." },
+	                     "Glow by colour: every block below matches its own colour and carries its own threshold, feather and blend." },
 	[PARAM_EBLEND]   = { "emissive_blend",   QRE_T_INT,  -1, 5, 1,
-	                     "How the glow is composited into the frame; 'cvar' follows the global rt_emis_blend." },
+	                     "How the emission of a texture_emissive mask is composited; every colour block has its own blend and this is the fallback." },
 	[PARAM_ISLIGHT]  = { "is_light",         QRE_T_BOOL,  0, 0, 0,
 	                     "The surface casts light into the scene, not only glows (BSP faces; models light from light_color)." },
 	[PARAM_LSTYLES]  = { "light_styles",     QRE_T_BOOL,  0, 0, 0,
@@ -156,6 +150,13 @@ static const struct qre_param_s
 	                     "Draw the model or sprite with the rasterizer instead of tracing it (models only)." },
 	[PARAM_LCOLOR]   = { "light_color",      QRE_T_COLOR, 0, 0, 0,
 	                     "The colour of the light the surface casts (needs is_light on BSP faces; models light by themselves)." },
+};
+
+// The emissive blend modes as the combos offer them: the index is the mode's
+// value plus one, so index 0 is "cvar" (-1) and the rest line up with
+// RT_MAT_EmissiveBlendName.
+static const char *const qre_emissive_blends[] = {
+	"cvar", "off", "normal", "screen", "overlay", "hard light", "colour dodge"
 };
 
 // ---------------------------------------------------------------------------
@@ -588,8 +589,6 @@ static float QRE_GetFloat (const rt_material_t *m, int param)
 	case PARAM_BASEF:    return m->base_factor;
 	case PARAM_LBRIGHT:  return m->light_brightness;
 	case PARAM_LUPOFF:   return m->light_upoffset;
-	case PARAM_ETHRESH:  return m->color_emissive_threshold;
-	case PARAM_EFEATHER: return m->color_emissive_feather;
 	default:             return 0.0f;
 	}
 }
@@ -642,8 +641,6 @@ static void QRE_SetFloat (int g, int param, float value)
 	case PARAM_BASEF:    m->base_factor = value; break;
 	case PARAM_LBRIGHT:  m->light_brightness = value; break;
 	case PARAM_LUPOFF:   m->light_upoffset = value; break;
-	case PARAM_ETHRESH:  m->color_emissive_threshold = value; break;
-	case PARAM_EFEATHER: m->color_emissive_feather = value; break;
 	default:             break;
 	}
 	QRE_MarkDirty (m);
@@ -1950,19 +1947,9 @@ static qboolean QRE_ParamChanged (const rt_material_t *m, const rt_material_t *o
 
 	if (p == PARAM_CEMIS)
 	{
-		int i;
-
-		if (m->has_color_emissive != orig->has_color_emissive ||
-		    m->color_emissive_count != orig->color_emissive_count)
-			return true;
-		for (i = 0; i < m->color_emissive_count; i++)
-		{
-			if (m->color_emissive[i][0] != orig->color_emissive[i][0] ||
-			    m->color_emissive[i][1] != orig->color_emissive[i][1] ||
-			    m->color_emissive[i][2] != orig->color_emissive[i][2])
-				return true;
-		}
-		return false;
+		// every block's colour and tone controls count as one parameter
+		return m->has_color_emissive != orig->has_color_emissive ||
+		       memcmp (m->color_emissive, orig->color_emissive, sizeof (m->color_emissive)) != 0;
 	}
 
 	switch (qre_params[p].type)
@@ -2016,6 +2003,7 @@ static void QRE_ResetParam (int g, int p, const rt_material_t *orig)
 		m = qre.group[g];
 		m->has_color_emissive = orig->has_color_emissive;
 		m->color_emissive_count = orig->color_emissive_count;
+		m->emissive_blend = orig->emissive_blend;
 		memcpy (m->color_emissive, orig->color_emissive, sizeof (m->color_emissive));
 		QRE_MarkDirty (m);
 		return;
@@ -2061,43 +2049,25 @@ static void QRE_ResetParam (int g, int p, const rt_material_t *orig)
 static void QRE_EmissiveEditor (int g)
 {
 	rt_material_t *m = qre.group[g];
-	const char    *tip = "Pixels matching one of these colours glow.";
-	qre_preview_t *slot;
+	int            ci;
 
-	slot = QRE_PreviewFor (m);
-	if (slot)
+	for (ci = 0; ci < m->color_emissive_count; ci++)
 	{
-		float u = 0.5f, v = 0.5f;
+		char     id[32];
+		char     label[32];
+		qboolean open;
 
-		QR_GUI_LabelDim ("the eyedropper picks into the last colour");
-		if (QR_GUI_ImagePick ("##color_pick", (int64_t)slot->mat, slot->w, slot->h, &u, &v))
+		q_snprintf (id, sizeof (id), "cemis%d", ci);
+		q_snprintf (label, sizeof (label), "Colour %d", ci + 1);
+
+		QR_GUI_PushID (id);
+		open = QR_GUI_Section (label, 1) ? true : false;
+
+		if (open)
 		{
-			const int   px = CLAMP (0, (int)(u * (float)slot->w), slot->w - 1);
-			const int   py = CLAMP (0, (int)(v * (float)slot->h), slot->h - 1);
-			const byte *pix = slot->pixels + ((size_t)py * (size_t)slot->w + (size_t)px) * 4;
+			const int res = QR_GUI_ColorRow ("##color", m->color_emissive[ci].color,
+			                                 "The colour this block matches, up to the threshold's distance.");
 
-			if (m->color_emissive_count > 0)
-			{
-				int target = m->color_emissive_count - 1;
-
-				m->color_emissive[target][0] = pix[0] / 255.0f;
-				m->color_emissive[target][1] = pix[1] / 255.0f;
-				m->color_emissive[target][2] = pix[2] / 255.0f;
-				QRE_MarkDirty (m);
-			}
-		}
-	}
-
-	{
-		int ci;
-
-		for (ci = 0; ci < m->color_emissive_count; ci++)
-		{
-			char id[32];
-			int  res;
-
-			q_snprintf (id, sizeof (id), "cemis%d", ci);
-			res = QR_GUI_ColorRow (id, m->color_emissive[ci], tip);
 			if (res & 1)
 				QRE_MarkDirty (m);
 			if (res & 2)
@@ -2105,30 +2075,80 @@ static void QRE_EmissiveEditor (int g)
 				int k;
 
 				for (k = ci; k + 1 < m->color_emissive_count; k++)
-					VectorCopy (m->color_emissive[k + 1], m->color_emissive[k]);
+					m->color_emissive[k] = m->color_emissive[k + 1];
 				m->color_emissive_count--;
 				if (m->color_emissive_count == 0)
 					m->has_color_emissive = false;
 				QRE_MarkDirty (m);
+				QR_GUI_PopID ();
 				break;
 			}
+
+			// this block's own preview: the eyedropper picks a colour into it
+			{
+				qre_preview_t *slot = QRE_PreviewFor (m);
+
+				if (slot)
+				{
+					float u = 0.5f, v = 0.5f;
+
+					if (QR_GUI_ImagePick ("##color_pick", (int64_t)slot->mat, slot->w, slot->h, &u, &v))
+					{
+						const int   px = CLAMP (0, (int)(u * (float)slot->w), slot->w - 1);
+						const int   py = CLAMP (0, (int)(v * (float)slot->h), slot->h - 1);
+						const byte *pix = slot->pixels + ((size_t)py * (size_t)slot->w + (size_t)px) * 4;
+
+						QRE_EnsureLive (g);
+						m = qre.group[g];
+						m->color_emissive[ci].color[0] = pix[0] / 255.0f;
+						m->color_emissive[ci].color[1] = pix[1] / 255.0f;
+						m->color_emissive[ci].color[2] = pix[2] / 255.0f;
+						QRE_MarkDirty (m);
+					}
+				}
+			}
+
+			if (QR_GUI_SliderFloat ("color_emissive_threshold", &m->color_emissive[ci].threshold, 0.0f, 1.0f,
+			                        "How far a pixel's colour may differ from this block's colour and still glow."))
+				QRE_MarkDirty (m);
+			if (QR_GUI_SliderFloat ("color_emissive_feather", &m->color_emissive[ci].feather, 0.0f, 16.0f,
+			                        "Softens this block's mask edge over this many pixels, on both sides of it, without comparing colours."))
+				QRE_MarkDirty (m);
+			{
+				int idx = m->color_emissive[ci].blend + 1;
+
+				if (QR_GUI_Combo ("emissive_blend", &idx, qre_emissive_blends, (int)countof (qre_emissive_blends),
+				                  "How this block's glow is composited into the frame (normal, screen, overlay...)."))
+				{
+					m->color_emissive[ci].blend = idx - 1;
+					QRE_MarkDirty (m);
+				}
+			}
 		}
+
+		QR_GUI_PopID ();
 	}
 
 	if (m->color_emissive_count < RT_MAT_MAX_EMISSIVE_COLORS)
 	{
 		if (QR_GUI_Button ("+"))
 		{
+			rt_emissive_t *block;
+
 			QRE_EnsureLive (g);
 			m = qre.group[g];
-			m->color_emissive[m->color_emissive_count][0] = 1.0f;
-			m->color_emissive[m->color_emissive_count][1] = 0.0f;
-			m->color_emissive[m->color_emissive_count][2] = 0.0f;
+			block = &m->color_emissive[m->color_emissive_count];
+			memset (block, 0, sizeof (*block));
+			block->color[0] = 1.0f;
+			block->threshold = (m->color_emissive_threshold > 0.0f) ? m->color_emissive_threshold : 0.02f;
+			block->feather = m->color_emissive_feather;
+			block->blend = m->emissive_blend;
+			block->has_threshold = block->has_feather = block->has_blend = true;
 			m->color_emissive_count++;
 			m->has_color_emissive = true;
 			QRE_MarkDirty (m);
 		}
-		QR_GUI_Tooltip ("Add a colour to match (up to ten)");
+		QR_GUI_Tooltip ("Add a colour block (up to ten)");
 	}
 }
 
@@ -2137,7 +2157,6 @@ static void QRE_ParamWidgets (int g)
 	rt_material_t        defbuf;
 	const rt_material_t *orig = QRE_OriginalOf (qre.group[g], &defbuf);
 	int                  p;
-	qboolean             emissive_open = false;
 
 	for (p = 0; p < PARAM_COUNT; p++)
 	{
@@ -2153,17 +2172,13 @@ static void QRE_ParamWidgets (int g)
 		if (mirror_locks_rough)
 			QR_GUI_PushDisabled (1);
 
-		// The Emissive section: the eyedropper, the colour list and the tone
-		// controls sit under the color_emissive checkbox; without the checkbox
-		// there is no section and no rows.
-		if (p == PARAM_ETHRESH && m->has_color_emissive)
+		// The Emissive section: the colour blocks sit under the color_emissive
+		// checkbox; without the checkbox there is no section.
+		if (p == PARAM_CEMIS && m->has_color_emissive)
 		{
-			emissive_open = QR_GUI_Section ("Emissive", 1);
-			if (emissive_open)
+			if (QR_GUI_Section ("Emissive", 1))
 				QRE_EmissiveEditor (g);
 		}
-		if (p >= PARAM_ETHRESH && p <= PARAM_EBLEND && (!m->has_color_emissive || !emissive_open))
-			continue;
 
 		switch (qre_params[p].type)
 		{
@@ -2210,9 +2225,8 @@ static void QRE_ParamWidgets (int g)
 
 			if (p == PARAM_EBLEND)
 			{
-				static const char *const blends[] = { "cvar", "0", "1", "2", "3", "4", "5" };
 				int index = value + 1;
-				if (QR_GUI_Combo (label, &index, blends, (int)countof (blends), tip))
+				if (QR_GUI_Combo (label, &index, qre_emissive_blends, (int)countof (qre_emissive_blends), tip))
 					QRE_SetInt (g, p, index - 1);
 			}
 			else
@@ -3067,44 +3081,55 @@ static const char *qre_yaml_header =
 	"#   * `texture_emissive: textures/foo_luma.png` -- a hand-painted mask file:\n"
 	"#     its pixels' luminance is the emission. Most precise; keeps the mask\n"
 	"#     independent of the diffuse art.\n"
-	"#   * `color_emissive: ff0000` -- no mask file: the mask is synthesized from\n"
-	"#     the base texture, so only pixels close to that colour glow. The tone\n"
-	"#     tolerance is `color_emissive_threshold` (0..1 colour-cube distance\n"
-	"#     divided by sqrt(3); default 0.02 = very strict). The synthesized mask is\n"
-	"#     white where the pixel matches that colour exactly and decays\n"
-	"#     exponentially to black towards the threshold, so the glow fades out\n"
-	"#     softly instead of ending in a hard edge. `emissive_factor` scales the\n"
-	"#     result. Up to ten colours may share one texture, comma separated\n"
-	"#     (`color_emissive: ff0000,00ff00`) or as a YAML list: a pixel glows when\n"
-	"#     it matches any of them. `color_emissive_feather` (in pixels) then grows\n"
-	"#     the mask into the neighbours of the matching pixels without comparing\n"
-	"#     their colour. Combine with `is_light: true` to also cast light\n"
+	"#   * `color_emissive:` -- no mask file: each block below matches its own\n"
+	"#     colour against the base texture, so only pixels close to it glow. A\n"
+	"#     block carries its colour and its own tone controls:\n"
+	"#         color_emissive:\n"
+	"#           - color: ff0000          # rrggbb\n"
+	"#             threshold: 0.02        # 0..1 colour-cube distance / sqrt(3)\n"
+	"#             feather: 2             # pixels of edge softening, both sides\n"
+	"#             blend: screen          # cvar | off | normal | screen |\n"
+	"#                                    # overlay | hard light | colour dodge\n"
+	"#     The synthesized mask is white where the pixel matches the colour\n"
+	"#     exactly and decays exponentially to black towards the threshold, so the\n"
+	"#     glow fades out softly instead of ending in a hard edge; the feather\n"
+	"#     blurs that edge on both sides without comparing colours. Up to ten\n"
+	"#     blocks may share one texture; a pixel glows when any of them matches\n"
+	"#     it, and the strongest one's blend mode is used there. `emissive_factor`\n"
+	"#     scales the result. Combine with `is_light: true` to also cast light\n"
 	"#     (otherwise the surface only glows):\n"
 	"#     e.g.  - name: textures/foo\n"
-	"#             color_emissive: ff0000\n"
+	"#             color_emissive:\n"
+	"#               - color: ff0000\n"
+	"#                 threshold: 0.02\n"
+	"#                 feather: 3\n"
+	"#                 blend: screen\n"
 	"#             is_light: true\n"
+	"# The old single-colour keys (`color_emissive: ff0000,00ff00`,\n"
+	"# `color_emissive_threshold`, `color_emissive_feather`) are still read: a\n"
+	"# block without its own controls inherits them.\n"
 	"# Precedence: an authored `texture_emissive` always wins -- while the key is\n"
 	"# present in an entry, `color_emissive` in that same entry is ignored\n"
 	"# entirely (even if the luma file fails to load, which is reported at\n"
 	"# startup). The classic fullbright mask is merged rather than replaced, so\n"
 	"# its pixels emit in addition to the luma mask.\n"
 	"#\n"
-	"# `emissive_blend: N` overrides the global `rt_emis_blend` cvar for that\n"
-	"# material only; without the key the cvar value is used. It selects how the\n"
-	"# screen-space emission of the surface is composited into the HDR image\n"
-	"# before tone mapping:\n"
-	"#   0 - emission is not composited at all\n"
-	"#   1 - emission is used as coverage (this is the cvar default)\n"
-	"#   2 - emission is added on top of the image (brightest, keeps saturation)\n"
-	"#   3 - overlay, driven by the underlying base color\n"
-	"#   4 - overlay, driven by the emission color\n"
-	"#   5 - divide (emission acts as a darkener)\n"
+	"# `emissive_blend: screen` (or a number) overrides the global `rt_emis_blend`\n"
+	"# cvar for the emission that has no block of its own (a texture_emissive\n"
+	"# mask); a colour block's own `blend` wins for its pixels. The names are what\n"
+	"# the shader does:\n"
+	"#   0 - off: emission is not composited at all\n"
+	"#   1 - normal: emission is used as coverage (this is the cvar default)\n"
+	"#   2 - screen: added on top of the image (brightest, keeps saturation)\n"
+	"#   3 - overlay: the overlay formula, driven by the underlying base color\n"
+	"#   4 - hard light: the same formula, driven by the emission color\n"
+	"#   5 - colour dodge: base divided by the inverted emission (brightens)\n"
 	"# Intended for emissive *mirrored* surfaces (stained glass, lit windows):\n"
 	"# they read as washed out in the default mode, while the additive mode keeps\n"
 	"# them bright and saturated.\n"
 	"#     e.g.  - name: textures/window01_1\n"
 	"#             mirror: true\n"
-	"#             emissive_blend: 2\n";
+	"#             emissive_blend: screen\n";
 
 static void QRE_WriteColor (FILE *f, const char *key, const vec3_t rgb)
 {
@@ -3114,20 +3139,25 @@ static void QRE_WriteColor (FILE *f, const char *key, const vec3_t rgb)
 	         (int)(rgb[2] * 255.0f + 0.5f) & 0xff);
 }
 
-// A list of colours, comma separated: "ff0000,00ff00,0000ff".
-static void QRE_WriteColorList (FILE *f, const char *key, const rt_material_t *m)
+// The colour blocks, one YAML mapping each: the colour and the tone controls
+// that work for it alone.
+static void QRE_WriteEmissiveBlocks (FILE *f, const rt_material_t *m)
 {
 	int i;
 
-	fprintf (f, "    %s:", key);
+	fprintf (f, "    color_emissive:\n");
 	for (i = 0; i < m->color_emissive_count; i++)
 	{
-		fprintf (f, "%s%02x%02x%02x", i ? "," : " ",
-		         (int)(m->color_emissive[i][0] * 255.0f + 0.5f) & 0xff,
-		         (int)(m->color_emissive[i][1] * 255.0f + 0.5f) & 0xff,
-		         (int)(m->color_emissive[i][2] * 255.0f + 0.5f) & 0xff);
+		const rt_emissive_t *b = &m->color_emissive[i];
+
+		fprintf (f, "      - color: %02x%02x%02x\n",
+		         (int)(b->color[0] * 255.0f + 0.5f) & 0xff,
+		         (int)(b->color[1] * 255.0f + 0.5f) & 0xff,
+		         (int)(b->color[2] * 255.0f + 0.5f) & 0xff);
+		fprintf (f, "        threshold: %.6g\n", b->threshold);
+		fprintf (f, "        feather: %.6g\n", b->feather);
+		fprintf (f, "        blend: %s\n", RT_MAT_EmissiveBlendName (b->blend));
 	}
-	fprintf (f, "\n");
 }
 
 // Writes one material entry. Only values that differ from the defaults are
@@ -3157,7 +3187,7 @@ static void QRE_WriteMaterial (FILE *f, const rt_material_t *m)
 	if (m->emissive_factor != 1.0f)
 		fprintf (f, "    emissive_factor: %.6g\n", m->emissive_factor);
 	if (m->emissive_blend >= 0)
-		fprintf (f, "    emissive_blend: %d\n", m->emissive_blend);
+		fprintf (f, "    emissive_blend: %s\n", RT_MAT_EmissiveBlendName (m->emissive_blend));
 	if (m->base_factor != 1.0f)
 		fprintf (f, "    base_factor: %.6g\n", m->base_factor);
 	if (m->is_light)
@@ -3165,11 +3195,7 @@ static void QRE_WriteMaterial (FILE *f, const rt_material_t *m)
 	if (m->light_styles)
 		fprintf (f, "    light_styles: true\n");
 	if (m->has_color_emissive && m->color_emissive_count > 0)
-		QRE_WriteColorList (f, "color_emissive", m);
-	if (m->color_emissive_threshold != 0.02f)
-		fprintf (f, "    color_emissive_threshold: %.6g\n", m->color_emissive_threshold);
-	if (m->color_emissive_feather != 0.0f)
-		fprintf (f, "    color_emissive_feather: %.6g\n", m->color_emissive_feather);
+		QRE_WriteEmissiveBlocks (f, m);
 	if (m->has_light_color)
 		QRE_WriteColor (f, "light_color", m->light_color);
 	if (m->light_brightness != 1.0f)

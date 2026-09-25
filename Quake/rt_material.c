@@ -341,18 +341,42 @@ static qboolean rt_mat_parse_hex_color(const char *value, vec3_t out)
     return true;
 }
 
+/* Appends an empty block and returns it (NULL when the list is full): the
+   mapping form of a colour entry fills the fields itself. */
+static rt_emissive_t *rt_mat_append_emissive_block(rt_material_t *mat)
+{
+    rt_emissive_t *block;
+
+    if (mat->color_emissive_count >= RT_MAT_MAX_EMISSIVE_COLORS)
+    {
+        return NULL;
+    }
+
+    block = &mat->color_emissive[mat->color_emissive_count];
+    memset(block, 0, sizeof(*block));
+    block->color[0] = block->color[1] = block->color[2] = 1.0f;
+    block->threshold = mat->color_emissive_threshold;
+    block->feather = mat->color_emissive_feather;
+    block->blend = mat->emissive_blend;
+    mat->color_emissive_count++;
+    mat->has_color_emissive = true;
+    return block;
+}
+
 // Appends one colour to the material's colour_emissive list ("ff0000", "#ff0000"
 // and " ff0000 " all read the same). The list is what a texture atlas with
-// several differently coloured emissive regions is authored with.
-static void rt_mat_add_emissive_color(rt_material_t *mat, const char *value)
+// several differently coloured emissive regions is authored with. Returns the
+// new block or NULL when the list is full or the colour does not parse.
+static rt_emissive_t *rt_mat_add_emissive_color(rt_material_t *mat, const char *value)
 {
     vec3_t c;
     char   buf[64];
     size_t len;
+    rt_emissive_t *block;
 
-    if (mat->color_emissive_count >= RT_MAT_MAX_EMISSIVE_COLORS)
+    if (!value)
     {
-        return;
+        return NULL;
     }
 
     while (*value == ' ' || *value == '\t')
@@ -371,7 +395,7 @@ static void rt_mat_add_emissive_color(rt_material_t *mat, const char *value)
     }
     if (len == 0 || len >= sizeof(buf))
     {
-        return;
+        return NULL;
     }
 
     memcpy(buf, value, len);
@@ -381,12 +405,59 @@ static void rt_mat_add_emissive_color(rt_material_t *mat, const char *value)
     {
         Con_DWarning("RT mat: material '%s': color_emissive '%s' is not rrggbb; ignored\n",
                      mat->name, buf);
-        return;
+        return NULL;
     }
 
-    VectorCopy(c, mat->color_emissive[mat->color_emissive_count]);
-    mat->color_emissive_count++;
-    mat->has_color_emissive = true;
+    block = rt_mat_append_emissive_block(mat);
+    if (block)
+    {
+        VectorCopy(c, block->color);
+    }
+    return block;
+}
+
+// The blend modes by name, so the file reads like what the shader does:
+// "normal" is the coverage blend, "screen" adds the emission on top, "overlay"
+// and "hard light" are the two halves of the overlay formula (the base and the
+// emission as the driver), "colour dodge" divides by the inverse.
+const char *RT_MAT_EmissiveBlendName(int blend)
+{
+    switch (blend)
+    {
+    case -1: return "cvar";
+    case 0:  return "off";
+    case 1:  return "normal";
+    case 2:  return "screen";
+    case 3:  return "overlay";
+    case 4:  return "hard light";
+    case 5:  return "colour dodge";
+    default: return "cvar";
+    }
+}
+
+// A blend mode by number or by any of its aliases; -2 when it is neither.
+static int rt_mat_parse_emissive_blend(const char *value)
+{
+    int v;
+
+    if (!q_strcasecmp(value, "cvar"))                                      return -1;
+    if (!q_strcasecmp(value, "off") || !q_strcasecmp(value, "none"))       return 0;
+    if (!q_strcasecmp(value, "normal") || !q_strcasecmp(value, "coverage")) return 1;
+    if (!q_strcasecmp(value, "screen") || !q_strcasecmp(value, "add") ||
+        !q_strcasecmp(value, "additive"))                                  return 2;
+    if (!q_strcasecmp(value, "overlay"))                                   return 3;
+    if (!q_strcasecmp(value, "hard light") || !q_strcasecmp(value, "hard_light") ||
+        !q_strcasecmp(value, "hardlight"))                                 return 4;
+    if (!q_strcasecmp(value, "colour dodge") || !q_strcasecmp(value, "color dodge") ||
+        !q_strcasecmp(value, "colour_dodge") || !q_strcasecmp(value, "color_dodge") ||
+        !q_strcasecmp(value, "dodge") || !q_strcasecmp(value, "divide"))   return 5;
+
+    v = atoi(value);
+    if (v < -1 || v > RT_MAT_EMIS_BLEND_MAX)
+    {
+        return -2;
+    }
+    return v;
 }
 
 static void rt_mat_set_attribute(rt_material_t *mat, const char *key, const char *value)
@@ -410,12 +481,12 @@ static void rt_mat_set_attribute(rt_material_t *mat, const char *key, const char
         mat->base_factor = (float)atof(value);
     else if (!q_strcasecmp(key, "emissive_blend"))
     {
-        const int v = atoi(value);
+        const int v = rt_mat_parse_emissive_blend(value);
 
-        if (v < 0 || v > RT_MAT_EMIS_BLEND_MAX)
+        if (v == -2)
         {
-            Con_DWarning("RT mat: material '%s': emissive_blend %d is out of range 0..%d; ignored\n",
-                         mat->name, v, RT_MAT_EMIS_BLEND_MAX);
+            Con_DWarning("RT mat: material '%s': emissive_blend '%s' is not a mode; ignored\n",
+                         mat->name, value);
         }
         else
         {
@@ -580,10 +651,70 @@ static int rt_mat_parse_yaml(const char *filebuf, int len, const char *file_name
                                     yaml_node_t *sitem = yaml_document_get_node(&document, *sit);
                                     char valbuf[1024];
 
-                                    if (!sitem || sitem->type != YAML_SCALAR_NODE)
+                                    if (!sitem)
                                         continue;
-                                    rt_mat_yaml_scalar(sitem, valbuf, sizeof(valbuf));
-                                    rt_mat_add_emissive_color(dest, valbuf);
+
+                                    if (sitem->type == YAML_MAPPING_NODE)
+                                    {
+                                        // one block with its own tone controls:
+                                        //   - { color: ff0000, threshold: 0.02,
+                                        //       feather: 2, blend: screen }
+                                        rt_emissive_t *block = rt_mat_append_emissive_block(dest);
+
+                                        if (!block)
+                                            continue;
+
+                                        for (yaml_node_pair_t *bp = sitem->data.mapping.pairs.start;
+                                             bp < sitem->data.mapping.pairs.top; bp++)
+                                        {
+                                            yaml_node_t *bk = yaml_document_get_node(&document, bp->key);
+                                            yaml_node_t *bv = yaml_document_get_node(&document, bp->value);
+                                            char kb[64], vb[128];
+
+                                            if (!bk || !bv || bk->type != YAML_SCALAR_NODE ||
+                                                bv->type != YAML_SCALAR_NODE)
+                                                continue;
+                                            rt_mat_yaml_scalar(bk, kb, sizeof(kb));
+                                            rt_mat_yaml_scalar(bv, vb, sizeof(vb));
+
+                                            if (!q_strcasecmp(kb, "color") || !q_strcasecmp(kb, "colour"))
+                                            {
+                                                const char *hex = (vb[0] == '#') ? vb + 1 : vb;
+
+                                                if (!rt_mat_parse_hex_color(hex, block->color))
+                                                    Con_DWarning("RT mat: material '%s': colour '%s' is not rrggbb; white is used\n",
+                                                                 dest->name, vb);
+                                            }
+                                            else if (!q_strcasecmp(kb, "threshold"))
+                                            {
+                                                block->threshold = (float)atof(vb);
+                                                block->has_threshold = true;
+                                            }
+                                            else if (!q_strcasecmp(kb, "feather"))
+                                            {
+                                                block->feather = CLAMP(0.0f, (float)atof(vb), 16.0f);
+                                                block->has_feather = true;
+                                            }
+                                            else if (!q_strcasecmp(kb, "blend"))
+                                            {
+                                                const int v = rt_mat_parse_emissive_blend(vb);
+
+                                                if (v == -2)
+                                                    Con_DWarning("RT mat: material '%s': blend '%s' is not a mode; the material's is used\n",
+                                                                 dest->name, vb);
+                                                else
+                                                {
+                                                    block->blend = v;
+                                                    block->has_blend = true;
+                                                }
+                                            }
+                                        }
+                                    }
+                                    else if (sitem->type == YAML_SCALAR_NODE)
+                                    {
+                                        rt_mat_yaml_scalar(sitem, valbuf, sizeof(valbuf));
+                                        rt_mat_add_emissive_color(dest, valbuf);
+                                    }
                                 }
                             }
                             continue;
@@ -604,6 +735,22 @@ static int rt_mat_parse_yaml(const char *filebuf, int len, const char *file_name
                         {
                             rt_mat_set_attribute(dest, keybuf, valbuf);
                         }
+                    }
+
+                    // A block that carries no tone controls of its own inherits
+                    // the material-level ones (the old single-colour keys), so
+                    // after loading every block is complete on its own.
+                    for (int c = 0; c < dest->color_emissive_count; c++)
+                    {
+                        rt_emissive_t *block = &dest->color_emissive[c];
+
+                        if (!block->has_threshold)
+                            block->threshold = dest->color_emissive_threshold;
+                        if (!block->has_feather)
+                            block->feather = dest->color_emissive_feather;
+                        if (!block->has_blend)
+                            block->blend = dest->emissive_blend;
+                        block->has_threshold = block->has_feather = block->has_blend = true;
                     }
 
                     if (have_name)

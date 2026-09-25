@@ -10,9 +10,25 @@
 #include "quakedef.h"
 
 #define RT_MAT_EMIS_BLEND_MAX 5
-/* How many colour_emissive entries a material may carry: a texture atlas may
-   hold several differently coloured emissive regions (window panes, lamps). */
+/* How many colour_emissive blocks a material may carry: a texture atlas may
+   hold several differently coloured emissive regions (window panes, lamps),
+   each with its own tone controls. */
 #define RT_MAT_MAX_EMISSIVE_COLORS 10
+
+/* One colour_emissive block: a colour and the tone controls that work for it
+   alone (they were material-level before). */
+typedef struct rt_emissive_s
+{
+    vec3_t   color;
+    float    threshold;      // how far a pixel's colour may differ and still glow
+    float    feather;        // pixels of edge softening (0 = a hard mask)
+    int      blend;          // how the glow is composited; -1 = the material's / cvar
+    /* Set while a file is read: a block that does not carry its own value
+       inherits the material-level one (the old single-colour keys). */
+    qboolean has_threshold;
+    qboolean has_feather;
+    qboolean has_blend;
+} rt_emissive_t;
 
 /* Capacities of the live material lists: RT_MAT_GetList returns arrays of
    these sizes, and a snapshot of the lists must be allocated for them. */
@@ -42,13 +58,12 @@ typedef struct rt_material_s {
     qboolean light_styles;
     qboolean has_metalness_factor;
     qboolean metalness_from_normal_alpha;
-    vec3_t color_emissive[RT_MAT_MAX_EMISSIVE_COLORS];
+    rt_emissive_t color_emissive[RT_MAT_MAX_EMISSIVE_COLORS];
     int    color_emissive_count;
     qboolean has_color_emissive;
+    /* The material-level fallbacks the blocks inherit when they do not carry
+       their own (the old keys, kept for files written before the blocks). */
     float color_emissive_threshold;
-    /* Pixels of feathering around the colour-selected pixels: the mask grows
-       spatially into the neighbours of the pixels threshold picked, without
-       comparing their colour (0 = off). */
     float color_emissive_feather;
     vec3_t light_color;
     qboolean has_light_color;
@@ -99,6 +114,11 @@ void RT_MAT_SetListCounts(int globalCount, int mapCount);
 
 /* The current map name ("" when none), as loaded by RT_MAT_ChangeMap. */
 const char *RT_MAT_CurrentMap(void);
+
+/* The blend mode of an emissive value: "cvar", "off", "normal", "screen",
+   "overlay", "hard light" or "divide" (0..RT_MAT_EMIS_BLEND_MAX). The editor's
+   combo boxes show these names and the writer stores them. */
+const char *RT_MAT_EmissiveBlendName(int blend);
 
 enum {
     RT_MAT_TEX_BASE,

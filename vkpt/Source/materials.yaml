@@ -7,44 +7,55 @@
 #   * `texture_emissive: textures/foo_luma.png` -- a hand-painted mask file:
 #     its pixels' luminance is the emission. Most precise; keeps the mask
 #     independent of the diffuse art.
-#   * `color_emissive: ff0000` -- no mask file: the mask is synthesized from
-#     the base texture, so only pixels close to that colour glow. The tone
-#     tolerance is `color_emissive_threshold` (0..1 colour-cube distance
-#     divided by sqrt(3); default 0.02 = very strict). The synthesized mask is
-#     white where the pixel matches that colour exactly and decays
-#     exponentially to black towards the threshold, so the glow fades out
-#     softly instead of ending in a hard edge. `emissive_factor` scales the
-#     result. Up to ten colours may share one texture, comma separated
-#     (`color_emissive: ff0000,00ff00`) or as a YAML list: a pixel glows when
-#     it matches any of them. `color_emissive_feather` (in pixels) then grows
-#     the mask into the neighbours of the matching pixels without comparing
-#     their colour. Combine with `is_light: true` to also cast light (otherwise
-#     the surface only glows):
+#   * `color_emissive:` -- no mask file: each block below matches its own
+#     colour against the base texture, so only pixels close to it glow. A block
+#     carries its colour and its own tone controls:
+#         color_emissive:
+#           - color: ff0000          # rrggbb
+#             threshold: 0.02        # 0..1 colour-cube distance / sqrt(3)
+#             feather: 2             # pixels of edge softening, both sides
+#             blend: screen          # cvar | off | normal | screen |
+#                                    # overlay | hard light | colour dodge
+#     The synthesized mask is white where the pixel matches the colour exactly
+#     and decays exponentially to black towards the threshold, so the glow fades
+#     out softly instead of ending in a hard edge; the feather blurs that edge
+#     on both sides without comparing colours. Up to ten blocks may share one
+#     texture; a pixel glows when any of them matches it, and the strongest
+#     one's blend mode is used there. `emissive_factor` scales the result.
+#     Combine with `is_light: true` to also cast light (otherwise the surface
+#     only glows):
 #     e.g.  - name: textures/foo
-#             color_emissive: ff0000
+#             color_emissive:
+#               - color: ff0000
+#                 threshold: 0.02
+#                 feather: 3
+#                 blend: screen
 #             is_light: true
+# The old single-colour keys (`color_emissive: ff0000,00ff00`,
+# `color_emissive_threshold`, `color_emissive_feather`) are still read: a block
+# without its own controls inherits them.
 # Precedence: an authored `texture_emissive` always wins -- while the key is
 # present in an entry, `color_emissive` in that same entry is ignored
 # entirely (even if the luma file fails to load, which is reported at
 # startup). The classic fullbright mask is merged rather than replaced, so
 # its pixels emit in addition to the luma mask.
 #
-# `emissive_blend: N` overrides the global `rt_emis_blend` cvar for that
-# material only; without the key the cvar value is used. It selects how the
-# screen-space emission of the surface is composited into the HDR image
-# before tone mapping:
-#   0 - emission is not composited at all
-#   1 - emission is used as coverage (this is the cvar default)
-#   2 - emission is added on top of the image (brightest, keeps saturation)
-#   3 - overlay, driven by the underlying base color
-#   4 - overlay, driven by the emission color
-#   5 - divide (emission acts as a darkener)
+# `emissive_blend: screen` (or a number) overrides the global `rt_emis_blend`
+# cvar for the emission that has no block of its own (a texture_emissive mask);
+# a colour block's own `blend` wins for its pixels. The names are what the
+# shader does:
+#   0 - off: emission is not composited at all
+#   1 - normal: emission is used as coverage (this is the cvar default)
+#   2 - screen: added on top of the image (brightest, keeps saturation)
+#   3 - overlay: the overlay formula, driven by the underlying base color
+#   4 - hard light: the same formula, driven by the emission color
+#   5 - colour dodge: base divided by the inverted emission (brightens)
 # Intended for emissive *mirrored* surfaces (stained glass, lit windows):
 # they read as washed out in the default mode, while the additive mode keeps
 # them bright and saturated.
 #     e.g.  - name: textures/window01_1
 #             mirror: true
-#             emissive_blend: 2
+#             emissive_blend: screen
 materials:
   - name: textures/#lava1
     texture_emissive: textures/_lava1_luma.png
