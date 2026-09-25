@@ -14,8 +14,12 @@
 #     white where the pixel matches that colour exactly and decays
 #     exponentially to black towards the threshold, so the glow fades out
 #     softly instead of ending in a hard edge. `emissive_factor` scales the
-#     result. Combine with `is_light: true` to also cast light (otherwise the
-#     surface only glows):
+#     result. Up to ten colours may share one texture, comma separated
+#     (`color_emissive: ff0000,00ff00`) or as a YAML list: a pixel glows when
+#     it matches any of them. `color_emissive_feather` (in pixels) then grows
+#     the mask into the neighbours of the matching pixels without comparing
+#     their colour. Combine with `is_light: true` to also cast light (otherwise
+#     the surface only glows):
 #     e.g.  - name: textures/foo
 #             color_emissive: ff0000
 #             is_light: true

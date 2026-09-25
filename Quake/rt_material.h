@@ -10,6 +10,9 @@
 #include "quakedef.h"
 
 #define RT_MAT_EMIS_BLEND_MAX 5
+/* How many colour_emissive entries a material may carry: a texture atlas may
+   hold several differently coloured emissive regions (window panes, lamps). */
+#define RT_MAT_MAX_EMISSIVE_COLORS 10
 
 /* Capacities of the live material lists: RT_MAT_GetList returns arrays of
    these sizes, and a snapshot of the lists must be allocated for them. */
@@ -39,9 +42,14 @@ typedef struct rt_material_s {
     qboolean light_styles;
     qboolean has_metalness_factor;
     qboolean metalness_from_normal_alpha;
-    vec3_t color_emissive;
+    vec3_t color_emissive[RT_MAT_MAX_EMISSIVE_COLORS];
+    int    color_emissive_count;
     qboolean has_color_emissive;
     float color_emissive_threshold;
+    /* Pixels of feathering around the colour-selected pixels: the mask grows
+       spatially into the neighbours of the pixels threshold picked, without
+       comparing their colour (0 = off). */
+    float color_emissive_feather;
     vec3_t light_color;
     qboolean has_light_color;
     float light_brightness;

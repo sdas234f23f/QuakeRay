@@ -1173,6 +1173,74 @@ static void TexMgr_DumpReloadTGA (const char *suffix, const char *name, int w, i
    as polygons over them; at or above it the whole surface glows and stays a single light. */
 #define RT_EMIS_GLOW_FULL 0.999f
 
+/*
+================
+TexMgr_FeatherEmissive
+
+Grows an emission map into the neighbours of its non-zero pixels: `feather`
+steps over the 8-neighbourhood, each step dimming by 1/(feather+1), without
+looking at the colours themselves. The pixels a colour threshold picked keep
+their own values; the pixels around them join the mask.
+================
+*/
+static void TexMgr_FeatherEmissive (float *emiss, int w, int h, int feather)
+{
+	byte  *spread;
+	float  decay;
+	int    i, step;
+
+	if (feather <= 0 || w <= 0 || h <= 0)
+		return;
+
+	spread = (byte *)Mem_Alloc ((size_t)w * (size_t)h);
+	memset (spread, 0xFF, (size_t)w * (size_t)h);
+
+	for (i = 0; i < w * h; i++)
+	{
+		if (emiss[i] > 0.0f)
+			spread[i] = 0;
+	}
+
+	decay = 1.0f - 1.0f / (float)(feather + 1);
+
+	for (step = 1; step <= feather; step++)
+	{
+		int x, y;
+
+		for (y = 0; y < h; y++)
+		{
+			for (x = 0; x < w; x++)
+			{
+				const int n = y * w + x;
+				int       dx, dy;
+
+				if (spread[n] != step - 1 || emiss[n] <= 0.0f)
+					continue;
+
+				for (dy = -1; dy <= 1; dy++)
+				{
+					const int ny = y + dy;
+
+					if (ny < 0 || ny >= h)
+						continue;
+					for (dx = -1; dx <= 1; dx++)
+					{
+						const int nx = x + dx;
+						const int ni = ny * w + nx;
+
+						if (nx < 0 || nx >= w || spread[ni] != 0xFF)
+							continue;
+						spread[ni] = (byte)step;
+						emiss[ni] = emiss[n] * decay;
+					}
+				}
+			}
+		}
+	}
+
+	Mem_Free (spread);
+}
+
 static qboolean TexMgr_ApplyMaterialFromMat (gltexture_t *glt, unsigned *albedoFallback, byte *fullbrightOverride)
 {
 	rt_material_t *mat = RT_MAT_Find (glt->name);
@@ -1292,7 +1360,7 @@ static qboolean TexMgr_ApplyMaterialFromMat (gltexture_t *glt, unsigned *albedoF
 	const qboolean engineAlpha = (glt->flags & TEXPREF_ALPHA) != 0;
 
 	const qboolean has_luma_key = (mat->filename_emissive[0] != '\0');
-	const qboolean use_color_emissive = mat->has_color_emissive && !has_luma_key;
+	const qboolean use_color_emissive = mat->has_color_emissive && mat->color_emissive_count > 0 && !has_luma_key;
 	if (has_luma_key && !emisBuf)
 		Con_Printf ("RT: material '%s': texture_emissive '%s' could not be loaded; using no emissive mask\n",
 		            mat->name, mat->filename_emissive);
@@ -1325,6 +1393,15 @@ static qboolean TexMgr_ApplyMaterialFromMat (gltexture_t *glt, unsigned *albedoF
 	double emissMean = 0.0;
 	double emissMeanBase = 0.0;
 	int    glowminx = tw, glowminy = th, glowmaxx = -1, glowmaxy = -1;
+
+	/* A colour mask may be feathered: the threshold picks the pixels whose
+	   colour matches, and a dilation then takes their neighbours without
+	   comparing colours, so a gradient around a matching pixel glows with it.
+	   The per-pixel emission is collected first and re-accumulated after the
+	   dilation (only the emission channel, means and glow extents change). */
+	const int feather = (use_color_emissive && !emisBuf && mat->color_emissive_feather >= 1.0f)
+	                    ? (int)(mat->color_emissive_feather + 0.5f) : 0;
+	float *emisMap = (feather > 0) ? (float *)Mem_Alloc ((size_t)npix * sizeof (float)) : NULL;
 
 	for (int i = 0; i < npix; i++)
 	{
@@ -1376,20 +1453,33 @@ static qboolean TexMgr_ApplyMaterialFromMat (gltexture_t *glt, unsigned *albedoF
 		}
 		else if (!emisBuf && use_color_emissive)
 		{
-			const float dr = src[0] / 255.0f - mat->color_emissive[0];
-			const float dg = src[1] / 255.0f - mat->color_emissive[1];
-			const float db = src[2] / 255.0f - mat->color_emissive[2];
 			const float thr = mat->color_emissive_threshold;
-			const float d2 = dr * dr + dg * dg + db * db;
-			if (d2 <= 3.0f * thr * thr)
+			int         c;
+
+			/* several colours may share one texture (a window atlas): the pixel
+			   glows when it matches any of them, once */
+			for (c = 0; c < mat->color_emissive_count; c++)
 			{
-				const float dnorm = (thr > 0.0f) ? sqrtf (d2 / 3.0f) / thr : 0.0f;
-				const float k = RT_COLOR_EMISSIVE_FALLOFF;
-				const float tail = expf (-k);
-				emiss = (expf (-k * dnorm) - tail) / (1.0f - tail);
-				emiss *= mat->emissive_factor;
+				const float dr = src[0] / 255.0f - mat->color_emissive[c][0];
+				const float dg = src[1] / 255.0f - mat->color_emissive[c][1];
+				const float db = src[2] / 255.0f - mat->color_emissive[c][2];
+				const float d2 = dr * dr + dg * dg + db * db;
+
+				if (d2 <= 3.0f * thr * thr)
+				{
+					const float dnorm = (thr > 0.0f) ? sqrtf (d2 / 3.0f) / thr : 0.0f;
+					const float k = RT_COLOR_EMISSIVE_FALLOFF;
+					const float tail = expf (-k);
+					const float e = (expf (-k * dnorm) - tail) / (1.0f - tail) * mat->emissive_factor;
+
+					if (e > emiss)
+						emiss = e;
+				}
 			}
 		}
+
+		if (emisMap)
+			emisMap[i] = emiss;
 
 		if (emiss > 0.0f)
 		{
@@ -1438,6 +1528,57 @@ static qboolean TexMgr_ApplyMaterialFromMat (gltexture_t *glt, unsigned *albedoF
 			normal[i * 4 + 2] = 255;
 		}
 		normal[i * 4 + 3] = 255;
+	}
+
+	if (emisMap)
+	{
+		TexMgr_FeatherEmissive (emisMap, tw, th, feather);
+
+		/* the map is the mask now: re-accumulate what the loop measured from
+		   the emission channel (albedo and the other channels stay) */
+		emissR = emissG = emissB = 0.0f;
+		emissMean = emissMeanBase = 0.0;
+		glowminx = tw;
+		glowminy = th;
+		glowmaxx = -1;
+		glowmaxy = -1;
+
+		for (int i = 0; i < npix; i++)
+		{
+			const float emiss = emisMap[i];
+			float       emissOut;
+
+			if (emiss <= 0.0f)
+			{
+				rme[i * 4 + 2] = 0;
+				continue;
+			}
+
+			emissR += albedo[i * 4 + 0] * emiss;
+			emissG += albedo[i * 4 + 1] * emiss;
+			emissB += albedo[i * 4 + 2] * emiss;
+			emissMeanBase += emiss;
+
+			emissOut = emiss * brightVis;
+			if (emissOut > 1.0f)
+				emissOut = 1.0f;
+			emissMean += emissOut;
+
+			if (emiss > RT_EMIS_GLOW_THRESHOLD)
+			{
+				const int px = i % tw;
+				const int py = i / tw;
+
+				if (px < glowminx) glowminx = px;
+				if (px > glowmaxx) glowmaxx = px;
+				if (py < glowminy) glowminy = py;
+				if (py > glowmaxy) glowmaxy = py;
+			}
+
+			rme[i * 4 + 2] = CLAMP (0, (int)(emissOut * 255), 255);
+		}
+
+		Mem_Free (emisMap);
 	}
 
 	if (baseBuf) Mem_Free (baseBuf);

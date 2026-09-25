@@ -758,8 +758,10 @@ int QR_GUI_ImagePick (const char *id, int64_t texture, int tex_w, int tex_h, flo
 		if (out_v)
 			*out_v = v;
 
-		if (ImGui::IsMouseDown (ImGuiMouseButton_Left))
-			result = 1;
+		if (ImGui::IsMouseClicked (ImGuiMouseButton_Left))
+			result = 2; // the press: the list takes a new colour
+		else if (ImGui::IsMouseDown (ImGuiMouseButton_Left))
+			result = 1; // dragging: update the one last taken
 
 		ImGui::SetMouseCursor (ImGuiMouseCursor_Hand);
 	}
@@ -778,6 +780,27 @@ int QR_GUI_ImagePick (const char *id, int64_t texture, int tex_w, int tex_h, flo
 	}
 
 	ImGui::PopID ();
+	return result;
+}
+
+int QR_GUI_ColorRow (const char *id, float rgb[3], const char *tooltip)
+{
+	int result = 0;
+
+	ImGui::PushID (id);
+	ImGui::SetNextItemWidth (ImGui::GetContentRegionAvail ().x - kBrowseButtonW - ImGui::GetStyle ().ItemSpacing.x);
+	if (ImGui::ColorEdit3 ("##color", rgb, ImGuiColorEditFlags_DisplayHex))
+		result |= 1;
+	if (tooltip && *tooltip)
+		ImGui::SetItemTooltip ("%s\nClick the swatch to pick, type the hex value", tooltip);
+	else
+		ImGui::SetItemTooltip ("Click the swatch to pick, type the hex value");
+	ImGui::SameLine ();
+	if (ImGui::Button ("x", ImVec2 (kBrowseButtonW, 0.0f)))
+		result |= 2;
+	ImGui::SetItemTooltip ("Remove this colour");
+	ImGui::PopID ();
+
 	return result;
 }
 

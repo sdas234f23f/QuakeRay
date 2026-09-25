@@ -75,6 +75,9 @@ int  QR_GUI_TexturePath (const char *label, char *buf, size_t capacity, const ch
 // An enabled checkbox and a color editor with a hex field. Returns 1 if either
 // changed.
 int  QR_GUI_ColorHex (const char *label, float rgb[3], int *enabled, const char *tooltip);
+// A row of the colour_emissive list: a swatch/hex editor with a remove button.
+// Returns 1 when the colour changed and 2 when remove was pressed (3 = both).
+int  QR_GUI_ColorRow (const char *id, float rgb[3], const char *tooltip);
 // A square button with a circular arrow, right-aligned in the current row.
 // Returns 1 when pressed; drawn greyed out while enabled is 0.
 int  QR_GUI_ResetButton (const char *label, int enabled);

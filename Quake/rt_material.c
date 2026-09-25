@@ -341,6 +341,54 @@ static qboolean rt_mat_parse_hex_color(const char *value, vec3_t out)
     return true;
 }
 
+// Appends one colour to the material's colour_emissive list ("ff0000", "#ff0000"
+// and " ff0000 " all read the same). The list is what a texture atlas with
+// several differently coloured emissive regions is authored with.
+static void rt_mat_add_emissive_color(rt_material_t *mat, const char *value)
+{
+    vec3_t c;
+    char   buf[64];
+    size_t len;
+
+    if (mat->color_emissive_count >= RT_MAT_MAX_EMISSIVE_COLORS)
+    {
+        return;
+    }
+
+    while (*value == ' ' || *value == '\t')
+    {
+        value++;
+    }
+    if (*value == '#')
+    {
+        value++;
+    }
+
+    len = strlen(value);
+    while (len > 0 && (value[len - 1] == ' ' || value[len - 1] == '\t' || value[len - 1] == '\r'))
+    {
+        len--;
+    }
+    if (len == 0 || len >= sizeof(buf))
+    {
+        return;
+    }
+
+    memcpy(buf, value, len);
+    buf[len] = 0;
+
+    if (!rt_mat_parse_hex_color(buf, c))
+    {
+        Con_DWarning("RT mat: material '%s': color_emissive '%s' is not rrggbb; ignored\n",
+                     mat->name, buf);
+        return;
+    }
+
+    VectorCopy(c, mat->color_emissive[mat->color_emissive_count]);
+    mat->color_emissive_count++;
+    mat->has_color_emissive = true;
+}
+
 static void rt_mat_set_attribute(rt_material_t *mat, const char *key, const char *value)
 {
     if (!q_strcasecmp(key, "bump_scale"))
@@ -379,9 +427,48 @@ static void rt_mat_set_attribute(rt_material_t *mat, const char *key, const char
     else if (!q_strcasecmp(key, "light_styles"))
         mat->light_styles = rt_mat_parse_bool(value);
     else if (!q_strcasecmp(key, "color_emissive"))
-        mat->has_color_emissive = rt_mat_parse_hex_color(value, mat->color_emissive);
+    {
+        // one or more colours, comma separated: "ff0000,00ff00"
+        char  buf[1024];
+        char *p, *next;
+
+        q_strlcpy(buf, value, sizeof(buf));
+        for (p = buf; p && *p; p = next)
+        {
+            char *end;
+
+            next = strchr(p, ',');
+            if (next)
+            {
+                *next++ = '\0';
+            }
+            end = p + strlen(p);
+            while (end > p && (end[-1] == ' ' || end[-1] == '\t'))
+            {
+                *--end = '\0';
+            }
+            if (*p)
+            {
+                rt_mat_add_emissive_color(mat, p);
+            }
+        }
+    }
     else if (!q_strcasecmp(key, "color_emissive_threshold"))
         mat->color_emissive_threshold = (float)atof(value);
+    else if (!q_strcasecmp(key, "color_emissive_feather"))
+    {
+        float f = (float)atof(value);
+
+        if (f < 0.0f)
+        {
+            f = 0.0f;
+        }
+        if (f > 16.0f)
+        {
+            f = 16.0f;
+        }
+        mat->color_emissive_feather = f;
+    }
     else if (!q_strcasecmp(key, "light_color"))
         mat->has_light_color = rt_mat_parse_hex_color(value, mat->light_color);
     else if (!q_strcasecmp(key, "light_brightness"))
@@ -474,12 +561,37 @@ static int rt_mat_parse_yaml(const char *filebuf, int len, const char *file_name
                     {
                         yaml_node_t *mk = yaml_document_get_node(&document, mp->key);
                         yaml_node_t *mv = yaml_document_get_node(&document, mp->value);
-                        if (!mk || !mv || mk->type != YAML_SCALAR_NODE || mv->type != YAML_SCALAR_NODE)
+                        if (!mk || !mv || mk->type != YAML_SCALAR_NODE)
                             continue;
 
                         char keybuf[128];
-                        char valbuf[1024];
                         rt_mat_yaml_scalar(mk, keybuf, sizeof(keybuf));
+
+                        if (mv->type == YAML_SEQUENCE_NODE)
+                        {
+                            // a list value: only colour_emissive takes one, so
+                            // both "color_emissive: ff0000,00ff00" and a YAML
+                            // list of colours author the same thing
+                            if (!q_strcasecmp(keybuf, "color_emissive"))
+                            {
+                                for (yaml_node_item_t *sit = mv->data.sequence.items.start;
+                                     sit < mv->data.sequence.items.top; sit++)
+                                {
+                                    yaml_node_t *sitem = yaml_document_get_node(&document, *sit);
+                                    char valbuf[1024];
+
+                                    if (!sitem || sitem->type != YAML_SCALAR_NODE)
+                                        continue;
+                                    rt_mat_yaml_scalar(sitem, valbuf, sizeof(valbuf));
+                                    rt_mat_add_emissive_color(dest, valbuf);
+                                }
+                            }
+                            continue;
+                        }
+                        if (mv->type != YAML_SCALAR_NODE)
+                            continue;
+
+                        char valbuf[1024];
                         rt_mat_yaml_scalar(mv, valbuf, sizeof(valbuf));
 
                         if (!q_strcasecmp(keybuf, "name"))
