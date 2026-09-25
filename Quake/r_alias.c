@@ -209,12 +209,18 @@ static void GL_DrawAliasFrame(
 
     /* DTAL: the model lights the scene from its own geometry when its material says it is a
        light and carries an emissive mask. The fake dlight stays as the fallback for everything
-       the geometry path does not take (see RT_AddAliasEmissiveLights). */
+       the geometry path does not take (see RT_AddAliasEmissiveLights). The first-person weapon
+       is left out: its geometry is the one carried towards the eye by the view-model scale, so
+       a light built from it would ride the camera, light the room from inside the viewer and
+       churn the cluster lists every frame; a weapon that lights the room keeps its light_color
+       and the dlight below. */
     const int dtal_lights =
-        RT_AddAliasEmissiveLights (e->model, tx, RT_GetAliasModelUniqueId (entuniqueid),
-                                   GetModelVerticesForPose (e->model, paliashdr, lerpdata.pose1),
-                                   GetModelVerticesForPose (e->model, paliashdr, lerpdata.pose2), blend,
-                                   paliashdr->numverts_vbo, e->model->rtindices, paliashdr->numindexes, &transform);
+        isfirstperson ? 0
+                      : RT_AddAliasEmissiveLights (e->model, tx, RT_GetAliasModelUniqueId (entuniqueid),
+                                                   GetModelVerticesForPose (e->model, paliashdr, lerpdata.pose1),
+                                                   GetModelVerticesForPose (e->model, paliashdr, lerpdata.pose2), blend,
+                                                   paliashdr->numverts_vbo, e->model->rtindices, paliashdr->numindexes,
+                                                   &transform);
 
     if (dtal_lights <= 0 && tx && tx->rthaslightcolor && RT_AllowFakeLights ())
     {
