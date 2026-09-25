@@ -2135,6 +2135,11 @@ static void GL_EndRenderingTask (end_rendering_parms_t *parms)
 	float cameranear = GL_GetCameraNear (DEG2RAD (r_fovx), DEG2RAD (r_fovy));
 	float camerafar = GL_GetCameraFar ();
 
+	// The light editor's world is frozen: the traced water warp and the cloud
+	// drift follow this clock, so it takes the held client time while the
+	// editor runs instead of the wall clock.
+	const double frame_time = QR_Editor_Active () ? (double)cl.time : (double)SDL_GetTicks () / 1000.0;
+
 	RgDrawFrameInfo info = {
 		.worldUpVector = {0, 0, 1},
 		.fovYRadians = DEG2RAD (r_fovy),
@@ -2144,7 +2149,7 @@ static void GL_EndRenderingTask (end_rendering_parms_t *parms)
 		.rayCullMaskWorld = RG_DRAW_FRAME_RAY_CULL_WORLD_0_BIT | RG_DRAW_FRAME_RAY_CULL_WORLD_1_BIT | RG_DRAW_FRAME_RAY_CULL_SKY_BIT,
 		.disableRayTracedGeometry = false,
 		.disableRasterization = false,
-		.currentTime = (double)SDL_GetTicks () / 1000.0,
+		.currentTime = frame_time,
 		.disableEyeAdaptation = false,
 		.forceAntiFirefly = CVAR_TO_BOOL (rt_antifirefly),
 		.pRenderResolutionParams = &resolution_params,

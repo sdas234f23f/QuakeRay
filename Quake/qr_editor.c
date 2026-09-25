@@ -157,6 +157,20 @@ static const struct qre_param_s
 #define QRE_GROUP_MAX    12
 #define QRE_DIRTY_MAX    64
 #define QRE_TOUCHED_MAX  512
+#define QRE_PREVIEW_SLOTS QRE_GROUP_MAX
+
+// One texture preview: the RgMaterial the panel draws and the pixels the colour
+// picker samples, cached under the key of what they were built from, one slot
+// per group entry so rebuilding one section never frees a material another
+// section's draw command already names.
+typedef struct qre_preview_s
+{
+	char        key[MAX_QPATH * 2 + 32];
+	RgMaterial  mat;
+	byte       *pixels;
+	int         w, h;
+	unsigned    last_frame;
+} qre_preview_t;
 
 static struct
 {
@@ -196,23 +210,22 @@ static struct
 	char editor_file[MAX_OSPATH];
 	char backup_file[MAX_OSPATH];
 
-	// the exit dialog is up: Save/Discard, the editor keeps running until answered
-	qboolean exit_prompt;
-
-	// the pause state the editor found, restored when it closes
-	qboolean sv_paused_prev;
-	qboolean cl_paused_prev;
-
-	// the base-texture preview of the selected material (the emissive colour
-	// picker): the RgMaterial the panel draws and the pixels it samples
-	RgMaterial  preview_mat;
-	char        preview_key[MAX_QPATH * 2 + 32];
-	byte       *preview_pixels;
-	int         preview_w, preview_h;
-
 	// a material created by the editor for a texture that has none in yaml
 	rt_material_t tmp_mat;
 	qboolean      tmp_appended;
+
+	// the exit dialog is up: Save/Discard, the editor keeps running until
+	// answered; prompt_from_flying is the mode to go back to when dismissed
+	qboolean exit_prompt;
+	qboolean prompt_from_flying;
+
+	// the pause state the editor found, restored when it closes
+	qboolean sv_paused_prev;
+
+	// the base-texture previews of the selected material (the emissive colour
+	// picker): one slot per group entry in flight, so a section rebuild never
+	// destroys a material an earlier section's draw command still names
+	qre_preview_t preview[QRE_PREVIEW_SLOTS];
 
 	// materials waiting for live re-synthesis / all touched this session
 	char dirty[QRE_DIRTY_MAX][MAX_QPATH];
@@ -237,22 +250,47 @@ static qboolean QRE_BrowseTexture (char *out, size_t outsize);
 // Small helpers
 // ---------------------------------------------------------------------------
 
-// "textures/+3_med25" -> 3, "textures/_med25" -> -1 (not an animation frame)
+// "textures/+3_med25" -> 3, "progs/flame.mdl:frame2" -> 2 (a model or sprite
+// skin frame), anything else -> -1
 static int QRE_FrameDigit (const char *name)
 {
 	if (!q_strncasecmp (name, "textures/+", 10) && name[10] >= '0' && name[10] <= '9')
 		return name[10] - '0';
+
+	{
+		const char *p = strstr (name, ":frame");
+
+		if (p && p[6] >= '0' && p[6] <= '9' && (p[7] == '\0' || p[7] == '_'))
+			return p[6] - '0';
+	}
 	return -1;
 }
 
-// The animation base of a material name: "textures/+0_med25" -> "textures/_med25".
+// The animation base of a material name: "textures/+0_med25" -> "textures/_med25",
+// "progs/flame.mdl:frame1" -> "progs/flame.mdl".
 static void QRE_GroupBaseOf (const char *matname, char *out, size_t outsize)
 {
-	if (QRE_FrameDigit (matname) >= 0)
+	if (!q_strncasecmp (matname, "textures/+", 10) && matname[10] >= '0' && matname[10] <= '9')
 	{
 		q_snprintf (out, outsize, "textures/%s", matname + 11);
 		return;
 	}
+
+	{
+		const char *p = strstr (matname, ":frame");
+
+		if (p && p[6] >= '0' && p[6] <= '9')
+		{
+			size_t n = (size_t)(p - matname);
+
+			if (n >= outsize)
+				n = outsize - 1;
+			memcpy (out, matname, n);
+			out[n] = '\0';
+			return;
+		}
+	}
+
 	q_strlcpy (out, matname, outsize);
 }
 
@@ -420,7 +458,8 @@ static void QRE_ReapplyTouched (void)
 		// and the texture still has to be re-synthesized without it
 		TexMgr_ReloadImagesForTextureName (qre.touched[i]);
 	}
-	qre.touched_count = 0;
+	// the touched names are kept: they are the session's own list, and the
+	// session file is rewritten from them when Cancel reverts the values
 
 	Atomic_StoreUInt32 (&rt_require_static_submit, true);
 }
@@ -828,15 +867,48 @@ static float QRE_TraceEntityBox (entity_t *e, const vec3_t start, const vec3_t e
 	if (!e->model || (e->model->type != mod_alias && e->model->type != mod_sprite))
 		return -1.0f;
 
+	if (e->model->type == mod_sprite)
+	{
+		mspriteframe_t *frame = R_GetSpriteFrame (e);
+		vec3_t          dir, hit, delta;
+		float           x0, x1, y0, y1, denom, t, dx, dy;
+		int             k;
+
+		if (!frame)
+			return -1.0f;
+
+		// a sprite is a camera-facing quad built around the origin along the
+		// view axes (R_CreateSpriteVertices), not a box in the entity's frame
+		VectorSubtract (end, start, dir);
+		denom = DotProduct (vpn, dir);
+		if (fabsf (denom) < 1e-6f)
+			return -1.0f;
+		t = (DotProduct (vpn, e->origin) - DotProduct (vpn, start)) / denom;
+		if (t < 0.0f || t > 1.0f)
+			return -1.0f;
+
+		x0 = frame->left < frame->right ? frame->left : frame->right;
+		x1 = frame->left < frame->right ? frame->right : frame->left;
+		y0 = frame->down < frame->up ? frame->down : frame->up;
+		y1 = frame->down < frame->up ? frame->up : frame->down;
+
+		for (k = 0; k < 3; k++)
+			hit[k] = start[k] + t * dir[k];
+		VectorSubtract (hit, e->origin, delta);
+		dx = DotProduct (delta, vright);
+		dy = DotProduct (delta, vup);
+
+		if (dx < x0 || dx > x1 || dy < y0 || dy > y1)
+			return -1.0f;
+		return t;
+	}
+
 	VectorCopy (e->model->mins, mins);
 	VectorCopy (e->model->maxs, maxs);
 
-	// a sprite's bounds can be empty; give it the size the quad is drawn at
+	// an alias model with empty bounds cannot be tested
 	if (mins[0] == maxs[0] && mins[1] == maxs[1] && mins[2] == maxs[2])
-	{
-		mins[0] = mins[1] = mins[2] = -16.0f;
-		maxs[0] = maxs[1] = maxs[2] = 16.0f;
-	}
+		return -1.0f;
 
 	IdentityMatrix (m);
 	R_RotateForEntity (m, e->origin, e->angles);
@@ -954,6 +1026,11 @@ static qboolean QRE_TracePick (qmodel_t **out_model, msurface_t **out_surf, enti
 			if (e->model->type != mod_alias && e->model->type != mod_sprite)
 				continue;
 			if (e == &cl.viewent || i == cl.viewentity)
+				continue;
+			// the renderer draws nothing for these, and a model without a
+			// texture has no material to open: neither may take the pick from
+			// what stands behind it
+			if (e->alpha == ENTALPHA_ZERO || !QRE_EntityTexture (e))
 				continue;
 
 			f = QRE_TraceEntityBox (e, start, end);
@@ -1209,6 +1286,62 @@ static void QRE_EmitBoxOutline (entity_t *ent, uint32_t color)
 	if (!ent || !ent->model)
 		return;
 
+	if (ent->model->type == mod_sprite)
+	{
+		mspriteframe_t *frame = R_GetSpriteFrame (ent);
+		RgRasterizedGeometryUploadInfo sfinfo;
+		vec3_t      corner[4];
+		RgVertex   *srv;
+		uint32_t   *sri;
+		byte       *sblock;
+		RgResult    r;
+		int         k;
+
+		if (!frame)
+			return;
+
+		sblock = (byte *)RT_AllocScratchMemoryNulled (4 * sizeof (RgVertex) + 8 * sizeof (uint32_t));
+		srv = (RgVertex *)sblock;
+		sri = (uint32_t *)(sblock + 4 * sizeof (RgVertex));
+
+		// the quad R_CreateSpriteVertices builds: the view axes scaled by the
+		// frame's extents around the origin
+		VectorMA (ent->origin, frame->left, vright, corner[0]);
+		VectorMA (corner[0], frame->down, vup, corner[0]);
+		VectorMA (ent->origin, frame->left, vright, corner[1]);
+		VectorMA (corner[1], frame->up, vup, corner[1]);
+		VectorMA (ent->origin, frame->right, vright, corner[2]);
+		VectorMA (corner[2], frame->up, vup, corner[2]);
+		VectorMA (ent->origin, frame->right, vright, corner[3]);
+		VectorMA (corner[3], frame->down, vup, corner[3]);
+
+		for (k = 0; k < 4; k++)
+		{
+			VectorCopy (corner[k], srv[k].position);
+			srv[k].packedColor = color;
+		}
+		for (k = 0; k < 4; k++)
+		{
+			sri[k * 2 + 0] = (uint32_t)k;
+			sri[k * 2 + 1] = (uint32_t)((k + 1) & 3);
+		}
+
+		memset (&sfinfo, 0, sizeof (sfinfo));
+		sfinfo.renderType = RG_RASTERIZED_GEOMETRY_RENDER_TYPE_SWAPCHAIN;
+		sfinfo.vertexCount = 4;
+		sfinfo.pVertices = srv;
+		sfinfo.indexCount = 8;
+		sfinfo.pIndices = sri;
+		sfinfo.transform.matrix[0][0] = sfinfo.transform.matrix[1][1] = sfinfo.transform.matrix[2][2] = 1.0f;
+		sfinfo.color.data[0] = sfinfo.color.data[1] = sfinfo.color.data[2] = sfinfo.color.data[3] = 1.0f;
+		sfinfo.material = RG_NO_MATERIAL;
+		sfinfo.pipelineState = RG_RASTERIZED_GEOMETRY_STATE_FORCE_LINE_LIST;
+
+		r = rgUploadRasterizedGeometry (vulkan_globals.instance, &sfinfo, NULL, NULL);
+		RG_CHECK (r);
+		return;
+	}
+
 	VectorCopy (ent->model->mins, mins);
 	VectorCopy (ent->model->maxs, maxs);
 	if (mins[0] == maxs[0] && mins[1] == maxs[1] && mins[2] == maxs[2])
@@ -1344,51 +1477,85 @@ void QR_Editor_UpdateView (void)
 
 static void QRE_FreePreview (void)
 {
-	if (qre.preview_mat != RG_NO_MATERIAL)
+	int i;
+
+	for (i = 0; i < QRE_PREVIEW_SLOTS; i++)
 	{
-		rgDestroyMaterial (vulkan_globals.instance, qre.preview_mat);
-		qre.preview_mat = RG_NO_MATERIAL;
+		qre_preview_t *slot = &qre.preview[i];
+
+		if (slot->mat != RG_NO_MATERIAL)
+			rgDestroyMaterial (vulkan_globals.instance, slot->mat);
+		if (slot->pixels)
+			Mem_Free (slot->pixels);
+		memset (slot, 0, sizeof (*slot));
 	}
-	if (qre.preview_pixels)
-	{
-		Mem_Free (qre.preview_pixels);
-		qre.preview_pixels = NULL;
-	}
-	qre.preview_w = qre.preview_h = 0;
-	qre.preview_key[0] = '\0';
 }
 
 // The pixels the emissive mask is synthesized from: the author's texture_base
 // when the material has one, the engine texture of the picked face otherwise.
 // The eyedropper samples this copy, so a picked colour is the colour the
 // synthesis will match, and the same pixels become the preview's RgMaterial.
-static void QRE_UpdatePreview (rt_material_t *m)
+// A slot stays alive while the frame still draws it; a failed load is cached
+// too, so a texture that cannot be read is not decoded once per frame.
+static qre_preview_t *QRE_PreviewFor (rt_material_t *m)
 {
-	char key[MAX_QPATH * 2 + 32];
-	byte *pixels = NULL;
-	int   w = 0, h = 0;
+	char          key[MAX_QPATH * 2 + 32];
+	qre_preview_t *slot;
+	byte         *pixels = NULL;
+	int           i, victim = -1;
+	int           w = 0, h = 0;
 
 	if (!qre.pick_glt)
-		return;
+		return NULL;
 
 	q_snprintf (key, sizeof (key), "%s|%s|%p", m->name, m->filename_base, (void *)qre.pick_glt);
 
-	if (!strcmp (key, qre.preview_key) && qre.preview_mat != RG_NO_MATERIAL)
-		return;
+	for (i = 0; i < QRE_PREVIEW_SLOTS; i++)
+	{
+		if (!strcmp (key, qre.preview[i].key))
+		{
+			qre.preview[i].last_frame = (unsigned)host_framecount;
+			return (qre.preview[i].mat != RG_NO_MATERIAL) ? &qre.preview[i] : NULL;
+		}
+	}
+
+	// an empty slot, or the least recently used one this frame has not drawn
+	for (i = 0; i < QRE_PREVIEW_SLOTS; i++)
+	{
+		if (qre.preview[i].last_frame == (unsigned)host_framecount)
+			continue;
+		if (victim < 0 || qre.preview[i].last_frame < qre.preview[victim].last_frame)
+			victim = i;
+	}
+	if (victim < 0)
+		return NULL;
+
+	slot = &qre.preview[victim];
+
+	if (slot->mat != RG_NO_MATERIAL)
+	{
+		rgDestroyMaterial (vulkan_globals.instance, slot->mat);
+		slot->mat = RG_NO_MATERIAL;
+	}
+	if (slot->pixels)
+	{
+		Mem_Free (slot->pixels);
+		slot->pixels = NULL;
+	}
+	slot->w = slot->h = 0;
+	q_strlcpy (slot->key, key, sizeof (slot->key));
+	slot->last_frame = (unsigned)host_framecount;
 
 	if (m->filename_base[0])
 		pixels = RT_MAT_LoadTexture (m, RT_MAT_TEX_BASE, &w, &h);
 	if (!pixels)
 		pixels = TexMgr_LoadRgbaForPreview (qre.pick_glt, &w, &h);
 
-	QRE_FreePreview ();
-
 	if (!pixels || w <= 0 || h <= 0)
 	{
 		if (pixels)
 			Mem_Free (pixels);
-		q_strlcpy (qre.preview_key, key, sizeof (qre.preview_key));
-		return;
+		return NULL;
 	}
 
 	{
@@ -1402,19 +1569,18 @@ static void QRE_UpdatePreview (rt_material_t *m)
 		info.addressModeU = RG_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
 		info.addressModeV = RG_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
 
-		if (rgCreateMaterial (vulkan_globals.instance, &info, &qre.preview_mat) != RG_SUCCESS)
+		if (rgCreateMaterial (vulkan_globals.instance, &info, &slot->mat) != RG_SUCCESS)
 		{
-			qre.preview_mat = RG_NO_MATERIAL;
+			slot->mat = RG_NO_MATERIAL;
 			Mem_Free (pixels);
-			q_strlcpy (qre.preview_key, key, sizeof (qre.preview_key));
-			return;
+			return NULL;
 		}
 	}
 
-	qre.preview_pixels = pixels;
-	qre.preview_w = w;
-	qre.preview_h = h;
-	q_strlcpy (qre.preview_key, key, sizeof (qre.preview_key));
+	slot->pixels = pixels;
+	slot->w = w;
+	slot->h = h;
+	return slot;
 }
 
 // ---------------------------------------------------------------------------
@@ -1655,18 +1821,18 @@ static void QRE_ParamWidgets (int g)
 		// the pixel under the cursor.
 		if (p == PARAM_CEMIS && m->has_color_emissive)
 		{
-			QRE_UpdatePreview (m);
+			qre_preview_t *slot = QRE_PreviewFor (m);
 
-			if (qre.preview_mat != RG_NO_MATERIAL && qre.preview_pixels)
+			if (slot)
 			{
 				float u = 0.5f, v = 0.5f;
 
 				QR_GUI_LabelDim ("click a pixel to take its colour");
-				if (QR_GUI_ImagePick ("##color_pick", (int64_t)qre.preview_mat, qre.preview_w, qre.preview_h, &u, &v))
+				if (QR_GUI_ImagePick ("##color_pick", (int64_t)slot->mat, slot->w, slot->h, &u, &v))
 				{
-					const int   px = CLAMP (0, (int)(u * (float)qre.preview_w), qre.preview_w - 1);
-					const int   py = CLAMP (0, (int)(v * (float)qre.preview_h), qre.preview_h - 1);
-					const byte *pix = qre.preview_pixels + ((size_t)py * (size_t)qre.preview_w + (size_t)px) * 4;
+					const int   px = CLAMP (0, (int)(u * (float)slot->w), slot->w - 1);
+					const int   py = CLAMP (0, (int)(v * (float)slot->h), slot->h - 1);
+					const byte *pix = slot->pixels + ((size_t)py * (size_t)slot->w + (size_t)px) * 4;
 
 					QRE_SetColorEnabled (g, p, true);
 					QRE_SetColorChannel (g, p, 0, pix[0] / 255.0f);
@@ -1865,7 +2031,11 @@ qboolean QR_Editor_GuiProcessEvent (const void *sdl_event)
 	if (e->type == SDL_KEYDOWN && e->key.keysym.sym == SDLK_ESCAPE && !QR_GUI_WantsKeyboard ())
 	{
 		if (qre.exit_prompt)
+		{
 			qre.exit_prompt = false; // back to editing
+			if (qre.prompt_from_flying)
+				QRE_ClosePanel ();
+		}
 		else
 			QRE_ClosePanel ();
 		return true;
@@ -1894,6 +2064,8 @@ static void QRE_ClosePanel (void)
 	qre.pick_surf = NULL;
 	qre.pick_ent = NULL;
 	qre.pick_glt = NULL;
+
+	QRE_FreePreview ();
 
 	IN_Activate ();
 	SDL_ShowCursor (SDL_ENABLE);
@@ -1934,9 +2106,11 @@ static void QRE_Cancel (void)
 		QRE_ResolveGroup (texname);
 	}
 
-	// the session file no longer matches the lists: put the reverted values there
-	if (QRE_FileExists (qre.editor_file))
-		QRE_WriteSession ();
+	// the session file no longer matches the lists: put the reverted values
+	// there (the session's names stay known until the editor closes, so a later
+	// Save still writes what was applied earlier)
+	if (QRE_FileExists (qre.editor_file) && !QRE_WriteSession ())
+		remove (qre.editor_file);
 
 	QRE_Notify ("materials reverted to the values from materials.yaml");
 }
@@ -2114,12 +2288,18 @@ static int QRE_ReadTargetNames (char (*names)[MAX_QPATH], int max)
 
 	while (count < max && fgets (line, sizeof (line), f))
 	{
-		char *p = strstr (line, "- name:");
+		char *p = line;
 		char *e;
+		char  name[MAX_QPATH];
+		int   n, dup = 0;
 
-		if (!p)
+		while (*p == ' ' || *p == '\t')
+			p++;
+		if (*p == '#' || *p == '\0')
+			continue; // a comment: the header's examples are comments
+		if (strncmp (p, "- name:", 7) != 0 && strncmp (p, "name:", 5) != 0)
 			continue;
-		p += 7;
+		p = strchr (p, ':') + 1;
 		while (*p == ' ' || *p == '\t')
 			p++;
 		e = p;
@@ -2127,8 +2307,24 @@ static int QRE_ReadTargetNames (char (*names)[MAX_QPATH], int max)
 			e++;
 		if (e == p)
 			continue;
-		*e = '\0';
-		q_strlcpy (names[count++], p, MAX_QPATH);
+		n = (int)(e - p);
+		if (n >= MAX_QPATH)
+			n = MAX_QPATH - 1;
+		memcpy (name, p, (size_t)n);
+		name[n] = '\0';
+		if (n >= 2 && name[0] == '"' && name[n - 1] == '"')
+		{
+			memmove (name, name + 1, (size_t)(n - 2));
+			name[n - 2] = '\0';
+		}
+		q_strlwr (name);
+		if (!name[0] || QRE_NameInList (qre.touched, qre.touched_count, name))
+			continue;
+		for (n = 0; n < count; n++)
+			if (!strcmp (names[n], name))
+				dup = 1;
+		if (!dup)
+			q_strlcpy (names[count++], name, MAX_QPATH);
 	}
 
 	fclose (f);
@@ -2141,17 +2337,16 @@ static int QRE_ReadTargetNames (char (*names)[MAX_QPATH], int max)
 static qboolean QRE_WriteSession (void)
 {
 	char (*names)[MAX_QPATH];
-	int   count, i, written = 0;
+	int   count = 0, i, written = 0;
 	FILE *f;
 
-	names = (char (*)[MAX_QPATH])Mem_Alloc (QRE_SESSION_NAMES_MAX * MAX_QPATH);
-	count = QRE_ReadTargetNames (names, QRE_SESSION_NAMES_MAX);
+	names = (char (*)[MAX_QPATH])Mem_Alloc (RT_MAT_CAP_GLOBAL * MAX_QPATH);
 
-	for (i = 0; i < qre.touched_count && count < QRE_SESSION_NAMES_MAX; i++)
-	{
-		if (!QRE_NameInList (names, count, qre.touched[i]))
-			q_strlcpy (names[count++], qre.touched[i], MAX_QPATH);
-	}
+	// the session's own names first: a target file long enough to fill the cap
+	// must not push the edits out of it
+	for (i = 0; i < qre.touched_count && count < RT_MAT_CAP_GLOBAL; i++)
+		q_strlcpy (names[count++], qre.touched[i], MAX_QPATH);
+	count += QRE_ReadTargetNames (names + count, RT_MAT_CAP_GLOBAL - count);
 
 	if (count == 0)
 	{
@@ -2181,8 +2376,22 @@ static qboolean QRE_WriteSession (void)
 		}
 	}
 
+	if (written == 0)
+	{
+		fclose (f);
+		remove (qre.editor_file); // an empty session is no session
+		Mem_Free (names);
+		QRE_Notify ("no material resolved; nothing written");
+		return false;
+	}
+
 	if (ferror (f) || fflush (f) != 0)
+	{
 		QRE_Notify ("write error in %s", qre.editor_file);
+		fclose (f);
+		Mem_Free (names);
+		return false;
+	}
 	fclose (f);
 	Mem_Free (names);
 
@@ -2191,19 +2400,41 @@ static qboolean QRE_WriteSession (void)
 }
 
 // "Save" of the exit dialog: the target is backed up first, then the session
-// file becomes the target (a mod's materials.yaml, so it overrides id1's).
+// file becomes the target (a mod's materials.yaml, so it overrides id1's). A
+// copy that cannot be made keeps the session file and says so.
 static void QRE_SessionSave (void)
 {
-	if (qre.touched_count > 0)
-		QRE_WriteSession ();
+	const qboolean had_target = QRE_FileExists (qre.target_file);
 
-	if (QRE_FileExists (qre.target_file))
-		QRE_CopyFile (qre.target_file, qre.backup_file);
-	QRE_CopyFile (qre.editor_file, qre.target_file);
+	if (qre.touched_count > 0 && !QRE_WriteSession ())
+	{
+		QRE_Notify ("nothing to save");
+		return;
+	}
+	if (!QRE_FileExists (qre.editor_file))
+	{
+		QRE_Notify ("nothing to save");
+		return;
+	}
+
+	if (had_target && !QRE_CopyFile (qre.target_file, qre.backup_file))
+	{
+		QRE_Notify ("cannot write %s; the session is kept", qre.backup_file);
+		return;
+	}
+	if (!QRE_CopyFile (qre.editor_file, qre.target_file))
+	{
+		QRE_Notify ("cannot write %s; the session is kept", qre.target_file);
+		return;
+	}
+
 	remove (qre.editor_file);
 
 	QRE_StopEditor (false);
-	QRE_Notify ("materials.yaml saved; backup_materials.yaml holds the previous file");
+	if (had_target)
+		QRE_Notify ("materials.yaml saved; backup_materials.yaml holds the previous file");
+	else
+		QRE_Notify ("materials.yaml saved");
 }
 
 // "Discard": the session file goes away and the original values come back on
@@ -2228,6 +2459,7 @@ static void QRE_RequestExit (void)
 	if (!qre.panel_open)
 	{
 		qre.panel_open = true;
+		qre.prompt_from_flying = true;
 		IN_FreeCursorForGui ();
 		SDL_ShowCursor (SDL_DISABLE);
 		QR_GUI_SetMouseCursor (1);
@@ -2322,9 +2554,13 @@ static void QRE_StopEditor (qboolean restore)
 
 	QRE_FreePreview ();
 
-	// the world runs again
-	sv.paused = qre.sv_paused_prev;
-	cl.paused = qre.cl_paused_prev;
+	// the world runs again: only lift the pause the editor itself set, so a
+	// pause toggled meanwhile is left as the player left it; a session the
+	// editor did not save goes away with it
+	if (sv.paused)
+		sv.paused = qre.sv_paused_prev;
+	if (!restore)
+		remove (qre.editor_file);
 
 	VectorCopy (qre.player_viewangles, cl.viewangles);
 
@@ -2349,6 +2585,11 @@ static void QR_Editor_Start_f (void)
 		Con_Printf ("qr light editor: a level must be loaded first\n");
 		return;
 	}
+	if (!sv.active || svs.maxclients > 1 || cls.demoplayback)
+	{
+		Con_Printf ("qr light editor: single player only (the world has to be frozen)\n");
+		return;
+	}
 
 	memset (&qre, 0, sizeof (qre));
 	qre.active = true;
@@ -2367,19 +2608,25 @@ static void QR_Editor_Start_f (void)
 	q_snprintf (qre.editor_file, sizeof (qre.editor_file), "%s/materials.editor.yaml", com_gamedir);
 	q_snprintf (qre.backup_file, sizeof (qre.backup_file), "%s/backup_materials.yaml", com_gamedir);
 
+	// a session file left by a crash or a map change belongs to a session that
+	// is over: it must not be saved by this one
+	remove (qre.editor_file);
+
 	// freeze the world: the server stops thinking and moving, cl.time stops
-	// advancing (CL_ReadFromServer), so animations, particles and poses hold
+	// advancing (CL_ReadFromServer) and the frame time handed to the renderer is
+	// the held clock, so poses, textures, particles, the water warp and the
+	// clouds all stand still. cl.paused is deliberately not touched: the engine
+	// skips V_CalcRefdef -- and with it the editor camera -- while it is set.
 	qre.sv_paused_prev = sv.paused;
-	qre.cl_paused_prev = cl.paused;
 	sv.paused = true;
-	cl.paused = true;
 
 	Con_Printf ("qr light editor: on (fly: WASD + mouse; LMB selects a face; ESC exits)\n");
 }
 
 static void QR_Editor_Stop_f (void)
 {
-	QRE_RequestExit ();
+	if (qre.active)
+		QRE_RequestExit ();
 }
 
 // Verbose reload diagnostics of the live material editor: logs every texture a

@@ -739,6 +739,18 @@ void RT_MAT_ChangeMap(const char *mapname)
 
     rt_mat_load_ctx_t ctx = { rt_map_materials, &rt_map_count, RT_MAT_MAX_MAP };
     rt_mat_load_cb(name, &ctx);
+
+    // The gamedir's own materials.yaml is the editor's target: it has to beat
+    // the map file it was saved from, or a saved edit would be shadowed by that
+    // file on the next load of the same map.
+    {
+        char own[MAX_OSPATH];
+        q_snprintf(own, sizeof(own), "%s/materials.yaml", com_gamedir);
+        if (Sys_FileTime(own) != -1)
+        {
+            rt_mat_load_cb(own, &ctx);
+        }
+    }
 }
 
 void RT_MAT_Reload(void)

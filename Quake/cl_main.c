@@ -430,6 +430,11 @@ float CL_LerpPoint (void)
 {
 	float f, frac;
 
+	// The light editor holds the clock: no lerp may pull cl.time forward while
+	// the world is meant to stand still.
+	if (QR_Editor_Active ())
+		return 1;
+
 	f = cl.mtime[0] - cl.mtime[1];
 
 	if (!f || cls.timedemo || (sv.active && !host_netinterval))

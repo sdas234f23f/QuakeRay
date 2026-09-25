@@ -846,7 +846,7 @@ void V_SetupFrame (void)
 	{
 		if (cl.intermission)
 			V_CalcIntermissionRefdef ();
-		else if (!cl.paused /* && (cl.maxclients > 1 || key_dest == key_game) */)
+		else if (!cl.paused || QR_Editor_Active ())
 			V_CalcRefdef ();
 	}
 }
