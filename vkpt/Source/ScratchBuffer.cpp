@@ -44,7 +44,13 @@ VkDeviceAddress ScratchBuffer::GetScratchAddress(VkDeviceSize scratchSize)
     // find chunk with appropriate size
     for (auto &c : chunks)
     {
-        if (alignedSize < c.buffer.GetSize() - c.currentOffset)
+        // Not strict: a chunk created for exactly this size has to be usable
+        // again after Reset. A strict comparison made every chunk that was
+        // allocated for a request larger than SCRATCH_CHUNK_BUFFER_SIZE
+        // permanently unusable, and Reset only rewinds the offsets, so each
+        // world rebuild (every material edit) added another chunk of that size
+        // and the device ran out of memory after a handful of edits.
+        if (alignedSize <= c.buffer.GetSize() - c.currentOffset)
         {
             VkDeviceAddress address = c.buffer.GetAddress() + c.currentOffset;
 
