@@ -559,6 +559,44 @@ int QR_GUI_InputText (const char *label, char *buf, size_t capacity, const char 
 	return changed;
 }
 
+int QR_GUI_Vec3Input (const char *label, float v[3], float min, float max, const char *tooltip)
+{
+	static const char *const axis[3] = { "X", "Y", "Z" };
+	char               id[192];
+	int                i, changed = 0;
+	const ImGuiStyle  &style = ImGui::GetStyle ();
+	const float        letter = ImGui::CalcTextSize ("X").x;
+	float              field = (RowWidth (0.0f) - letter * 3.0f - style.ItemSpacing.x * 5.0f) / 3.0f;
+
+	if (field < 32.0f)
+		field = 32.0f;
+
+	WidgetId (id, sizeof (id), label);
+
+	LabelColumn (label, tooltip);
+	ImGui::PushID (label);
+	for (i = 0; i < 3; i++)
+	{
+		char aid[16];
+
+		if (i)
+			ImGui::SameLine ();
+		ImGui::TextUnformatted (axis[i]);
+		ImGui::SameLine ();
+		snprintf (aid, sizeof (aid), "##%s", axis[i]);
+		ImGui::SetNextItemWidth (field);
+		if (ImGui::InputFloat (aid, &v[i], 0.0f, 0.0f, "%.2f"))
+			changed = 1;
+	}
+	ItemTooltip (tooltip);
+	ImGui::PopID ();
+
+	for (i = 0; i < 3; i++)
+		v[i] = ClampF (v[i], min, max);
+
+	return changed;
+}
+
 int QR_GUI_TexturePath (const char *label, char *buf, size_t capacity, const char *tooltip)
 {
 	char id[192];

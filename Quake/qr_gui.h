@@ -69,6 +69,9 @@ int  QR_GUI_SliderInt (const char *label, int *value, int min, int max, const ch
 // items are count NUL-terminated strings.
 int  QR_GUI_Combo (const char *label, int *value, const char *const *items, int count, const char *tooltip);
 int  QR_GUI_InputText (const char *label, char *buf, size_t capacity, const char *tooltip);
+// A row of three floats (X, Y, Z) on one line, clamped to min..max. Returns 1
+// when any of them changed.
+int  QR_GUI_Vec3Input (const char *label, float v[3], float min, float max, const char *tooltip);
 // A path field with a "..." button: returns 1 when the text changed and 2 when
 // the browse button was pressed (both can be set: 3). An empty path shows NONE.
 int  QR_GUI_TexturePath (const char *label, char *buf, size_t capacity, const char *tooltip);

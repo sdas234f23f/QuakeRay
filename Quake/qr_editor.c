@@ -2715,7 +2715,7 @@ static void QRE_BuildLightPanelGUI (void)
 		}
 
 		value = light->has_radius ? light->radius : QRE_LightDefaultRadius (qre.sel_light.kind);
-		if (QR_GUI_SliderFloat ("light_radius", &value, 0.0f, 1024.0f,
+		if (QR_GUI_SliderFloat ("light_radius", &value, 0.0f, 10.0f,
 		                        "The size of the light, in rt_dlight_radius units; the line under it is the radius the renderer draws."))
 			QRE_LightWrite (light, QRE_LIGHT_F_RADIUS, value, 0, 0, false);
 		if (QR_GUI_ResetButton ("light_radius", QRE_LightFieldChanged (light, orig, QRE_LIGHT_F_RADIUS)))
@@ -2736,18 +2736,14 @@ static void QRE_BuildLightPanelGUI (void)
 
 		{
 			float offs[3];
-			int   changed = 0;
 
 			offs[0] = light->has_offset ? light->offset[0] : 0.0f;
 			offs[1] = light->has_offset ? light->offset[1] : 0.0f;
 			offs[2] = light->has_offset ? light->offset[2] : 0.0f;
 
-			changed |= QR_GUI_SliderFloat ("light_offset x", &offs[0], -128.0f, 128.0f,
-			                               "The offset of the light from the emitter's pivot point (its origin).");
-			changed |= QR_GUI_SliderFloat ("light_offset y", &offs[1], -128.0f, 128.0f, NULL);
-			changed |= QR_GUI_SliderFloat ("light_offset z", &offs[2], -128.0f, 128.0f, NULL);
-
-			if (changed)
+			if (QR_GUI_Vec3Input ("light_offset", offs, -128.0f, 128.0f,
+			                      "The offset of the light from the emitter's pivot point (its origin), X Y Z.")
+			    )
 				QRE_LightWrite (light, QRE_LIGHT_F_OFFSET, offs[0], offs[1], offs[2], false);
 			if (QR_GUI_ResetButton ("light_offset", QRE_LightFieldChanged (light, orig, QRE_LIGHT_F_OFFSET)))
 				QRE_LightResetField (light, QRE_LIGHT_F_OFFSET);
