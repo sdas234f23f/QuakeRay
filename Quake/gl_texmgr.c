@@ -1103,7 +1103,7 @@ static qboolean texmgr_dumping_reload = false;
 
 // Verbose reload diagnostics and the TGA dump of the synthesized textures
 // (registered by the qr light editor; off by default).
-extern cvar_t qr_editor_debug;
+extern cvar_t qr_material_editor_debug;
 
 static qboolean TexMgr_AlreadyDumped (const char *name)
 {
@@ -1672,7 +1672,7 @@ static qboolean TexMgr_ApplyMaterialFromMat (gltexture_t *glt, unsigned *albedoF
 		            glt->rtemissiveglowtex ? 1 : 0);
 	}
 
-	if (texmgr_dumping_reload && !TexMgr_AlreadyDumped (mat->name) && CVAR_TO_BOOL (qr_editor_debug))
+	if (texmgr_dumping_reload && !TexMgr_AlreadyDumped (mat->name) && CVAR_TO_BOOL (qr_material_editor_debug))
 	{
 		Con_Printf ("qr editor dump: material '%s' tex '%s' %dx%d base='%s' emis='%s' gloss='%s' norm='%s' light=%d\n",
 		            mat->name, glt->name, tw, th,
@@ -2376,7 +2376,7 @@ static qboolean TexMgr_ReloadableSource (const gltexture_t *glt)
 
 static void TexMgr_LogReloaded (const gltexture_t *glt)
 {
-	if (!CVAR_TO_BOOL (qr_editor_debug))
+	if (!CVAR_TO_BOOL (qr_material_editor_debug))
 		return;
 
 	Con_Printf ("qr editor:   tex '%s' %ux%u fmt=%d off=%llu src='%s' flags=0x%x\n",
@@ -2402,7 +2402,7 @@ int TexMgr_ReloadImagesForMaterial (const char *materialName)
 	if (!materialName || !materialName[0])
 		return 0;
 
-	if (CVAR_TO_BOOL (qr_editor_debug))
+	if (CVAR_TO_BOOL (qr_material_editor_debug))
 		Con_Printf ("qr editor: reload material '%s'\n", materialName);
 	texmgr_dumping_reload = true;
 
@@ -2445,7 +2445,7 @@ int TexMgr_ReloadImagesForTextureName (const char *texname)
 	if (!texname || !texname[0])
 		return 0;
 
-	if (CVAR_TO_BOOL (qr_editor_debug))
+	if (CVAR_TO_BOOL (qr_material_editor_debug))
 		Con_Printf ("qr editor: reload texture '%s'\n", texname);
 	texmgr_dumping_reload = true;
 

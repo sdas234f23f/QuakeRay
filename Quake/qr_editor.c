@@ -1,6 +1,6 @@
 // qr_editor.c -- qr light editor: realtime material editor for the vkpt renderer.
 //
-// Console commands: qr_light_editor_start / qr_light_editor_stop.
+// Console commands: qr_material_editor_start / qr_material_editor_stop.
 //
 // While the editor runs the view belongs to a free camera (the player stands
 // still): aim with the crosshair, fire selects the face under it and opens the
@@ -2024,7 +2024,7 @@ static void QRE_BuildPanelGUI (void)
 static void QRE_BuildFlyingOverlay (void)
 {
 	static const char *const lines[] = {
-		"QR LIGHT EDITOR",
+		"QR MATERIAL EDITOR",
 		"LMB - select the face under the crosshair",
 		"WASD + mouse - fly    Shift - faster    jump/movedown - up/down",
 		"Esc - exit the editor    ~ - console",
@@ -2736,9 +2736,9 @@ static void QR_Editor_Start_f (void)
 		Con_Printf ("qr light editor: single player only (the world has to be frozen)\n");
 		return;
 	}
-	if (CVAR_TO_FLOAT (rt_truelight) <= 0.0f)
+	if (CVAR_TO_FLOAT (rt_truelight) != 1.0f)
 	{
-		Con_Printf ("qr light editor: the new light system must be on (rt_truelight 1)\n");
+		Con_Printf ("qr material editor: rt_truelight must be 1 (the new light system)\n");
 		return;
 	}
 
@@ -2783,7 +2783,7 @@ static void QR_Editor_Stop_f (void)
 // Verbose reload diagnostics of the live material editor: logs every texture a
 // reload reads (with its file offset) and dumps the synthesized albedo/RME/normal
 // of the first reload of a material to <gamedir>/qre_dump.
-cvar_t qr_editor_debug = { "qr_editor_debug", "0", CVAR_NONE };
+cvar_t qr_material_editor_debug = { "qr_material_editor_debug", "0", CVAR_NONE };
 
 void QR_Editor_Init (void)
 {
@@ -2794,10 +2794,10 @@ void QR_Editor_Init (void)
 		return;
 	qr_editor_registered = true;
 
-	Cvar_RegisterVariable (&qr_editor_debug);
+	Cvar_RegisterVariable (&qr_material_editor_debug);
 
-	Cmd_AddCommand ("qr_light_editor_start", QR_Editor_Start_f);
-	Cmd_AddCommand ("qr_light_editor_stop", QR_Editor_Stop_f);
+	Cmd_AddCommand ("qr_material_editor_start", QR_Editor_Start_f);
+	Cmd_AddCommand ("qr_material_editor_stop", QR_Editor_Stop_f);
 
 	// the font is deployed next to the executable by the build
 	q_snprintf (font_path, sizeof (font_path), "%s/fonts/Roboto-Regular.ttf", host_parms->basedir);
