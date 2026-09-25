@@ -133,9 +133,9 @@ static const struct qre_param_s
 	[PARAM_EBLEND]   = { "emissive_blend",   QRE_T_INT,  -1, 5, 1,
 	                     "Emission blend mode override; cvar uses the global one." },
 	[PARAM_ISLIGHT]  = { "is_light",         QRE_T_BOOL,  0, 0, 0,
-	                     "Emissive area light (BSP faces). Models and sprites light from light_color instead." },
+	                     "Emissive area light: world faces and alias models light from their own geometry. A model also needs an emissive mask; sprites light from light_color as a point light." },
 	[PARAM_LSTYLES]  = { "light_styles",     QRE_T_BOOL,  0, 0, 0,
-	                     "Let the light styles of the surface dim this light." },
+	                     "Let the light styles of the surface dim this light (world faces; models carry no light styles)." },
 	[PARAM_METALALPHA] = { "metalness_from_normal_alpha", QRE_T_BOOL, 0, 0, 0,
 	                     "Take metalness from the alpha of texture_normals." },
 	[PARAM_MIRROR]   = { "mirror",           QRE_T_BOOL,  0, 0, 0,
@@ -147,7 +147,7 @@ static const struct qre_param_s
 	[PARAM_CEMIS]    = { "color_emissive",   QRE_T_COLOR, 0, 0, 0,
 	                     "Emission tint for pixels close to this colour. Ignored while texture_emissive is set, even if that file fails to load." },
 	[PARAM_LCOLOR]   = { "light_color",      QRE_T_COLOR, 0, 0, 0,
-	                     "Colour of the emitted light. On BSP faces it needs is_light; models and sprites light by themselves." },
+	                     "Colour of the emitted light. World faces need is_light; an alias model without is_light or a mask (and every sprite) lights from this colour as a point light." },
 };
 
 // ---------------------------------------------------------------------------
@@ -2167,9 +2167,10 @@ static void QRE_Cancel (void)
 // of vkpt/Source/materials.yaml, which documents the accepted keys.
 static const char *qre_yaml_header =
 	"# Global material definitions for the vkpt ray-traced renderer.\n"
-	"# `is_light: false` marks a *static* surface (textures/*) whose luma\n"
-	"# texture should generate emissive triangle lights. Dynamic surfaces\n"
-	"# (progs/* models and sprites) are gated separately by the engine.\n"
+	"# `is_light: true` marks a surface whose luma casts light: a static surface\n"
+	"# (textures/*) or an alias model builds an emissive area light from its own\n"
+	"# geometry (a model also needs an emissive mask), and a sprite lights from\n"
+	"# `light_color` as a point light.\n"
 	"#\n"
 	"# Emissive masks can be authored two ways:\n"
 	"#   * `texture_emissive: textures/foo_luma.png` -- a hand-painted mask file:\n"

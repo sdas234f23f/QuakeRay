@@ -158,6 +158,12 @@ task_handle_t prev_end_rendering_task = INVALID_TASK_HANDLE;
 	CVAR_DEF_T (rt_world_batch_merge, "1") \
 	/* 0 uploads the map's lights one call at a time, for measuring the batched path. */ \
 	CVAR_DEF_T (rt_wmodel_lights_batch, "1") \
+	/* DTAL: 1 lights an alias model from the triangles of the pose it draws, when its material
+	   is a light and carries an emissive mask; 0 keeps the fake dlight for it. The per-model cap
+	   and the frame budget bound a crowd of glowing models (see RT_AddAliasEmissiveLights). */ \
+	CVAR_DEF_T (rt_model_lights, "1") \
+	CVAR_DEF_T (rt_model_lights_max, "8") \
+	CVAR_DEF_T (rt_model_lights_budget, "256") \
 	\
 	CVAR_DEF_T (rt_poi_distthresh, "2") \
 	CVAR_DEF_T (rt_poi_distthresh_super, "3") \

@@ -1,7 +1,8 @@
 # Global material definitions for the vkpt ray-traced renderer.
-# `is_light: false` marks a *static* surface (textures/*) whose luma
-# texture should generate emissive triangle lights. Dynamic surfaces
-# (progs/* models and sprites) are gated separately by the engine.
+# `is_light: true` marks a surface whose luma casts light: a static surface
+# (textures/*) or an alias model builds an emissive area light from its own
+# geometry (a model also needs an emissive mask), and a sprite lights from
+# `light_color` as a point light.
 #
 # Emissive masks can be authored two ways:
 #   * `texture_emissive: textures/foo_luma.png` -- a hand-painted mask file:

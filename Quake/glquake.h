@@ -613,6 +613,17 @@ uint64_t RT_GetAliasModelUniqueId (int entuniqueid);
 uint64_t RT_GetSpriteModelUniqueId (int entuniqueid);
 int RT_GetEntityUniqueId (const entity_t *ent);
 
+// DTAL: the textured area lights of one drawn alias model, built from the triangles of the pose
+// the visible pass renders. pose1/pose2 and blend are what R_SetupAliasFrame produced, and the
+// per-pose vertices are the model's own arrays (m->rtvertices), never the shared lerp scratch of
+// GetPoseVertices -- the light must not widen the window in which the parallel geometry uploads
+// read that scratch. Returns the number of lights uploaded, and the caller keeps the fake dlight
+// of the model when it is zero: no light material, no emissive mask, the feature off, or a frame
+// the budget turned down.
+int RT_AddAliasEmissiveLights (gltexture_t *tex, uint64_t base_uniqueid, const RgVertex *pose1, const RgVertex *pose2,
+                               float blend, int numverts, const uint32_t *indices, int numindices,
+                               const RgTransform *transform);
+
 RgTransform RT_GetModelTransform (const float model_matrix[16]);
 RgTransform RT_GetBrushModelMatrix (entity_t *e);
 RgFloat3D RT_AnglesToDir (/* const */ vec3_t angles);

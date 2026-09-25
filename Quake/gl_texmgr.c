@@ -1479,8 +1479,14 @@ static qboolean TexMgr_ApplyMaterialFromMat (gltexture_t *glt, unsigned *albedoF
 		   all. Above 1 the gain is the only thing that can brighten (the
 		   emission channel saturates); below 1 a mask the area light really
 		   samples (rtemissivetex, the flag its consumer reads) already dims the
-		   light once, so the gain is skipped there. */
-		const float gain = (isBrush && glt->rtemissivetex && lightBright < 1.0f) ? 1.0f : lightBright;
+		   light once, so the gain is skipped there. A brush face and an is_light
+		   alias model both light from that mask -- the model by DTAL -- so both
+		   take the rule; without it the mask and the colour would dim the same
+		   light twice. A sprite is not one of them: its light is the point light
+		   of light_color and samples no mask, so the gain stays its dimming. */
+		const qboolean mask_lit_model = glt->owner && glt->owner->type == mod_alias && mat->is_light;
+		const qboolean light_samples_mask = glt->rtemissivetex && (isBrush || mask_lit_model);
+		const float gain = (light_samples_mask && lightBright < 1.0f) ? 1.0f : lightBright;
 
 		if (glt->rthaslightcolor)
 			VectorScale (glt->rtlightcolor, gain, glt->rtlightcolor);
