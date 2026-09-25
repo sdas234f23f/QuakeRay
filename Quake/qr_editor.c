@@ -233,6 +233,12 @@ static struct
 	char        light_touched[QRE_TOUCHED_MAX][MAX_QPATH];
 	int         light_touched_count;
 
+	// the light editor: the light the crosshair is over, and the one selected
+	// (the panel edits the entry of the selected light's emitter)
+	rt_tracked_light_t sel_light;
+	qboolean           sel_light_valid;
+	int                hover_light;
+
 	// which of the two editors this is
 	int mode;
 
@@ -1175,6 +1181,200 @@ static qboolean QRE_TracePick (qmodel_t **out_model, msurface_t **out_surf, enti
 	return true;
 }
 
+// ---------------------------------------------------------------------------
+// The light editor's picking and wireframes
+// ---------------------------------------------------------------------------
+
+#define QRE_LIGHT_WIRE_MAX  96
+#define QRE_LIGHT_WIRE_SEGS 12
+
+// The nearest light along the view ray, or -1.
+static int QRE_LightUnderCrosshair (void)
+{
+	const rt_tracked_light_t *lights;
+	int   count = 0, i, best = -1;
+	float best_t = 1e30f;
+
+	lights = RT_TRACK_Lights (&count);
+	for (i = 0; i < count; i++)
+	{
+		vec3_t oc;
+		float  b, c, disc, t;
+
+		VectorSubtract (lights[i].position, r_origin, oc);
+		b = DotProduct (oc, vpn);
+		c = DotProduct (oc, oc) - lights[i].radius * lights[i].radius;
+		disc = b * b - c;
+		if (disc < 0.0f)
+			continue;
+		t = b - sqrtf (disc);
+		if (t < 0.0f)
+			t = b + sqrtf (disc);
+		if (t < 0.0f)
+			continue;
+		if (t < best_t)
+		{
+			best_t = t;
+			best = i;
+		}
+	}
+	return best;
+}
+
+// Hover (flying) or select (fire button) a light by its wireframe.
+static void QRE_DoLightPick (qboolean select)
+{
+	const rt_tracked_light_t *lights;
+	int count = 0, index = QRE_LightUnderCrosshair ();
+
+	if (!select)
+	{
+		qre.hover_light = index;
+		return;
+	}
+	if (index < 0)
+		return;
+
+	lights = RT_TRACK_Lights (&count);
+	if (index >= count)
+		return;
+
+	qre.sel_light = lights[index];
+	qre.sel_light_valid = true;
+	qre.hover_light = -1;
+	q_strlcpy (qre.pick_name, qre.sel_light.name, sizeof (qre.pick_name));
+	qre.pick_glt = NULL;
+	qre.pick_surf = NULL;
+	qre.pick_model = NULL;
+	qre.pick_ent = NULL;
+
+	Con_Printf ("qr light editor: picked light '%s' (%s)\n",
+	            qre.sel_light.name[0] ? qre.sel_light.name : "(no emitter name)",
+	            qre.sel_light.kind == RT_LIGHT_KIND_MATERIAL ? "material" :
+	            qre.sel_light.kind == RT_LIGHT_KIND_DLIGHT ? "legacy dlight" : "map light");
+
+	if (!qre.panel_open)
+	{
+		qre.panel_open = true;
+		IN_FreeCursorForGui ();
+		SDL_ShowCursor (SDL_DISABLE);
+		QR_GUI_SetMouseCursor (1);
+	}
+}
+
+// Keeps the selected light's live values in step with the frame's uploads.
+static void QRE_RefreshSelectedLight (void)
+{
+	const rt_tracked_light_t *lights;
+	int count = 0, i;
+
+	if (!qre.sel_light_valid)
+		return;
+
+	lights = RT_TRACK_Lights (&count);
+	for (i = 0; i < count; i++)
+	{
+		if (lights[i].uniqueID == qre.sel_light.uniqueID && lights[i].kind == qre.sel_light.kind)
+		{
+			qre.sel_light = lights[i];
+			q_strlcpy (qre.pick_name, qre.sel_light.name, sizeof (qre.pick_name));
+			return;
+		}
+	}
+}
+
+// The wireframes of the frame's lights: cyan, the hovered one amber and the
+// selected one white, in one line-list upload.
+static void QRE_DrawLightWireframes (void)
+{
+	const rt_tracked_light_t *lights;
+	const float               pi = 3.14159265f;
+	int                       count = 0, i, seg, axis, drawn = 0;
+	RgVertex                 *rv;
+	uint32_t                 *ri;
+	byte                     *block;
+	size_t                    verts_bytes, ri_bytes;
+
+	lights = RT_TRACK_Lights (&count);
+	if (count > QRE_LIGHT_WIRE_MAX)
+		count = QRE_LIGHT_WIRE_MAX;
+	if (count <= 0)
+		return;
+
+	verts_bytes = (size_t)count * 3 * (QRE_LIGHT_WIRE_SEGS + 1) * sizeof (RgVertex);
+	ri_bytes    = (size_t)count * 3 * QRE_LIGHT_WIRE_SEGS * 2 * sizeof (uint32_t);
+	block = (byte *)Mem_Alloc (verts_bytes + ri_bytes);
+	rv = (RgVertex *)block;
+	ri = (uint32_t *)(block + verts_bytes);
+
+	for (i = 0; i < count; i++)
+	{
+		const rt_tracked_light_t *l = &lights[i];
+		const float               r = l->radius;
+		const int                 base = drawn * 3 * (QRE_LIGHT_WIRE_SEGS + 1);
+		uint32_t                  color;
+
+		if (qre.sel_light_valid && l->uniqueID == qre.sel_light.uniqueID && l->kind == qre.sel_light.kind)
+			color = RT_PackColorToUint32 (255, 255, 255, 255);
+		else if (i == qre.hover_light)
+			color = RT_PackColorToUint32 (255, 214, 64, 255);
+		else
+			color = RT_PackColorToUint32 (0, 255, 255, 200);
+
+		for (axis = 0; axis < 3; axis++)
+		{
+			const int c1 = (axis + 1) % 3;
+			const int c2 = (axis + 2) % 3;
+
+			for (seg = 0; seg <= QRE_LIGHT_WIRE_SEGS; seg++)
+			{
+				const float a = (float)seg / (float)QRE_LIGHT_WIRE_SEGS * 2.0f * pi;
+				const int   p = base + axis * (QRE_LIGHT_WIRE_SEGS + 1) + seg;
+
+				rv[p].position[0] = l->position[0];
+				rv[p].position[1] = l->position[1];
+				rv[p].position[2] = l->position[2];
+				rv[p].position[c1] += cosf (a) * r;
+				rv[p].position[c2] += sinf (a) * r;
+				rv[p].packedColor = color;
+			}
+		}
+		for (axis = 0; axis < 3; axis++)
+		{
+			for (seg = 0; seg < QRE_LIGHT_WIRE_SEGS; seg++)
+			{
+				const int p = drawn * 3 * QRE_LIGHT_WIRE_SEGS + axis * QRE_LIGHT_WIRE_SEGS + seg;
+
+				ri[p * 2 + 0] = (uint32_t)(base + axis * (QRE_LIGHT_WIRE_SEGS + 1) + seg);
+				ri[p * 2 + 1] = (uint32_t)(base + axis * (QRE_LIGHT_WIRE_SEGS + 1) + seg + 1);
+			}
+		}
+		drawn++;
+	}
+
+	if (drawn > 0)
+	{
+		RgRasterizedGeometryUploadInfo info = {
+			.renderType = RG_RASTERIZED_GEOMETRY_RENDER_TYPE_SWAPCHAIN,
+			.vertexCount = (uint32_t)(drawn * 3 * (QRE_LIGHT_WIRE_SEGS + 1)),
+			.pVertices = rv,
+			.indexCount = (uint32_t)(drawn * 3 * QRE_LIGHT_WIRE_SEGS * 2),
+			.pIndices = ri,
+			.transform = RT_TRANSFORM_IDENTITY,
+			.color = RT_COLOR_WHITE,
+			.material = RG_NO_MATERIAL,
+			.pipelineState = RG_RASTERIZED_GEOMETRY_STATE_FORCE_LINE_LIST,
+			.blendFuncSrc = 0,
+			.blendFuncDst = 0,
+		};
+		RgResult res = rgUploadRasterizedGeometry (vulkan_globals.instance, &info, NULL, NULL);
+
+		RG_CHECK (res);
+	}
+
+	Mem_Free (block);
+}
+
 // Hover pick (crosshair, flying) or select pick (fire button).
 static void QRE_DoPick (qboolean select)
 {
@@ -1182,6 +1382,13 @@ static void QRE_DoPick (qboolean select)
 	msurface_t  *surf;
 	entity_t    *ent;
 	gltexture_t *glt;
+
+	// the light editor aims at the lights themselves, not at the surfaces
+	if (qre.mode == QRE_MODE_LIGHT)
+	{
+		QRE_DoLightPick (select);
+		return;
+	}
 
 	if (!QRE_TracePick (&model, &surf, &ent, &glt))
 	{
@@ -1511,6 +1718,12 @@ void QR_Editor_DrawSelection (cb_context_t *cbx)
 
 	if (!qre.active)
 		return;
+
+	if (qre.mode == QRE_MODE_LIGHT)
+	{
+		QRE_DrawLightWireframes ();
+		return;
+	}
 
 	if (qre.panel_open && (qre.pick_surf || (qre.pick_ent && qre.pick_glt)))
 	{
@@ -2105,20 +2318,35 @@ static void QRE_BuildLightPanelGUI (void)
 	QR_GUI_BeginPanel ("qr_light_editor", glwidth - panel_w, 0, panel_w, glheight);
 
 	QR_GUI_Label ("LIGHT EDITOR");
-	if (qre.pick_glt)
+	QRE_RefreshSelectedLight ();
+	if (qre.sel_light_valid)
 	{
-		char buf[MAX_QPATH + 16];
+		char buf[MAX_QPATH + 64];
 
-		q_snprintf (buf, sizeof (buf), "emitter: %s", qre.pick_name[0] ? qre.pick_name : qre.pick_glt->name);
+		q_snprintf (buf, sizeof (buf), "light: %s", qre.sel_light.name[0] ? qre.sel_light.name : "(no emitter name)");
 		QR_GUI_LabelDim (buf);
-	}
-	{
-		rt_material_t *m = qre.pick_name[0] ? RT_MAT_Find (qre.pick_name) : NULL;
+		q_snprintf (buf, sizeof (buf), "at %.0f %.0f %.0f   radius %.1f",
+		            qre.sel_light.position[0], qre.sel_light.position[1], qre.sel_light.position[2],
+		            qre.sel_light.radius);
+		QR_GUI_LabelDim (buf);
 
-		if (m && m->has_light_color)
-			QR_GUI_LabelDim ("casts a dlight (light_color)");
+		if (qre.sel_light.kind == RT_LIGHT_KIND_MATERIAL)
+		{
+			rt_material_t *m = qre.sel_light.name[0] ? RT_MAT_Find (qre.sel_light.name) : NULL;
+
+			if (m && m->has_light_color)
+				QR_GUI_LabelDim ("casts a dlight (light_color)");
+			else
+				QR_GUI_LabelDim ("no dlight: the material has no light_color");
+		}
 		else
-			QR_GUI_LabelDim ("no dlight: the material has no light_color");
+		{
+			QR_GUI_LabelDim (qre.sel_light.kind == RT_LIGHT_KIND_DLIGHT ? "a legacy dlight" : "a map light entity");
+		}
+	}
+	else
+	{
+		QR_GUI_LabelDim ("aim at a light wireframe and press the fire button");
 	}
 	QR_GUI_Spacing ();
 
@@ -2133,8 +2361,8 @@ static void QRE_BuildLightPanelGUI (void)
 	QR_GUI_Separator ();
 	QR_GUI_BeginScroll ();
 
-	if (qre.pick_name[0])
-		light = RT_LIGHT_Ensure (qre.pick_name);
+	if (qre.sel_light_valid && qre.sel_light.name[0])
+		light = RT_LIGHT_Ensure (qre.sel_light.name);
 
 	if (light)
 	{
@@ -2187,9 +2415,13 @@ static void QRE_BuildLightPanelGUI (void)
 			QRE_TouchLight (light->name);
 		}
 	}
+	else if (qre.sel_light_valid)
+	{
+		QR_GUI_LabelDim ("this light has no emitter name: there is nothing to save its fields to");
+	}
 	else
 	{
-		QR_GUI_Label (qre.pick_name[0] ? "the light list is full" : "nothing picked");
+		QR_GUI_Label ("nothing selected");
 	}
 
 	QR_GUI_EndScroll ();

@@ -60,4 +60,34 @@ qboolean RT_LIGHT_Write (const char *path, char (*names)[MAX_QPATH], int count);
 // True when at least one field is authored (what the writer asks).
 qboolean RT_LIGHT_HasFields (const rt_light_t *l);
 
+// ----- the lights of the frame, for the editor's wireframes and picking -----
+
+// Every spherical light the renderer uploads in a frame is recorded here, so the
+// light editor can show them, aim at them and open the entry of the one that is
+// clicked. The list belongs to one frame: RT_TRACK_BeginFrame clears it before
+// the frame's uploads.
+#define RT_TRACKED_LIGHTS_MAX 256
+
+enum
+{
+    RT_LIGHT_KIND_MATERIAL = 0, // an alias or sprite material light (named by its texture)
+    RT_LIGHT_KIND_DLIGHT   = 1, // the legacy dlight pool (named by its source entity's model)
+    RT_LIGHT_KIND_MAP      = 2, // a light entity of the map (named by its classname)
+};
+
+typedef struct rt_tracked_light_s
+{
+    vec3_t   position;
+    float    radius;            // game units, as uploaded
+    vec3_t   color;
+    uint64_t uniqueID;
+    int      kind;
+    char     name[MAX_QPATH];   // the emitter the light belongs to, "" when it has none
+} rt_tracked_light_t;
+
+void RT_TRACK_BeginFrame (void);
+void RT_TRACK_Light (const vec3_t position, float radius, const vec3_t color,
+                     uint64_t uniqueID, int kind, const char *name);
+const rt_tracked_light_t *RT_TRACK_Lights (int *outCount);
+
 #endif /* RT_LIGHTS_H */

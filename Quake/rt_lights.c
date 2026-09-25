@@ -8,12 +8,58 @@
 #include "quakedef.h"
 #include "rt_material.h"
 #include "rt_lights.h"
+#include "atomics.h"
 
 #define RT_LIGHT_CAP RT_LIGHT_NAMES_MAX
 
 static rt_light_t rt_lights[RT_LIGHT_CAP];
 static int        rt_light_count = 0;
 static qboolean   rt_light_initialized = false;
+
+// The lights uploaded in the current frame (see RT_TRACK_Light): the counter is
+// atomic because the uploads may come from the render tasks.
+static rt_tracked_light_t rt_tracked[RT_TRACKED_LIGHTS_MAX];
+static atomic_uint32_t    rt_tracked_count;
+
+void RT_TRACK_BeginFrame(void)
+{
+    Atomic_StoreUInt32(&rt_tracked_count, 0);
+}
+
+void RT_TRACK_Light(const vec3_t position, float radius, const vec3_t color,
+                    uint64_t uniqueID, int kind, const char *name)
+{
+    uint32_t index = Atomic_AddUInt32(&rt_tracked_count, 1);
+    rt_tracked_light_t *light;
+
+    if (index >= RT_TRACKED_LIGHTS_MAX)
+    {
+        return;
+    }
+
+    light = &rt_tracked[index];
+    VectorCopy(position, light->position);
+    light->radius = radius;
+    VectorCopy(color, light->color);
+    light->uniqueID = uniqueID;
+    light->kind = kind;
+    q_strlcpy(light->name, name ? name : "", sizeof(light->name));
+}
+
+const rt_tracked_light_t *RT_TRACK_Lights(int *outCount)
+{
+    uint32_t count = Atomic_LoadUInt32(&rt_tracked_count);
+
+    if (count > RT_TRACKED_LIGHTS_MAX)
+    {
+        count = RT_TRACKED_LIGHTS_MAX;
+    }
+    if (outCount)
+    {
+        *outCount = (int)count;
+    }
+    return rt_tracked;
+}
 
 static const char *rt_light_header =
     "# Dynamic light overrides for the vkpt ray-traced renderer.\n"

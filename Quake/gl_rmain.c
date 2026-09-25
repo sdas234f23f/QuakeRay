@@ -24,6 +24,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "quakedef.h"
 #include "tasks.h"
 #include "atomics.h"
+#include "rt_lights.h"
 #include "qr_editor.h"
 
 int r_visframecount; // bumped when going to a new PVS
@@ -390,23 +391,52 @@ static void RT_UploadAllDlights ()
 			}
 		}
 
-		vec3_t color = {l->color[0], l->color[1], l->color[2]};
-		VectorScale (color, CVAR_TO_FLOAT (rt_dlight_intensity), color);
+		/* A legacy dlight belongs to the entity that asked for it (a lava ball, a
+		   monster): its model names the emitter a lights.yaml entry may override. */
+		const char *light_name = NULL;
+		rt_light_t *ov = NULL;
+		float       intensity = CVAR_TO_FLOAT (rt_dlight_intensity);
+		float       radius = CVAR_TO_FLOAT (rt_dlight_radius);
+		vec3_t      position = {l->origin[0], l->origin[1], l->origin[2]};
+		vec3_t      color = {l->color[0], l->color[1], l->color[2]};
+
+		if (l->key > 0 && l->key < cl.num_entities && cl.entities[l->key].model)
+			light_name = cl.entities[l->key].model->name;
+		if (light_name)
+			ov = RT_LIGHT_Find (light_name);
+		if (ov)
+		{
+			if (ov->has_intensity)
+				intensity = ov->intensity;
+			if (ov->has_radius)
+				radius = ov->radius;
+			if (ov->has_offset)
+			{
+				position[0] += ov->offset[0];
+				position[1] += ov->offset[1];
+				position[2] += ov->offset[2];
+			}
+		}
+
+		VectorScale (color, intensity, color);
 		RT_FIXUP_LIGHT_INTENSITY (color, true);
 
 		RgSphericalLightUploadInfo info = {
 			.uniqueID = i,
 			.color = {color[0], color[1], color[2]},
-			.position = {l->origin[0], l->origin[1], l->origin[2]},
-			.radius = METRIC_TO_QUAKEUNIT (CVAR_TO_FLOAT (rt_dlight_radius)),
+			.position = {position[0], position[1], position[2]},
+			.radius = METRIC_TO_QUAKEUNIT (radius),
 		};
 
 		RgResult r = rgUploadSphericalLight (vulkan_globals.instance, &info);
 		RG_CHECK (r);
 
+		RT_TRACK_Light (info.position.data, info.radius, info.color.data,
+		                info.uniqueID, RT_LIGHT_KIND_DLIGHT, light_name ? light_name : "");
+
 		/* rt_cluster_dlights 0 keeps dlights out of the cluster lists (A/B experiment). */
 		if (CVAR_TO_FLOAT (rt_cluster_dlights) != 0)
-			RT_ClusterLightAdd (info.uniqueID, l->origin, RT_ClusterLightReach ());
+			RT_ClusterLightAdd (info.uniqueID, position, RT_ClusterLightReach ());
 	}
 	}
 
@@ -1011,6 +1041,10 @@ void R_RenderView (qboolean use_tasks, task_handle_t begin_rendering_task, task_
 
 	if (!cl.worldmodel)
 		Sys_Error ("R_RenderView: NULL worldmodel");
+
+	// The light editor's list of the frame's lights starts empty every frame; the
+	// four upload sites fill it as they go.
+	RT_TRACK_BeginFrame ();
 
 	time1 = 0; /* avoid compiler warning */
 	if (r_speeds.value)

@@ -22,6 +22,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 // r_light.c
 
 #include "quakedef.h"
+#include "rt_lights.h"
 
 int r_dlightframecount;
 
@@ -623,6 +624,7 @@ typedef struct rt_elight_s
 	float    intensity;
 	int      lightstyle;
 	qboolean is_around_poi;
+	char     classname[64]; // the map entity's classname: the light's name in lights.yaml
 } rt_elight_t;
 
 rt_elight_t *rt_elights = NULL;
@@ -716,6 +718,8 @@ void RT_ParseElights ()
 		
 		if (strcmp (key, "classname") == 0)
 		{
+			q_strlcpy (struct_values.classname, value, sizeof (struct_values.classname));
+
 			if (IsClassname_Light (value))
 			{
 				struct_values.state |= STRUCT_STATE_FOUND_LIGHTCLASSNAME;
@@ -902,7 +906,24 @@ void RT_UploadAllElights ()
 
 		if (accept)
 		{
-			float intens = quake_intensity / CVAR_TO_FLOAT (rt_elight_normaliz);
+			rt_light_t *ov = RT_LIGHT_Find (src->classname);
+			float       radius = CVAR_TO_FLOAT (rt_elight_radius);
+			vec3_t      position = {src->origin[0], src->origin[1], src->origin[2]};
+			float       intens = quake_intensity / CVAR_TO_FLOAT (rt_elight_normaliz);
+
+			if (ov)
+			{
+				if (ov->has_radius)
+					radius = ov->radius;
+				if (ov->has_intensity)
+					intens *= ov->intensity;
+				if (ov->has_offset)
+				{
+					position[0] += ov->offset[0];
+					position[1] += ov->offset[1];
+					position[2] += ov->offset[2];
+				}
+			}
 
 			if (src->state & STRUCT_STATE_FOUND_LIGHTSTYLE)
 			{
@@ -918,8 +939,8 @@ void RT_UploadAllElights ()
 			RgSphericalLightUploadInfo info = {
 				.uniqueID = (uint64_t)UINT16_MAX + i,
 				.color = {color[0], color[1], color[2]},
-				.position = {src->origin[0], src->origin[1], src->origin[2]},
-				.radius = METRIC_TO_QUAKEUNIT (CVAR_TO_FLOAT (rt_elight_radius)),
+				.position = {position[0], position[1], position[2]},
+				.radius = METRIC_TO_QUAKEUNIT (radius),
 			};
 
 			// offset up a bit, so light is not inside the model itself
@@ -930,6 +951,9 @@ void RT_UploadAllElights ()
 
 			RgResult r = rgUploadSphericalLight (vulkan_globals.instance, &info);
 			RG_CHECK (r);
+
+			RT_TRACK_Light (info.position.data, info.radius, info.color.data,
+			                info.uniqueID, RT_LIGHT_KIND_MAP, src->classname);
 
 			RT_ClusterLightAdd (info.uniqueID, info.position.data, RT_ClusterLightReach ());
 		}
