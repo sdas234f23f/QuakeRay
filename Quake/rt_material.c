@@ -32,8 +32,8 @@
 #endif
 
 #define RT_MAT_MAX_MATERIALS 2048
-#define RT_MAT_MAX_GLOBAL   4096
-#define RT_MAT_MAX_MAP      1024
+#define RT_MAT_MAX_GLOBAL   RT_MAT_CAP_GLOBAL
+#define RT_MAT_MAX_MAP      RT_MAT_CAP_MAP
 
 static rt_material_t rt_global_materials[RT_MAT_MAX_GLOBAL];
 static int rt_global_count = 0;
@@ -201,7 +201,6 @@ byte *RT_MAT_LoadTexture(const rt_material_t *mat, int which, int *outWidth, int
         case RT_MAT_TEX_BASE:     base = mat->filename_base; break;
         case RT_MAT_TEX_NORMALS:  base = mat->filename_normals; break;
         case RT_MAT_TEX_EMISSIVE: base = mat->filename_emissive; break;
-        case RT_MAT_TEX_MASK:     base = mat->filename_mask; break;
         case RT_MAT_TEX_GLOSS:    base = mat->filename_gloss; break;
         default: return NULL;
     }
@@ -299,27 +298,10 @@ static void rt_mat_reset(rt_material_t *mat)
     mat->metalness_factor = 0.0f;
     mat->emissive_factor = 1.0f;
     mat->emissive_blend = -1;
-    mat->specular_factor = 1.0f;
     mat->base_factor = 1.0f;
     mat->light_brightness = 1.0f;
-    mat->kind = RT_MAT_KIND_REGULAR;
     mat->light_styles = true;
     mat->color_emissive_threshold = 0.02f;
-}
-
-static int rt_mat_parse_kind(const char *kindname)
-{
-    if (!q_strcasecmp(kindname, "REGULAR"))   return RT_MAT_KIND_REGULAR;
-    if (!q_strcasecmp(kindname, "CHROME"))    return RT_MAT_KIND_CHROME;
-    if (!q_strcasecmp(kindname, "WATER"))     return RT_MAT_KIND_WATER;
-    if (!q_strcasecmp(kindname, "LAVA"))      return RT_MAT_KIND_LAVA;
-    if (!q_strcasecmp(kindname, "SLIME"))     return RT_MAT_KIND_SLIME;
-    if (!q_strcasecmp(kindname, "GLASS"))     return RT_MAT_KIND_GLASS;
-    if (!q_strcasecmp(kindname, "SKY"))       return RT_MAT_KIND_SKY;
-    if (!q_strcasecmp(kindname, "INVISIBLE")) return RT_MAT_KIND_INVISIBLE;
-    if (!q_strcasecmp(kindname, "SCREEN"))    return RT_MAT_KIND_SCREEN;
-    if (!q_strcasecmp(kindname, "CAMERA"))    return RT_MAT_KIND_CAMERA;
-    return RT_MAT_KIND_REGULAR;
 }
 
 static qboolean rt_mat_parse_bool(const char *value)
@@ -376,8 +358,6 @@ static void rt_mat_set_attribute(rt_material_t *mat, const char *key, const char
     }
     else if (!q_strcasecmp(key, "emissive_factor"))
         mat->emissive_factor = (float)atof(value);
-    else if (!q_strcasecmp(key, "specular_factor"))
-        mat->specular_factor = (float)atof(value);
     else if (!q_strcasecmp(key, "base_factor"))
         mat->base_factor = (float)atof(value);
     else if (!q_strcasecmp(key, "emissive_blend"))
@@ -394,16 +374,10 @@ static void rt_mat_set_attribute(rt_material_t *mat, const char *key, const char
             mat->emissive_blend = v;
         }
     }
-    else if (!q_strcasecmp(key, "kind"))
-        mat->kind = rt_mat_parse_kind(value);
     else if (!q_strcasecmp(key, "is_light"))
         mat->is_light = rt_mat_parse_bool(value);
     else if (!q_strcasecmp(key, "light_styles"))
         mat->light_styles = rt_mat_parse_bool(value);
-    else if (!q_strcasecmp(key, "bsp_radiance"))
-        mat->bsp_radiance = rt_mat_parse_bool(value);
-    else if (!q_strcasecmp(key, "default_radiance"))
-        mat->default_radiance = (float)atof(value);
     else if (!q_strcasecmp(key, "color_emissive"))
         mat->has_color_emissive = rt_mat_parse_hex_color(value, mat->color_emissive);
     else if (!q_strcasecmp(key, "color_emissive_threshold"))
@@ -426,8 +400,6 @@ static void rt_mat_set_attribute(rt_material_t *mat, const char *key, const char
         q_strlcpy(mat->filename_normals, value, sizeof(mat->filename_normals));
     else if (!q_strcasecmp(key, "texture_emissive"))
         q_strlcpy(mat->filename_emissive, value, sizeof(mat->filename_emissive));
-    else if (!q_strcasecmp(key, "texture_mask"))
-        q_strlcpy(mat->filename_mask, value, sizeof(mat->filename_mask));
     else if (!q_strcasecmp(key, "texture_gloss"))
         q_strlcpy(mat->filename_gloss, value, sizeof(mat->filename_gloss));
     else
@@ -450,14 +422,10 @@ static void rt_mat_yaml_scalar(const yaml_node_t *node, char *out, size_t outsiz
     out[n] = 0;
 }
 
-static int rt_mat_load_yaml_file(const char *file_name, rt_material_t *dest, int max_items)
+static int rt_mat_parse_yaml(const char *filebuf, int len, const char *file_name, rt_material_t *dest, int max_items)
 {
-    int len = 0;
-    char *filebuf = (char *)rt_load_file(file_name, &len);
     if (!filebuf || len == 0)
     {
-        if (filebuf)
-            rt_load_file_free((byte *)filebuf);
         return 0;
     }
 
@@ -467,7 +435,6 @@ static int rt_mat_load_yaml_file(const char *file_name, rt_material_t *dest, int
 
     if (!yaml_parser_initialize(&parser))
     {
-        rt_load_file_free((byte *)filebuf);
         return 0;
     }
 
@@ -529,6 +496,7 @@ static int rt_mat_load_yaml_file(const char *file_name, rt_material_t *dest, int
 
                     if (have_name)
                     {
+                        q_strlcpy(dest->source_file, file_name, sizeof(dest->source_file));
                         dest++;
                         count++;
                     }
@@ -544,33 +512,107 @@ static int rt_mat_load_yaml_file(const char *file_name, rt_material_t *dest, int
     }
 
     yaml_parser_delete(&parser);
+    return count;
+}
+
+static int rt_mat_load_yaml_file(const char *file_name, rt_material_t *dest, int max_items)
+{
+    int   len = 0;
+    char *filebuf = (char *)rt_load_file(file_name, &len);
+    int   count;
+
+    if (!filebuf)
+        return 0;
+
+    count = rt_mat_parse_yaml(filebuf, len, file_name, dest, max_items);
     rt_load_file_free((byte *)filebuf);
     return count;
 }
 
-static void rt_mat_find_dir_mats(int (*cb)(const char *name, void *ctx), void *ctx)
+// A file addressed by an absolute path: the search path cannot reach it. This
+// is how the base id1 directory is read while a mod is running.
+static int rt_mat_load_abs_file(const char *path, rt_material_t *dest, int max_items)
+{
+    FILE  *f = fopen(path, "rb");
+    long   len;
+    char  *buf;
+    size_t got;
+    int    count;
+
+    if (!f)
+        return 0;
+
+    fseek(f, 0, SEEK_END);
+    len = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (len <= 0 || len > 64 * 1024 * 1024)
+    {
+        fclose(f);
+        return 0;
+    }
+
+    buf = (char *)Mem_Alloc((size_t)len + 1);
+    got = fread(buf, 1, (size_t)len, f);
+    fclose(f);
+    buf[got] = 0;
+
+    count = rt_mat_parse_yaml(buf, (int)got, path, dest, max_items);
+    Mem_Free(buf);
+    return count;
+}
+
+static int rt_mat_load_any(const char *name, rt_material_t *dest, int max_items)
+{
+    // the directory scan passes an absolute path; the pkz listing and the map
+    // file pass a name the search path resolves
+    if (name[0] && (name[1] == ':' || name[0] == '/' || name[0] == '\\'))
+        return rt_mat_load_abs_file(name, dest, max_items);
+    return rt_mat_load_yaml_file(name, dest, max_items);
+}
+
+// Every materials/*.yaml of one directory, then its materials.yaml at the root.
+// Paths are absolute: the loader reads them itself, so a lower-priority
+// directory is reached even when a higher-priority one carries a file of the
+// same name (files loaded later override entries by name).
+static void rt_mat_load_dir(const char *dir, int (*cb)(const char *name, void *ctx), void *ctx)
 {
     char pattern[MAX_OSPATH];
-    q_snprintf(pattern, sizeof(pattern), "%s/materials/*.yaml", com_gamedir);
-
     WIN32_FIND_DATAA fd;
-    HANDLE h = FindFirstFileA(pattern, &fd);
+    HANDLE h;
+
+    q_snprintf(pattern, sizeof(pattern), "%s/materials/*.yaml", dir);
+    h = FindFirstFileA(pattern, &fd);
     if (h != INVALID_HANDLE_VALUE)
     {
         do
         {
+            char path[MAX_OSPATH];
+
             if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
             {
                 continue;
             }
-            char name[MAX_QPATH];
-            q_snprintf(name, sizeof(name), "materials/%s", fd.cFileName);
-            if (cb(name, ctx))
+            // the editor's own files: the session file is not a materials file
+            // until it is saved, and the backup never is
+            if (!q_strcasecmp(fd.cFileName, "materials.editor.yaml") ||
+                !q_strcasecmp(fd.cFileName, "backup_materials.yaml"))
+            {
+                continue;
+            }
+            q_snprintf(path, sizeof(path), "%s/materials/%s", dir, fd.cFileName);
+            if (cb(path, ctx))
             {
                 break;
             }
         } while (FindNextFileA(h, &fd));
         FindClose(h);
+    }
+
+    // the mod's override file lives at the gamedir root
+    q_snprintf(pattern, sizeof(pattern), "%s/materials.yaml", dir);
+    if (Sys_FileTime(pattern) != -1)
+    {
+        cb(pattern, ctx);
     }
 }
 
@@ -583,12 +625,45 @@ typedef struct {
 static int rt_mat_load_cb(const char *name, void *vctx)
 {
     rt_mat_load_ctx_t *ctx = (rt_mat_load_ctx_t *)vctx;
-    if (*ctx->count >= ctx->max)
+    const int before = *ctx->count;
+    int loaded, n, kept = 0;
+
+    if (before >= ctx->max)
     {
         return 1;
     }
-    int loaded = rt_mat_load_yaml_file(name, ctx->dest + *ctx->count, ctx->max - *ctx->count);
-    *ctx->count += loaded;
+
+    loaded = rt_mat_load_any(name, ctx->dest + before, ctx->max - before);
+
+    /* A later file overrides the entries of an earlier one with the same name.
+       The load order is the packaged base, then id1, then the running gamedir;
+       this loop is what makes a mod's materials.yaml replace the id1 values it
+       names while id1 still supplies everything the mod does not name. */
+    for (n = 0; n < loaded; n++)
+    {
+        rt_material_t *loaded_mat = ctx->dest + before + n;
+        int            old = -1, i;
+
+        for (i = 0; i < before; i++)
+        {
+            if (!q_strcasecmp(ctx->dest[i].name, loaded_mat->name))
+            {
+                old = i;
+                break;
+            }
+        }
+
+        if (old >= 0)
+        {
+            ctx->dest[old] = *loaded_mat;
+        }
+        else
+        {
+            ctx->dest[before + kept++] = *loaded_mat;
+        }
+    }
+    *ctx->count = before + kept;
+
     if (loaded > 0)
     {
         Con_Printf("RT: loaded %d materials from %s\n", loaded, name);
@@ -613,8 +688,19 @@ void RT_MAT_Init(void)
     RT_PKZ_Init();
 
     rt_mat_load_ctx_t ctx = { rt_global_materials, &rt_global_count, RT_MAT_MAX_GLOBAL };
+
+    // packaged materials first, then id1, then the running gamedir (a mod), so
+    // a mod's materials.yaml overrides the id1 entries it names
     RT_PKZ_ListFiles("materials/", ".yaml", rt_mat_load_cb, &ctx);
-    rt_mat_find_dir_mats(rt_mat_load_cb, &ctx);
+    {
+        char base[MAX_OSPATH];
+        q_snprintf(base, sizeof(base), "%s/id1", com_basedir);
+        if (q_strcasecmp(base, com_gamedir))
+        {
+            rt_mat_load_dir(base, rt_mat_load_cb, &ctx);
+        }
+    }
+    rt_mat_load_dir(com_gamedir, rt_mat_load_cb, &ctx);
 
     rt_mat_cmd = Cmd_AddCommand2("rt_mat", RT_MAT_Cmd, src_command);
 }
@@ -653,6 +739,18 @@ void RT_MAT_ChangeMap(const char *mapname)
 
     rt_mat_load_ctx_t ctx = { rt_map_materials, &rt_map_count, RT_MAT_MAX_MAP };
     rt_mat_load_cb(name, &ctx);
+
+    // The gamedir's own materials.yaml is the editor's target: it has to beat
+    // the map file it was saved from, or a saved edit would be shadowed by that
+    // file on the next load of the same map.
+    {
+        char own[MAX_OSPATH];
+        q_snprintf(own, sizeof(own), "%s/materials.yaml", com_gamedir);
+        if (Sys_FileTime(own) != -1)
+        {
+            rt_mat_load_cb(own, &ctx);
+        }
+    }
 }
 
 void RT_MAT_Reload(void)
@@ -667,7 +765,15 @@ void RT_MAT_Reload(void)
 
     rt_mat_load_ctx_t ctx = { rt_global_materials, &rt_global_count, RT_MAT_MAX_GLOBAL };
     RT_PKZ_ListFiles("materials/", ".yaml", rt_mat_load_cb, &ctx);
-    rt_mat_find_dir_mats(rt_mat_load_cb, &ctx);
+    {
+        char base[MAX_OSPATH];
+        q_snprintf(base, sizeof(base), "%s/id1", com_basedir);
+        if (q_strcasecmp(base, com_gamedir))
+        {
+            rt_mat_load_dir(base, rt_mat_load_cb, &ctx);
+        }
+    }
+    rt_mat_load_dir(com_gamedir, rt_mat_load_cb, &ctx);
 
     if (rt_current_map[0])
     {
@@ -696,6 +802,59 @@ static void rt_mat_normalize_name(const char *name, char *out, size_t outsize)
     }
 
     q_strlwr(out);
+}
+
+void RT_MAT_NormalizeName(const char *name, char *out, size_t outsize)
+{
+    rt_mat_normalize_name(name, out, outsize);
+}
+
+// "textures/+3_med25" -> 3, "progs/flame.mdl:frame2" -> 2 (a model or sprite
+// skin frame), anything else -> -1
+int RT_MAT_FrameDigit(const char *name)
+{
+    if (!q_strncasecmp(name, "textures/+", 10) && name[10] >= '0' && name[10] <= '9')
+    {
+        return name[10] - '0';
+    }
+
+    {
+        const char *p = strstr(name, ":frame");
+
+        if (p && p[6] >= '0' && p[6] <= '9' && (p[7] == '\0' || p[7] == '_'))
+        {
+            return p[6] - '0';
+        }
+    }
+    return -1;
+}
+
+void RT_MAT_GroupBaseOf(const char *name, char *out, size_t outsize)
+{
+    if (!q_strncasecmp(name, "textures/+", 10) && name[10] >= '0' && name[10] <= '9')
+    {
+        q_snprintf(out, outsize, "textures/%s", name + 11);
+        return;
+    }
+
+    {
+        const char *p = strstr(name, ":frame");
+
+        if (p && p[6] >= '0' && p[6] <= '9')
+        {
+            size_t n = (size_t)(p - name);
+
+            if (n >= outsize)
+            {
+                n = outsize - 1;
+            }
+            memcpy(out, name, n);
+            out[n] = '\0';
+            return;
+        }
+    }
+
+    q_strlcpy(out, name, outsize);
 }
 
 static rt_material_t *rt_mat_find_in(const char *name, rt_material_t *first, int count)
@@ -751,6 +910,55 @@ rt_material_t *RT_MAT_Find(const char *name)
     return rt_mat_find_in(name, rt_global_materials, rt_global_count);
 }
 
+rt_material_t *RT_MAT_GetList(int which, int *outCount)
+{
+    if (which == RT_MAT_LIST_MAP)
+    {
+        if (outCount)
+            *outCount = rt_map_count;
+        return rt_map_materials;
+    }
+
+    if (outCount)
+        *outCount = rt_global_count;
+    return rt_global_materials;
+}
+
+int RT_MAT_AppendGlobal(const rt_material_t *mat)
+{
+    if (!rt_initialized || rt_global_count >= RT_MAT_MAX_GLOBAL)
+        return -1;
+
+    rt_global_materials[rt_global_count] = *mat;
+    return rt_global_count++;
+}
+
+void RT_MAT_SetListCounts(int globalCount, int mapCount)
+{
+    if (globalCount < 0)
+        globalCount = 0;
+    if (mapCount < 0)
+        mapCount = 0;
+    if (globalCount > RT_MAT_MAX_GLOBAL)
+        globalCount = RT_MAT_MAX_GLOBAL;
+    if (mapCount > RT_MAT_MAX_MAP)
+        mapCount = RT_MAT_MAX_MAP;
+
+    /* dropped entries must not stay findable through a stale valid flag */
+    for (int i = globalCount; i < rt_global_count; i++)
+        rt_global_materials[i].valid = false;
+    for (int i = mapCount; i < rt_map_count; i++)
+        rt_map_materials[i].valid = false;
+
+    rt_global_count = globalCount;
+    rt_map_count = mapCount;
+}
+
+const char *RT_MAT_CurrentMap(void)
+{
+    return rt_current_map;
+}
+
 qboolean RT_MAT_Enabled(void)
 {
     return rt_materials.value != 0;
@@ -772,15 +980,14 @@ void RT_MAT_Cmd(void)
         return;
     }
 
-    Con_Printf("material '%s': base=%s normals=%s emissive=%s gloss=%s mask=%s kind=%d "
-               "bump=%.2f rough=%.2f metal=%.2f emiss=%.2f spec=%.2f base=%.2f emis_blend=%d\n",
+    Con_Printf("material '%s': base=%s normals=%s emissive=%s gloss=%s "
+               "bump=%.2f rough=%.2f metal=%.2f emiss=%.2f base=%.2f emis_blend=%d\n",
                m->name,
                m->filename_base[0] ? m->filename_base : "-",
                m->filename_normals[0] ? m->filename_normals : "-",
                m->filename_emissive[0] ? m->filename_emissive : "-",
                m->filename_gloss[0] ? m->filename_gloss : "-",
-               m->filename_mask[0] ? m->filename_mask : "-",
-               m->kind, m->bump_scale, m->roughness_override,
-               m->metalness_factor, m->emissive_factor, m->specular_factor, m->base_factor,
+               m->bump_scale, m->roughness_override,
+               m->metalness_factor, m->emissive_factor, m->base_factor,
                m->emissive_blend);
 }

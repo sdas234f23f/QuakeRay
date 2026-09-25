@@ -11,26 +11,21 @@
 
 #define RT_MAT_EMIS_BLEND_MAX 5
 
+/* Capacities of the live material lists: RT_MAT_GetList returns arrays of
+   these sizes, and a snapshot of the lists must be allocated for them. */
 enum {
-    RT_MAT_KIND_INVALID    = 0,
-    RT_MAT_KIND_REGULAR    = 1,
-    RT_MAT_KIND_CHROME     = 2,
-    RT_MAT_KIND_WATER      = 3,
-    RT_MAT_KIND_LAVA       = 4,
-    RT_MAT_KIND_SLIME      = 5,
-    RT_MAT_KIND_GLASS      = 6,
-    RT_MAT_KIND_SKY        = 7,
-    RT_MAT_KIND_INVISIBLE  = 8,
-    RT_MAT_KIND_SCREEN     = 9,
-    RT_MAT_KIND_CAMERA     = 10,
+    RT_MAT_CAP_GLOBAL = 4096,
+    RT_MAT_CAP_MAP    = 1024,
 };
 
 typedef struct rt_material_s {
     char name[MAX_QPATH];
+    /* The materials/*.yaml file this material was loaded from ("materials/materials.yaml",
+       "materials/<map>.yaml", ...). Empty for materials created by the editor at runtime. */
+    char source_file[MAX_QPATH];
     char filename_base[MAX_QPATH];
     char filename_normals[MAX_QPATH];
     char filename_emissive[MAX_QPATH];
-    char filename_mask[MAX_QPATH];
     char filename_gloss[MAX_QPATH];
     float bump_scale;
     float roughness_override;
@@ -39,15 +34,11 @@ typedef struct rt_material_s {
     /* Overrides the global rt_emis_blend cvar for this material's emission;
        -1 = not authored (use the cvar), 0..RT_MAT_EMIS_BLEND_MAX = mode. */
     int emissive_blend;
-    float specular_factor;
     float base_factor;
-    int kind;
     qboolean is_light;
     qboolean light_styles;
     qboolean has_metalness_factor;
     qboolean metalness_from_normal_alpha;
-    qboolean bsp_radiance;
-    float default_radiance;
     vec3_t color_emissive;
     qboolean has_color_emissive;
     float color_emissive_threshold;
@@ -70,13 +61,44 @@ void RT_MAT_Reload(void);
 
 rt_material_t *RT_MAT_Find(const char *name);
 
+/* Editor support: the live material lists and their provenance. */
+
+enum {
+    RT_MAT_LIST_GLOBAL = 0, /* every materials/*.yaml file (dir scan + pkz) */
+    RT_MAT_LIST_MAP    = 1, /* materials/<map>.yaml for the current map only */
+};
+
+/* Returns the live array of the requested list. The editor edits these structs in
+   place and snapshots them for Cancel. */
+rt_material_t *RT_MAT_GetList(int which, int *outCount);
+
+/* Normalizes a texture name the way RT_MAT_Find would ("maps/x.bsp:name" and bare
+   names become "textures/name", extension stripped, lowercased). */
+void RT_MAT_NormalizeName(const char *name, char *out, size_t outsize);
+
+/* The animation-frame ring a material name belongs to: "textures/+0_med25" ->
+   "textures/_med25", "progs/flame.mdl:frame1" -> "progs/flame.mdl". The digit
+   of the frame, or -1 when the name is not a frame. */
+int  RT_MAT_FrameDigit(const char *name);
+void RT_MAT_GroupBaseOf(const char *name, char *out, size_t outsize);
+
+/* Appends a copy of mat to the global list; returns its index or -1 when full. */
+int RT_MAT_AppendGlobal(const rt_material_t *mat);
+
+/* Restores the list lengths (the editor truncates what it appended before
+   Cancel/Exit). Counts are clamped to the array capacities. */
+void RT_MAT_SetListCounts(int globalCount, int mapCount);
+
+/* The current map name ("" when none), as loaded by RT_MAT_ChangeMap. */
+const char *RT_MAT_CurrentMap(void);
+
 enum {
     RT_MAT_TEX_BASE,
     RT_MAT_TEX_NORMALS,
     RT_MAT_TEX_EMISSIVE,
-    RT_MAT_TEX_MASK,
     RT_MAT_TEX_GLOSS,
 };
+
 byte *RT_MAT_LoadTexture(const rt_material_t *mat, int which, int *outWidth, int *outHeight);
 
 qboolean RT_MAT_Enabled(void);

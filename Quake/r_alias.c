@@ -198,7 +198,31 @@ static void GL_DrawAliasFrame(
     if (tx && tx->rtforcerasterize)
         rasterize = true;
 
-    if (tx && tx->rthaslightcolor && RT_AllowFakeLights ())
+    int cluster = RT_ResolvePointCluster (lerpdata.origin);
+
+    /* The transform is the one the geometry upload below uses, so the light of the model stands
+       exactly where the model is drawn. The light reads the model's own per-pose vertices, not
+       the shared lerp scratch GetPoseVertices hands the geometry uploads: widening the window in
+       which those uploads read it would let the parallel entity passes overwrite each other's
+       pose. */
+    const RgTransform transform = RT_GetAliasModelTransform (paliashdr, &lerpdata, isfirstperson);
+
+    /* DTAL: the model lights the scene from its own geometry when its material says it is a
+       light and carries an emissive mask. The fake dlight stays as the fallback for everything
+       the geometry path does not take (see RT_AddAliasEmissiveLights). The first-person weapon
+       is left out: its geometry is the one carried towards the eye by the view-model scale, so
+       a light built from it would ride the camera, light the room from inside the viewer and
+       churn the cluster lists every frame; a weapon that lights the room keeps its light_color
+       and the dlight below. */
+    const int dtal_lights =
+        isfirstperson ? 0
+                      : RT_AddAliasEmissiveLights (e->model, tx, RT_GetAliasModelUniqueId (entuniqueid),
+                                                   GetModelVerticesForPose (e->model, paliashdr, lerpdata.pose1),
+                                                   GetModelVerticesForPose (e->model, paliashdr, lerpdata.pose2), blend,
+                                                   paliashdr->numverts_vbo, e->model->rtindices, paliashdr->numindexes,
+                                                   &transform);
+
+    if (dtal_lights <= 0 && tx && tx->rthaslightcolor && RT_AllowFakeLights ())
     {
         vec3_t color = {tx->rtlightcolor[0], tx->rtlightcolor[1], tx->rtlightcolor[2]};
         VectorScale(color, CVAR_TO_FLOAT(rt_dlight_intensity), color);
@@ -226,8 +250,6 @@ assert(
     (isviewer && !isfirstperson) ||
     (!isviewer && isfirstperson));
 
-int cluster = RT_ResolvePointCluster (lerpdata.origin);
-
 if
 (rasterize)
 {
@@ -242,7 +264,7 @@ if
         .pVertices = GetPoseVertices(e->model, paliashdr, lerpdata.pose1, lerpdata.pose2, blend, cluster),
         .indexCount = paliashdr->numindexes,
         .pIndices = e->model->rtindices,
-        .transform = RT_GetAliasModelTransform(paliashdr, &lerpdata, isfirstperson),
+        .transform = transform,
         .color = RT_COLOR_WHITE,
         .material = tx ? tx->rtmaterial : RG_NO_MATERIAL,
         .pipelineState = RG_RASTERIZED_GEOMETRY_STATE_DEPTH_TEST | RG_RASTERIZED_GEOMETRY_STATE_DEPTH_WRITE,
@@ -290,7 +312,7 @@ else
 			.defaultRoughness = CVAR_TO_FLOAT(rt_model_rough),
 			.defaultMetallicity = CVAR_TO_FLOAT(rt_model_metal),
 			.defaultEmission = 0,
-			.transform = RT_GetAliasModelTransform (paliashdr, &lerpdata, isfirstperson),
+			.transform = transform,
 		};
 
 		RgResult r = rgUploadGeometry (vulkan_globals.instance, &info);

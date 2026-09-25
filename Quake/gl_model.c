@@ -378,6 +378,11 @@ void Mod_ResetAll (void)
 		if (!mod->needload) // otherwise Mod_ClearAll() did it already
 			Mod_FreeModelMemory (mod);
 
+		/* The vertex-buffer walk above stops at the first hole in the client precache, and a
+		   model loaded outside it (a teleport's, a beam's) would keep its DTAL cache: free it
+		   here, before the memset drops the pointer. */
+		RT_ModelLightsCacheFree (mod);
+
 		memset (mod, 0, sizeof (qmodel_t));
 	}
 	mod_numknown = 0;
@@ -561,12 +566,10 @@ Mod_LoadTextureTask
 static void Mod_LoadTextureTask (int i, load_texture_task_args_t *args)
 {
 	qmodel_t  *mod = args->mod;
-	byte      *mod_base = args->mod_base;
 	texture_t *tx = mod->textures[i];
 	if (!tx)
 		return;
 
-	byte        *pixels_p = (byte *)tx + sizeof (texture_t);
 	char         texturename[64];
 	src_offset_t offset;
 	int          fwidth, fheight;
@@ -604,7 +607,7 @@ static void Mod_LoadTextureTask (int i, load_texture_task_args_t *args)
 		else // use the texture from the bsp file
 		{
 			q_snprintf (texturename, sizeof (texturename), "%s:%s", mod->name, tx->name);
-			offset = (src_offset_t)(pixels_p) - (src_offset_t)mod_base;
+			offset = tx->source_offset;
 			tx->gltexture = TexMgr_LoadImage (rtname, mod, texturename, tx->width, tx->height, SRC_INDEXED, (byte *)(tx + 1), mod->name, offset, TEXPREF_NONE);
 		}
 
@@ -665,7 +668,7 @@ static void Mod_LoadTextureTask (int i, load_texture_task_args_t *args)
 		else // use the texture from the bsp file
 		{
 			q_snprintf (texturename, sizeof (texturename), "%s:%s", mod->name, tx->name);
-			offset = (src_offset_t)(pixels_p) - (src_offset_t)mod_base;
+			offset = tx->source_offset;
 			tx->gltexture = TexMgr_LoadImage (
 				rtname,
 				mod, texturename, tx->width, tx->height, SRC_INDEXED, (byte *)(tx + 1), mod->name, offset, TEXPREF_MIPMAP | extraflags);
@@ -742,6 +745,14 @@ static void Mod_LoadTextures (qmodel_t *mod, byte *mod_base, lump_t *l)
 			Con_DPrintf ("Texture %s extends past end of lump\n", mt.name);
 			pixels = q_max (0, (mod_base + l->fileofs + l->filelen) - pixels_p);
 		}
+
+		// The pixels were copied into this texture's own allocation, so the
+		// file offset must be taken from the file buffer here, where it is
+		// still known: it is what TexMgr_ReloadImage reads the pixels back from.
+		if (mod->bspversion != BSPVERSION_QUAKE64)
+			tx->source_offset = (uintptr_t)(pixels_p - mod_base);
+		else
+			tx->source_offset = (uintptr_t)((m + dataofs + sizeof (miptex64_t)) - mod_base);
 
 		Atomic_StoreUInt32 (&tx->update_warp, false); // johnfitz
 		tx->warpimage = NULL;                         // johnfitz

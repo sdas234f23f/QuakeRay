@@ -64,6 +64,11 @@ static inline uint32_t Atomic_AddUInt32 (volatile atomic_uint32_t *atomic, uint3
 	return InterlockedAdd ((volatile LONG *)&atomic->value, value) - value;
 }
 
+static inline uint32_t Atomic_ExchangeUInt32 (volatile atomic_uint32_t *atomic, uint32_t desired)
+{
+	return InterlockedExchange ((volatile LONG *)&atomic->value, desired);
+}
+
 static inline uint32_t Atomic_OrUInt32 (volatile atomic_uint32_t *atomic, uint32_t val)
 {
 	return InterlockedOr ((volatile LONG *)&atomic->value, val);
@@ -72,6 +77,17 @@ static inline uint32_t Atomic_OrUInt32 (volatile atomic_uint32_t *atomic, uint32
 static inline uint32_t Atomic_IncrementUInt32 (volatile atomic_uint32_t *atomic)
 {
 	return InterlockedIncrement ((volatile LONG *)&atomic->value) - 1;
+}
+
+static inline qboolean Atomic_CompareExchangeUInt32 (volatile atomic_uint32_t *atomic, uint32_t *expected, uint32_t desired)
+{
+	const uint32_t actual = InterlockedCompareExchange ((volatile LONG *)&atomic->value, desired, *expected);
+	if (actual == *expected)
+	{
+		return true;
+	}
+	*expected = actual;
+	return false;
 }
 
 static inline uint32_t Atomic_DecrementUInt32 (volatile atomic_uint32_t *atomic)
@@ -136,6 +152,11 @@ static inline uint32_t Atomic_AddUInt32 (atomic_uint32_t *atomic, uint32_t value
 	return atomic_fetch_add (atomic, value);
 }
 
+static inline uint32_t Atomic_ExchangeUInt32 (atomic_uint32_t *atomic, uint32_t desired)
+{
+	return atomic_exchange (atomic, desired);
+}
+
 static inline uint32_t Atomic_OrUInt32 (atomic_uint32_t *atomic, uint32_t value)
 {
 	return atomic_fetch_or (atomic, value);
@@ -144,6 +165,11 @@ static inline uint32_t Atomic_OrUInt32 (atomic_uint32_t *atomic, uint32_t value)
 static inline uint32_t Atomic_IncrementUInt32 (atomic_uint32_t *atomic)
 {
 	return atomic_fetch_add (atomic, 1);
+}
+
+static inline qboolean Atomic_CompareExchangeUInt32 (atomic_uint32_t *atomic, uint32_t *expected, uint32_t desired)
+{
+	return atomic_compare_exchange_weak (atomic, expected, desired);
 }
 
 static inline uint32_t Atomic_DecrementUInt32 (atomic_uint32_t *atomic)

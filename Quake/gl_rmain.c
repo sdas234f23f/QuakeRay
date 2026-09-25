@@ -24,6 +24,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "quakedef.h"
 #include "tasks.h"
 #include "atomics.h"
+#include "qr_editor.h"
 
 int r_visframecount; // bumped when going to a new PVS
 int r_framecount;    // used for dlight push checking
@@ -626,7 +627,7 @@ R_DrawViewModel -- johnfitz -- gutted
 */
 void R_DrawViewModel (cb_context_t *cbx)
 {
-	if (!r_drawviewmodel.value || !r_drawentities.value || chase_active.value)
+	if (!r_drawviewmodel.value || !r_drawentities.value || chase_active.value || QR_Editor_Active ())
 		return;
 	
 	if (cl.stats[STAT_HEALTH] <= 0)
@@ -977,6 +978,7 @@ static void R_DrawViewModelTask (void *unused)
 	R_DrawViewModel (&vulkan_globals.secondary_cb_contexts[CBX_VIEW_MODEL]);     // johnfitz -- moved here from R_RenderView
 	R_ShowTris (&vulkan_globals.secondary_cb_contexts[CBX_VIEW_MODEL]);          // johnfitz
 	R_ShowBoundingBoxes (&vulkan_globals.secondary_cb_contexts[CBX_VIEW_MODEL]); // johnfitz
+	QR_Editor_DrawSelection (&vulkan_globals.secondary_cb_contexts[CBX_VIEW_MODEL]); // qr light editor
 	RT_Prof_End (RT_PROF_VIEWMODEL_DRAW, prof_start);
 
 	prof_start = RT_Prof_Begin ();

@@ -443,6 +443,8 @@ GLMesh_DeleteVertexBuffer
 */
 static void GLMesh_DeleteVertexBuffer (qmodel_t *m)
 {
+	RT_ModelLightsCacheFree (m);
+
 	if (m->rtvertices != NULL)
 	{
 	    Mem_Free (m->rtvertices);
@@ -536,6 +538,10 @@ static void GLMesh_LoadVertexBuffer (qmodel_t *m, const aliashdr_t *hdr)
 			dstpose[v].packedColor = RT_PACKED_COLOR_WHITE;
 		}
 	}
+
+	/* The DTAL piece cache is sized once, here, and not from the draw path: the entity passes
+	   that use it run in parallel. */
+	RT_ModelLightsCacheAlloc (m);
 }
 
 /*

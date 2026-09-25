@@ -26,6 +26,7 @@ import pathlib
 
 
 CACHE_FOLDER_PATH           = "Build/"
+OUTPUT_FOLDER_PATH          = "../../Build/"
 CACHE_FILE_NAME             = "GenerateShadersCache.txt"
 EXTENSIONS                  = [ ".comp", ".vert", "frag", ".rgen", ".rahit", ".rchit", ".rmiss" ]
 DEPENDENCY_EXTENSIONS       = [ ".h", ".inl" ]
@@ -118,6 +119,15 @@ def main():
             os.mkdir(CACHE_FOLDER_PATH)
         except OSError:
             print("> Coudn't create cache folder")
+            return
+
+    # The .spv output folder is not in the repository (it is ignored by the
+    # build/ pattern), so a fresh clone or worktree starts without it.
+    if not os.path.exists(OUTPUT_FOLDER_PATH):
+        try:
+            os.mkdir(OUTPUT_FOLDER_PATH)
+        except OSError:
+            print("> Coudn't create output folder " + OUTPUT_FOLDER_PATH)
             return
 
     if not os.path.exists(CACHE_FOLDER_PATH + CACHE_FILE_NAME):
@@ -239,7 +249,7 @@ def main():
                 "glslc", "--target-env=vulkan1.2"
                 ] + getDependentFoldersProcArg() + [
                 filename, 
-                "-o", "../../Build/" + os.path.basename(filename) + ".spv"], 
+                "-o", OUTPUT_FOLDER_PATH + os.path.basename(filename) + ".spv"], 
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
 
             if len(r.stdout) > 0:

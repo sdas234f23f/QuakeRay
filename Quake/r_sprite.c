@@ -34,7 +34,7 @@ extern cvar_t rt_cluster_dlights;
 R_GetSpriteFrame
 ================
 */
-static mspriteframe_t *R_GetSpriteFrame (entity_t *currentent)
+mspriteframe_t *R_GetSpriteFrame (entity_t *currentent)
 {
 	msprite_t      *psprite;
 	mspritegroup_t *pspritegroup;

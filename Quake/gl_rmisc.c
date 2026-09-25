@@ -24,6 +24,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 // r_misc.c
 
 #include "quakedef.h"
+#include "qr_editor.h"
 #include <float.h>
 
 // johnfitz -- new cvars
@@ -385,6 +386,10 @@ R_NewMap
 void R_NewMap (void)
 {
 	int      i;
+
+	// The editor's picked surfaces and its material snapshot belong to the map
+	// that is being replaced; close it before any of that is freed.
+	QR_Editor_OnNewMap ();
 
 	for (i = 0; i < 256; i++)
 		d_lightstylevalue[i] = 264; // normal light value
