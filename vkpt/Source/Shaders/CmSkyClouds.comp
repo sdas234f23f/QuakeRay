@@ -180,6 +180,17 @@ void main()
     const ivec3 gid = ivec3(gl_GlobalInvocationID);
     const ivec2 size = imageSize(cloudCubemapOut).xy;
 
+    // The dispatch is one workgroup wider than the map on each axis (Utils::
+    // GetWorkGroupCount adds one to the ceiling), and those invocations must not
+    // reach the texel remapping below: the remap is a bijection over the map's own
+    // texels, so an invocation that stands outside it would be mapped *into* it and
+    // write a copy over a texel another invocation is marching in this same
+    // dispatch.
+    if (gid.x >= size.x || gid.y >= size.y || gid.z >= 6)
+    {
+        return;
+    }
+
     // The whole map is dispatched every frame, and a quarter of it is marched: the
     // texels of the other three quarters are read back from the frame before and put
     // where the cloud they hold has moved under the eye since (historyDir below). What

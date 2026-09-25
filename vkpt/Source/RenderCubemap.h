@@ -255,7 +255,13 @@ private:
     // that is new, or a frame the look of the layer changed in, needs two of them:
     // the cubemap the second frame would read as its history is the one no frame has
     // written yet.
-    uint32_t cloudsCycle = 0;
+    // The quarter of the map each of the two cubemaps marches next. A frame writes
+    // one of them and the next frame the other, and each has to walk its own way
+    // through the four quarters of the cycle: a counter they shared would let each
+    // map see only every other quarter -- the parities it never saw would then be
+    // copied again and again and never marched at all, which is a standing pattern
+    // of its own over the sky.
+    uint32_t cloudsCycle[MAX_FRAMES_IN_FLIGHT] = {};
     uint32_t cloudsWhole = 2;
 
     // The eye's place in the world's horizontal plane the frame before, and the time
