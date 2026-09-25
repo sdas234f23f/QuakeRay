@@ -234,6 +234,10 @@ static struct
 	qboolean           sel_light_valid;
 	int                hover_light;
 
+	// the light editor's tabs: 0 = the selected emitter, 1 = the sky, clouds
+	// and sun (the global settings)
+	int light_tab;
+
 	// which of the two editors this is
 	int mode;
 
@@ -2575,6 +2579,160 @@ static void QRE_LightJoinGroup (rt_light_t *l)
 // The light editor's panel: the dlight of the picked emitter. Its fields live in
 // lights.yaml (radius, intensity, offset); an emitter without an entry shows the
 // global defaults, and authoring a value creates one.
+// ---------------------------------------------------------------------------
+// The global tab of the light editor: the sky, its clouds and the sun. These
+// are engine cvars (the colours are cvars behind a console command, as the rest
+// of the renderer uses them), so an edit takes effect at once and is archived
+// in the config; Apply and Cancel do not own them.
+// ---------------------------------------------------------------------------
+
+enum
+{
+	QRE_G_BOOL,
+	QRE_G_FLOAT,
+	QRE_G_INT,
+	QRE_G_COLOR,
+};
+
+// One row: the cvar, its kind and the range of its slider. A section name opens
+// a group; the rows under it belong to it until the next name.
+typedef struct
+{
+	const char *section;
+	const char *name;
+	int         type;
+	float       min, max;
+	const char *tip;
+} qre_global_t;
+
+static const qre_global_t qre_globals[] = {
+	{ "Sky", "rt_sky",              QRE_G_FLOAT, 0, 8,
+	  "Intensity of the sky; the classic sky texture is scaled by it." },
+	{ NULL,  "rt_physical_sky",     QRE_G_BOOL,  0, 0,
+	  "1 draws the procedural sky (painted in rt_sky_color, with clouds and a sun disc); 0 draws the classic sky texture." },
+	{ NULL,  "rt_sky_brightness",   QRE_G_FLOAT, 0, 4,
+	  "Brightness of the procedural sky." },
+	{ NULL,  "rt_sky_color",        QRE_G_COLOR, 0, 0,
+	  "The colour the procedural sky is painted in, and the colour of the light it casts." },
+	{ NULL,  "rt_sky_ambient_lod",  QRE_G_INT,   0, 10,
+	  "Mip level the ambient sky light is read from: lower is more directional, 10 a flat wash." },
+	{ NULL,  "rt_sky_nee",          QRE_G_BOOL,  0, 0,
+	  "Sample the sky as an explicit light source." },
+
+	{ "Clouds", "rt_sky_clouds",        QRE_G_BOOL,  0, 0,
+	  "Draw the volumetric clouds." },
+	{ NULL,  "rt_sky_clouds_color",     QRE_G_COLOR, 0, 0,
+	  "The colour the clouds are drawn in; they may be darker than the sky." },
+	{ NULL,  "rt_sky_cloud_alpha",      QRE_G_FLOAT, 0, 1,
+	  "Opacity the clouds are composited over the sky with; 0 takes them out." },
+	{ NULL,  "rt_sky_cloud_coverage",   QRE_G_FLOAT, 0, 1,
+	  "How much of the sky the clouds cover." },
+	{ NULL,  "rt_sky_cloud_density",    QRE_G_FLOAT, 0, 1,
+	  "Sharpness of the cloud contour: 1 a hard edge, 0 a soft one." },
+	{ NULL,  "rt_sky_cloud_speed",      QRE_G_FLOAT, 0, 4,
+	  "How fast the cloud layer drifts." },
+
+	{ "Sun", "rt_sun",              QRE_G_FLOAT, 0, 10,
+	  "Strength of the sun: 1 is a usable daylight, 0 turns it off." },
+	{ NULL,  "rt_sun_color",        QRE_G_COLOR, 0, 0,
+	  "The colour of the sun: its light, the disc in the procedural sky and everything that reads it (the indirect sun, the god rays, the fog's shafts)." },
+	{ NULL,  "rt_sun_pitch",        QRE_G_FLOAT, -180, 180,
+	  "The pitch the sun stands at." },
+	{ NULL,  "rt_sun_yaw",          QRE_G_FLOAT, -180, 180,
+	  "The yaw the sun stands at." },
+	{ NULL,  "rt_sun_edit",         QRE_G_BOOL,  0, 0,
+	  "Place the sun by aiming: it follows the crosshair, and the fire button leaves it where it points (that press is swallowed)." },
+};
+
+static void QRE_GlobalColorGet (const char *name, float rgb[3])
+{
+	if (!strcmp (name, "rt_sky_color"))
+		RT_GetSkyColor (rgb);
+	else if (!strcmp (name, "rt_sun_color"))
+		RT_GetSunColor (rgb);
+	else
+		RT_GetSkyCloudsColor (rgb);
+}
+
+static void QRE_GlobalColorSet (const char *name, const float rgb[3])
+{
+	Cvar_Set (name, va ("%d %d %d",
+	                    (int)(CLAMP (0.0f, rgb[0], 1.0f) * 255.0f + 0.5f),
+	                    (int)(CLAMP (0.0f, rgb[1], 1.0f) * 255.0f + 0.5f),
+	                    (int)(CLAMP (0.0f, rgb[2], 1.0f) * 255.0f + 0.5f)));
+}
+
+static void QRE_LightGlobalTab (void)
+{
+	const char *section = NULL;
+	int         i;
+
+	QR_GUI_LabelDim ("the light system itself: the sky, its clouds and the sun");
+	QR_GUI_Spacing ();
+
+	for (i = 0; i < (int)countof (qre_globals); i++)
+	{
+		const qre_global_t *g = &qre_globals[i];
+		cvar_t             *var = Cvar_FindVar (g->name);
+
+		if (g->section && (!section || strcmp (section, g->section)))
+		{
+			section = g->section;
+			QR_GUI_Separator ();
+			QR_GUI_Label (section);
+		}
+
+		if (!var)
+		{
+			QR_GUI_LabelDim (va ("%s: no such cvar", g->name));
+			continue;
+		}
+
+		switch (g->type)
+		{
+		case QRE_G_BOOL:
+		{
+			int value = CVAR_TO_BOOL (*var) ? 1 : 0;
+
+			if (QR_GUI_Checkbox (g->name, &value, g->tip))
+				Cvar_Set (g->name, value ? "1" : "0");
+			break;
+		}
+		case QRE_G_FLOAT:
+		{
+			float value = var->value;
+
+			if (QR_GUI_SliderFloat (g->name, &value, g->min, g->max, g->tip))
+				Cvar_Set (g->name, va ("%.4g", value));
+			break;
+		}
+		case QRE_G_INT:
+		{
+			int value = (int)(var->value + 0.5f);
+
+			if (QR_GUI_SliderInt (g->name, &value, (int)g->min, (int)g->max, g->tip))
+				Cvar_Set (g->name, va ("%d", value));
+			break;
+		}
+		case QRE_G_COLOR:
+		{
+			float rgb[3];
+			int   en = 1;
+
+			QRE_GlobalColorGet (g->name, rgb);
+			if (QR_GUI_ColorHex (g->name, rgb, &en, g->tip))
+				QRE_GlobalColorSet (g->name, rgb);
+			break;
+		}
+		default:
+			break;
+		}
+	}
+
+	QR_GUI_Spacing ();
+	QR_GUI_LabelDim ("these live in the config: Apply and Cancel do not own them");
+}
+
 static void QRE_BuildLightPanelGUI (void)
 {
 	int         panel_w = glwidth / 4;
@@ -2601,6 +2759,37 @@ static void QRE_BuildLightPanelGUI (void)
 		shared = RT_LIGHT_Ensure (qre.sel_light.name);
 		light = inst ? inst : shared;
 	}
+	QR_GUI_Spacing ();
+
+	if (QR_GUI_Button ("Apply"))
+		QRE_Apply ();
+	QR_GUI_SameLine ();
+	if (QR_GUI_Button ("Cancel"))
+		QRE_Cancel ();
+	QR_GUI_SameLine ();
+	if (QR_GUI_Button ("Exit"))
+		exit_requested = true;
+	QR_GUI_Separator ();
+	QR_GUI_BeginScroll ();
+
+	{
+		static const char *const tabs[] = { "Entity", "Global" };
+
+		QR_GUI_Tabs ("light_tabs", tabs, (int)countof (tabs), &qre.light_tab);
+		QR_GUI_Spacing ();
+	}
+
+	if (qre.light_tab == 1)
+	{
+		// the global tab: the sky, its clouds and the sun
+		QRE_LightGlobalTab ();
+		QR_GUI_EndScroll ();
+		QR_GUI_EndPanel ();
+		if (exit_requested)
+			QRE_RequestExit ();
+		return;
+	}
+
 	if (qre.sel_light_valid)
 	{
 		char buf[MAX_QPATH + 64];
@@ -2632,17 +2821,6 @@ static void QRE_BuildLightPanelGUI (void)
 		QR_GUI_LabelDim ("aim at a light wireframe and press the fire button");
 	}
 	QR_GUI_Spacing ();
-
-	if (QR_GUI_Button ("Apply"))
-		QRE_Apply ();
-	QR_GUI_SameLine ();
-	if (QR_GUI_Button ("Cancel"))
-		QRE_Cancel ();
-	QR_GUI_SameLine ();
-	if (QR_GUI_Button ("Exit"))
-		exit_requested = true;
-	QR_GUI_Separator ();
-	QR_GUI_BeginScroll ();
 
 	if (light)
 	{

@@ -494,6 +494,37 @@ int QR_GUI_Button (const char *label)
 	return ImGui::Button (label) ? 1 : 0;
 }
 
+// A row of equal-width tabs: the selected one is drawn in the "active" colour
+// and a click on another one selects it (the caller draws the content itself,
+// so the editor keeps whatever state each tab needs).
+int QR_GUI_Tabs (const char *id, const char *const *items, int count, int *selected)
+{
+	const float spacing = ImGui::GetStyle ().ItemSpacing.x;
+	const float width   = (ImGui::GetContentRegionAvail ().x - spacing * (float)(count - 1)) / (float)count;
+	int         changed = 0;
+
+	ImGui::PushID (id);
+	for (int i = 0; i < count; i++)
+	{
+		const bool active = (i == *selected);
+
+		if (active)
+			ImGui::PushStyleColor (ImGuiCol_Button, ImGui::GetStyleColorVec4 (ImGuiCol_ButtonActive));
+		if (ImGui::Button (items[i], ImVec2 (width, 0.0f)) && !active)
+		{
+			*selected = i;
+			changed = 1;
+		}
+		if (active)
+			ImGui::PopStyleColor ();
+		if (i + 1 < count)
+			ImGui::SameLine ();
+	}
+	ImGui::PopID ();
+
+	return changed;
+}
+
 int QR_GUI_Checkbox (const char *label, int *value, const char *tooltip)
 {
 	bool v = *value != 0;

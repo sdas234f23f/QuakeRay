@@ -68,6 +68,9 @@ int  QR_GUI_SliderFloat (const char *label, float *value, float min, float max, 
 int  QR_GUI_SliderInt (const char *label, int *value, int min, int max, const char *tooltip);
 // items are count NUL-terminated strings.
 int  QR_GUI_Combo (const char *label, int *value, const char *const *items, int count, const char *tooltip);
+// A row of equal-width tabs; a click on another one selects it. Returns 1 when
+// the selection changed (the caller draws the content of *selected itself).
+int  QR_GUI_Tabs (const char *id, const char *const *items, int count, int *selected);
 int  QR_GUI_InputText (const char *label, char *buf, size_t capacity, const char *tooltip);
 // A row of three floats (X, Y, Z) on one line, clamped to min..max. Returns 1
 // when any of them changed.
