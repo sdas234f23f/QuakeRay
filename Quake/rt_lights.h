@@ -57,6 +57,8 @@ rt_light_t *RT_LIGHT_Ensure (const char *name);
 
 // The file format (the editor owns the paths and the session flow).
 void RT_LIGHT_WriteEntry (FILE *f, const rt_light_t *l);
+// The header comment of a lights.yaml the writer creates from scratch.
+const char *RT_LIGHT_Header (void);
 // The names a lights.yaml carries ("- name: x" lines; comments and quotes are
 // understood). Returns the count.
 int  RT_LIGHT_ReadNames (const char *path, char (*names)[MAX_QPATH], int max);

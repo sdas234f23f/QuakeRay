@@ -180,6 +180,11 @@ qboolean RT_LIGHT_HasFields(const rt_light_t *l)
                  l->force_rasterize || !l->group_edit);
 }
 
+const char *RT_LIGHT_Header(void)
+{
+    return rt_light_header;
+}
+
 void RT_LIGHT_WriteEntry(FILE *f, const rt_light_t *l)
 {
     fprintf(f, "  - name: %s\n", l->name);

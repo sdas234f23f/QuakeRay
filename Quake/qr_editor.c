@@ -3175,153 +3175,163 @@ static qboolean QRE_CopyFile (const char *from, const char *to)
 // (with their live, possibly edited values) or the save would drop them.
 #define QRE_SESSION_NAMES_MAX 1024
 
-static int QRE_ReadTargetNames (char (*names)[MAX_QPATH], int max)
+// The touched entry of the current mode, written in the file's own format. A
+// name the loader cannot resolve any more is not written at all.
+static qboolean QRE_SessionEntryResolves (const char *name)
 {
-	FILE *f = fopen (qre.target_file, "r");
-	char  line[1024];
-	int   count = 0;
-
-	if (!f)
-		return 0;
-
-	while (count < max && fgets (line, sizeof (line), f))
-	{
-		char *p = line;
-		char *e;
-		char  name[MAX_QPATH];
-		int   n, dup = 0;
-
-		while (*p == ' ' || *p == '\t')
-			p++;
-		if (*p == '#' || *p == '\0')
-			continue; // a comment: the header's examples are comments
-		if (strncmp (p, "- name:", 7) != 0 && strncmp (p, "name:", 5) != 0)
-			continue;
-		p = strchr (p, ':') + 1;
-		while (*p == ' ' || *p == '\t')
-			p++;
-		e = p;
-		while (*e && *e != '\r' && *e != '\n' && *e != ' ' && *e != '\t')
-			e++;
-		if (e == p)
-			continue;
-		n = (int)(e - p);
-		if (n >= MAX_QPATH)
-			n = MAX_QPATH - 1;
-		memcpy (name, p, (size_t)n);
-		name[n] = '\0';
-		if (n >= 2 && name[0] == '"' && name[n - 1] == '"')
-		{
-			memmove (name, name + 1, (size_t)(n - 2));
-			name[n - 2] = '\0';
-		}
-		q_strlwr (name);
-		if (!name[0] || QRE_NameInList (qre.touched, qre.touched_count, name))
-			continue;
-		for (n = 0; n < count; n++)
-			if (!strcmp (names[n], name))
-				dup = 1;
-		if (!dup)
-			q_strlcpy (names[count++], name, MAX_QPATH);
-	}
-
-	fclose (f);
-	return count;
+	if (qre.mode == QRE_MODE_LIGHT)
+		return RT_LIGHT_HasFields (RT_LIGHT_Find (name)) ? true : false;
+	return RT_MAT_Find (name) != NULL;
 }
 
-// Writes materials.editor.yaml: everything the target file carries plus every
-// material the session touched (a touched entry wins by name). Apply writes it,
-// Save copies it over the target, Discard deletes it.
-// The light session file: the touched lights plus the names the target file
-// already carried, written by the lights module.
-static qboolean QRE_WriteLightSession (void)
+static void QRE_SessionWriteEntry (FILE *f, const char *name)
 {
-	char (*names)[MAX_QPATH];
-	int   count = 0, i;
-	qboolean ok;
-
-	names = (char (*)[MAX_QPATH])Mem_Alloc (RT_LIGHT_NAMES_MAX * MAX_QPATH);
-	for (i = 0; i < qre.light_touched_count && count < RT_LIGHT_NAMES_MAX; i++)
-		q_strlcpy (names[count++], qre.light_touched[i], MAX_QPATH);
-	count += RT_LIGHT_ReadNames (qre.target_file, names + count, RT_LIGHT_NAMES_MAX - count);
-
-	if (count == 0)
+	if (qre.mode == QRE_MODE_LIGHT)
 	{
-		Mem_Free (names);
+		const rt_light_t *l = RT_LIGHT_Find (name);
+
+		if (l)
+			RT_LIGHT_WriteEntry (f, l);
+	}
+	else
+	{
+		const rt_material_t *m = RT_MAT_Find (name);
+
+		if (m)
+			QRE_WriteMaterial (f, m);
+	}
+}
+
+// Writes materials.editor.yaml / lights.editor.yaml: the target file's own text
+// with the blocks of the touched entries replaced, so comments, formatting and
+// keys the loader does not understand survive a save. Entries the target does not
+// carry are appended; a target that does not exist gets the standard header.
+// Apply writes it, Save copies it over the target, Discard deletes it.
+static qboolean QRE_WriteMergedSession (char (*touched)[MAX_QPATH], int touched_count)
+{
+	FILE    *in;
+	FILE    *out;
+	char     line[2048];
+	char     written[QRE_TOUCHED_MAX];
+	qboolean skipping = false;
+	qboolean wrote = false;
+	int      i;
+
+	if (touched_count <= 0 || touched_count > QRE_TOUCHED_MAX)
+		return false;
+
+	memset (written, 0, sizeof (written));
+
+	in = fopen (qre.target_file, "r");
+	out = fopen (qre.editor_file, "w");
+	if (!out)
+	{
+		if (in)
+			fclose (in);
+		QRE_Notify ("cannot write %s", qre.editor_file);
 		return false;
 	}
 
-	ok = RT_LIGHT_Write (qre.editor_file, names, count);
-	Mem_Free (names);
-	return ok;
+	if (!in)
+	{
+		// a target that does not exist yet: the standard header and the list key
+		const qboolean light = (qre.mode == QRE_MODE_LIGHT);
+
+		fprintf (out, "%s", light ? RT_LIGHT_Header () : qre_yaml_header);
+		fprintf (out, "%s\n", light ? "lights:" : "materials:");
+	}
+	else
+	{
+		while (fgets (line, sizeof (line), in))
+		{
+			char *p = line;
+			char  name[MAX_QPATH];
+
+			while (*p == ' ' || *p == '\t')
+				p++;
+
+			if (!strncmp (p, "- name:", 7))
+			{
+				char *e;
+				int   n;
+
+				p += 7;
+				while (*p == ' ' || *p == '\t')
+					p++;
+				e = p;
+				while (*e && *e != '\r' && *e != '\n' && *e != ' ' && *e != '\t')
+					e++;
+				n = (int)(e - p);
+				if (n >= MAX_QPATH)
+					n = MAX_QPATH - 1;
+				memcpy (name, p, (size_t)n);
+				name[n] = '\0';
+				q_strlwr (name);
+
+				skipping = false;
+				for (i = 0; i < touched_count; i++)
+				{
+					if (!strcmp (touched[i], name) && !written[i] && QRE_SessionEntryResolves (name))
+					{
+						QRE_SessionWriteEntry (out, name);
+						written[i] = 1;
+						skipping = true;
+						wrote = true;
+						break;
+					}
+				}
+				if (skipping)
+					continue;
+			}
+			else if (skipping && (line[0] == ' ' || line[0] == '\t' || line[0] == '\r' || line[0] == '\n'))
+			{
+				continue; // the body of the block that was replaced
+			}
+			else
+			{
+				skipping = false;
+			}
+
+			fputs (line, out);
+		}
+		fclose (in);
+	}
+
+	// the touched entries the target did not carry
+	for (i = 0; i < touched_count; i++)
+	{
+		if (!written[i] && QRE_SessionEntryResolves (touched[i]))
+		{
+			QRE_SessionWriteEntry (out, touched[i]);
+			wrote = true;
+		}
+	}
+
+	if (!wrote)
+	{
+		fclose (out);
+		remove (qre.editor_file); // an empty session is no session
+		return false;
+	}
+
+	if (ferror (out) || fflush (out) != 0)
+	{
+		QRE_Notify ("write error in %s", qre.editor_file);
+		fclose (out);
+		remove (qre.editor_file);
+		return false;
+	}
+	fclose (out);
+
+	Con_Printf ("qr editor: session written to %s\n", qre.editor_file);
+	return true;
 }
 
 static qboolean QRE_WriteSession (void)
 {
 	if (qre.mode == QRE_MODE_LIGHT)
-		return QRE_WriteLightSession ();
-
-	char (*names)[MAX_QPATH];
-	int   count = 0, i, written = 0;
-	FILE *f;
-
-	names = (char (*)[MAX_QPATH])Mem_Alloc (RT_MAT_CAP_GLOBAL * MAX_QPATH);
-
-	// the session's own names first: a target file long enough to fill the cap
-	// must not push the edits out of it
-	for (i = 0; i < qre.touched_count && count < RT_MAT_CAP_GLOBAL; i++)
-		q_strlcpy (names[count++], qre.touched[i], MAX_QPATH);
-	count += QRE_ReadTargetNames (names + count, RT_MAT_CAP_GLOBAL - count);
-
-	if (count == 0)
-	{
-		Mem_Free (names);
-		return false;
-	}
-
-	f = fopen (qre.editor_file, "w");
-	if (!f)
-	{
-		Mem_Free (names);
-		QRE_Notify ("cannot write %s", qre.editor_file);
-		return false;
-	}
-
-	fprintf (f, "%s", qre_yaml_header);
-	fprintf (f, "materials:\n");
-
-	for (i = 0; i < count; i++)
-	{
-		rt_material_t *m = RT_MAT_Find (names[i]);
-
-		if (m)
-		{
-			QRE_WriteMaterial (f, m);
-			written++;
-		}
-	}
-
-	if (written == 0)
-	{
-		fclose (f);
-		remove (qre.editor_file); // an empty session is no session
-		Mem_Free (names);
-		QRE_Notify ("no material resolved; nothing written");
-		return false;
-	}
-
-	if (ferror (f) || fflush (f) != 0)
-	{
-		QRE_Notify ("write error in %s", qre.editor_file);
-		fclose (f);
-		Mem_Free (names);
-		return false;
-	}
-	fclose (f);
-	Mem_Free (names);
-
-	Con_Printf ("qr editor: session written to %s (%d materials)\n", qre.editor_file, written);
-	return true;
+		return QRE_WriteMergedSession (qre.light_touched, qre.light_touched_count);
+	return QRE_WriteMergedSession (qre.touched, qre.touched_count);
 }
 
 // "Save" of the exit dialog: the target is backed up first, then the session
