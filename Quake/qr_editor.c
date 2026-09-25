@@ -145,7 +145,7 @@ static const struct qre_param_s
 	[PARAM_ISLIGHT]  = { "is_light",         QRE_T_BOOL,  0, 0, 0,
 	                     "The surface casts light into the scene, not only glows (BSP faces; models light from light_color)." },
 	[PARAM_LSTYLES]  = { "light_styles",     QRE_T_BOOL,  0, 0, 0,
-	                     "The map's light styles dim this light when ticked. Untick to ignore them (opt out)." },
+	                     "Tick to let the map's light styles dim this light; off by default, so a light stays at full brightness unless it asks otherwise." },
 	[PARAM_METALALPHA] = { "metalness_from_normal_alpha", QRE_T_BOOL, 0, 0, 0,
 	                     "Read metalness from the normal map's alpha channel instead of a flat factor." },
 	[PARAM_MIRROR]   = { "mirror",           QRE_T_BOOL,  0, 0, 0,
@@ -336,7 +336,7 @@ static void QRE_InitDefault (rt_material_t *m, const char *name)
 	m->emissive_blend = -1;
 	m->base_factor = 1.0f;
 	m->light_brightness = 1.0f;
-	m->light_styles = true;
+	m->light_styles = false;
 	m->color_emissive_threshold = 0.02f;
 	q_strlcpy (m->name, name, sizeof (m->name));
 }
@@ -3162,8 +3162,8 @@ static void QRE_WriteMaterial (FILE *f, const rt_material_t *m)
 		fprintf (f, "    base_factor: %.6g\n", m->base_factor);
 	if (m->is_light)
 		fprintf (f, "    is_light: true\n");
-	if (!m->light_styles)
-		fprintf (f, "    light_styles: false\n");
+	if (m->light_styles)
+		fprintf (f, "    light_styles: true\n");
 	if (m->has_color_emissive && m->color_emissive_count > 0)
 		QRE_WriteColorList (f, "color_emissive", m);
 	if (m->color_emissive_threshold != 0.02f)

@@ -300,7 +300,7 @@ static void rt_mat_reset(rt_material_t *mat)
     mat->emissive_blend = -1;
     mat->base_factor = 1.0f;
     mat->light_brightness = 1.0f;
-    mat->light_styles = true;
+    mat->light_styles = false;
     mat->color_emissive_threshold = 0.02f;
 }
 
