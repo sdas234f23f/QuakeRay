@@ -794,7 +794,7 @@ materials:
     light_brightness: 0.01
     is_light: true
   - name: progs/v_axe.mdl:frame0
-    texture_gloss: textures/progs/0_gloss.png
+    texture_gloss: textures/progs/v_axe/0_gloss.png
     metalness_factor: 0.45
     is_light: false
   - name: progs/v_light.mdl:frame0
@@ -820,14 +820,14 @@ materials:
     is_light: false
   - name: progs/v_rock.mdl:frame0
     texture_gloss: progs/v_rock/0_gloss.png
-    texture_emissive: textures_v_rock_skin0_luma.png
+    texture_emissive: textures/v_rock_skin0_luma.png
     metalness_factor: 0.8
     exact_normals: true
     light_brightness: 0.5
     is_light: false
   - name: progs/v_rock2.mdl:frame0
     texture_gloss: progs/v_rock2/0_gloss.png
-    texture_emissive: textures_v_rock2_skin0_luma.png
+    texture_emissive: textures/v_rock2_skin0_luma.png
     metalness_factor: 0.8
     exact_normals: true
     light_brightness: 0.5
@@ -1007,7 +1007,7 @@ materials:
   - name: progs/shambler.mdl:frame0
     is_light: false
   - name: progs/soldier.mdl:frame0
-    texture_emissive: textures/soldiers_skin0_luma.png
+    texture_emissive: textures/soldier_skin0_luma.png
     light_brightness: 0.1
     is_light: true
   - name: progs/suit.mdl:frame0
