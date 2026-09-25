@@ -29,6 +29,21 @@
 
 // Prints where the failing Vulkan call was made (file and line, which the assert
 // dialog cannot show) and what it returned, then lets the assert stop the run.
+void vkpt::VK_CHECKERROR_ReportAlloc(const VkDeviceSize size, const char *pDebugName)
+{
+    std::fprintf(stderr, "vkpt: out of device memory: %llu bytes for '%s'\n",
+                 (unsigned long long)size, pDebugName ? pDebugName : "<no name>");
+    std::fflush(stderr);
+
+    std::FILE *log = std::fopen("vk_last_error.txt", "a");
+    if (log)
+    {
+        std::fprintf(log, "vkpt: out of device memory: %llu bytes for '%s'\n",
+                     (unsigned long long)size, pDebugName ? pDebugName : "<no name>");
+        std::fclose(log);
+    }
+}
+
 void vkpt::VK_CHECKERROR_Report(const VkResult r, const char *file, int line)
 {
     const char *name = "VK_ERROR_*";

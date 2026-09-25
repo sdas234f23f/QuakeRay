@@ -72,6 +72,10 @@ void InitDeviceExtensionFunctions_DebugUtils(VkDevice device);
 // before the assert fires: the dialog on its own names this header, not the call.
 void VK_CHECKERROR_Report(const VkResult r, const char *file, int line);
 
+// A failed dedicated allocation: names the size and the debug name the caller
+// asked for (the plain report above can only point at the allocator).
+void VK_CHECKERROR_ReportAlloc(VkDeviceSize size, const char *pDebugName);
+
 #define VK_CHECKERROR(r)                                   \
     do                                                     \
     {                                                      \
