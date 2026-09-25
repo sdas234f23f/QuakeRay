@@ -2606,10 +2606,12 @@ enum
 	QRE_G_FLOAT,
 	QRE_G_INT,
 	QRE_G_COLOR,
+	QRE_G_BUTTON, // a press sets the cvar in `action` (the row name is its caption)
 };
 
 // One row: the cvar, its kind and the range of its slider. A section name opens
-// a group; the rows under it belong to it until the next name.
+// a group; the rows under it belong to it until the next name. A button row
+// carries its caption in `name` and the cvar it writes in `action`.
 typedef struct
 {
 	const char *section;
@@ -2617,6 +2619,7 @@ typedef struct
 	int         type;
 	float       min, max;
 	const char *tip;
+	const char *action;
 } qre_global_t;
 
 static const qre_global_t qre_globals[] = {
@@ -2654,8 +2657,9 @@ static const qre_global_t qre_globals[] = {
 	  "The pitch the sun stands at." },
 	{ NULL,  "rt_sun_yaw",          QRE_G_FLOAT, -180, 180,
 	  "The yaw the sun stands at." },
-	{ NULL,  "rt_sun_edit",         QRE_G_BOOL,  0, 0,
-	  "Place the sun by aiming: it follows the crosshair, and the fire button leaves it where it points (that press is swallowed)." },
+	{ NULL,  "Set sun position",    QRE_G_BUTTON, 0, 0,
+	  "Place the sun by aiming: it follows the crosshair, and the fire button leaves it where it points (that press is swallowed).",
+	  "rt_sun_edit" },
 
 	{ "God rays", "rt_godrays",         QRE_G_BOOL,  0, 0,
 	  "Draw the sun shafts." },
@@ -2696,7 +2700,7 @@ static void QRE_LightGlobalTab (void)
 	for (i = 0; i < (int)countof (qre_globals); i++)
 	{
 		const qre_global_t *g = &qre_globals[i];
-		cvar_t             *var = Cvar_FindVar (g->name);
+		cvar_t             *var;
 
 		if (g->section && (!section || strcmp (section, g->section)))
 		{
@@ -2704,6 +2708,25 @@ static void QRE_LightGlobalTab (void)
 			QR_GUI_Separator ();
 			QR_GUI_Label (section);
 		}
+
+		if (g->type == QRE_G_BUTTON)
+		{
+			// a mode rather than a value: the press turns the aiming on and the
+			// fire button ends it, so the caption says when it is running
+			cvar_t *mode = Cvar_FindVar (g->action);
+			char    caption[128];
+
+			if (mode && CVAR_TO_BOOL (*mode))
+				q_snprintf (caption, sizeof (caption), "%s (aiming: fire places it)", g->name);
+			else
+				q_snprintf (caption, sizeof (caption), "%s", g->name);
+			if (QR_GUI_Button (caption))
+				Cvar_Set (g->action, "1");
+			QR_GUI_Tooltip (g->tip);
+			continue;
+		}
+
+		var = Cvar_FindVar (g->name);
 
 		if (!var)
 		{
