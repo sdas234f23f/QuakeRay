@@ -2001,6 +2001,15 @@ void vkpt::RenderCubemap::DrawProcedural(VkCommandBuffer cmd, const ProceduralSk
         params.cloudColor[3] = 0.0f;
         params.cloudAnchor[0] = 0.0f;
         params.cloudAnchor[1] = 0.0f;
+        params.cloudAnchor[2] = 0.0f;
+        // The shift a texel's history is read through is frozen with them. It is what
+        // the wind and the eye have moved since the last dispatch, and a live clock in
+        // it would keep the parameters changing -- and so keep the cache below from
+        // ever matching -- on every frame while there is no cloud in the sky to
+        // straighten; the pass would then be dispatched, and the whole layer marched
+        // again, for nothing at all.
+        params.cloudAnchorDelta[0] = 0.0f;
+        params.cloudAnchorDelta[1] = 0.0f;
     }
     else
     {
