@@ -105,14 +105,6 @@ namespace
         };
     }
 
-    VkRect2D ToVk(const RgRect2D &r)
-    {
-        return VkRect2D{
-            .offset = { r.x, r.y },
-            .extent = { r.width, r.height },
-        };
-    }
-
     uint32_t ResolveTextureIndex_AlbedoAlpha( const vkpt::TextureManager& manager,
                                               const RgRasterizedGeometryUploadInfo& info )
     {
@@ -199,8 +191,6 @@ void RasterizedDataCollector::AddGeometry(uint32_t frameIndex,
         .transform            = info.transform,
         .viewProj             = IfNotNull( pViewProjection, Float16D( pViewProjection ) ),
         .viewport             = IfNotNull( pViewport, ToVk( *pViewport ) ),
-        .scissor              = info.scissor.width > 0 ? std::optional< VkRect2D >( ToVk( info.scissor ) )
-                                                      : std::nullopt,
         .color                = Float4D( info.color.data ),
         .textureIndex         = ResolveTextureIndex_AlbedoAlpha( *textureMgr, info ),
         .emissionTextureIndex = ResolveTextureIndex_RME( *textureMgr, info ),

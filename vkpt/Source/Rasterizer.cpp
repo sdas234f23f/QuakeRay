@@ -390,12 +390,10 @@ void Rasterizer::Draw(VkCommandBuffer cmd, uint32_t frameIndex, const DrawParams
         vkCmdSetViewport(cmd, 0, 1, &defaultViewport);
 
         VkViewport curViewport = defaultViewport;
-        VkRect2D   curScissor  = defaultRenderArea;
 
         for (const auto &info : drawParams.drawInfos)
         {
             SetViewportIfNew(cmd, info, defaultViewport, curViewport);
-            SetScissorIfNew(cmd, info, defaultRenderArea, curScissor);
             BindPipelineIfNew(cmd, info, drawParams.pipelines, curPipeline);
 
             // push const
@@ -444,21 +442,6 @@ void Rasterizer::SetViewportIfNew(VkCommandBuffer cmd, const RasterizedDataColle
     {
         vkCmdSetViewport( cmd, 0, 1, &newViewport );
         curViewport = newViewport;
-    }
-}
-
-void Rasterizer::SetScissorIfNew(VkCommandBuffer cmd, const RasterizedDataCollector::DrawInfo &info,
-                                 const VkRect2D &defaultScissor, VkRect2D &curScissor)
-{
-    const VkRect2D& newScissor = info.scissor.value_or( defaultScissor );
-
-    if( curScissor.offset.x      != newScissor.offset.x
-     || curScissor.offset.y      != newScissor.offset.y
-     || curScissor.extent.width  != newScissor.extent.width
-     || curScissor.extent.height != newScissor.extent.height )
-    {
-        vkCmdSetScissor( cmd, 0, 1, &newScissor );
-        curScissor = newScissor;
     }
 }
 

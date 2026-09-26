@@ -724,7 +724,7 @@ float CL_TraceLine (vec3_t start, vec3_t end, vec3_t impact, vec3_t normal, int 
 			VectorCopy (trace.plane.normal, normal);
 
 			if (entnum)
-				*entnum = trace_line_ents[i];
+				*entnum = i;
 			if (frac <= 0)
 				break;
 		}

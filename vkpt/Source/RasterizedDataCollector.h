@@ -41,7 +41,6 @@ namespace vkpt
             RgTransform                 transform = {};
             std::optional< Float16D >   viewProj  = std::nullopt;
             std::optional< VkViewport > viewport  = std::nullopt;
-            std::optional< VkRect2D >   scissor   = std::nullopt;
 
             uint32_t vertexCount = 0;
             uint32_t firstVertex = 0;
