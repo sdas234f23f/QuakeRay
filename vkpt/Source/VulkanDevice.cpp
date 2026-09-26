@@ -1347,6 +1347,78 @@ bool VulkanDevice::RenderThroughRhi(const RgDrawFrameInfo &drawInfo)
     sky.allowGeometryWithSkyFlag = allowGeometryWithSkyFlag;
     sky.disableRayTracedGeometry = drawInfo.disableRayTracedGeometry;
 
+    // The god rays and their shadow map (A5.2): the host block of the legacy frame
+    // (VulkanDevice.cpp:908-1007), precomputed here because only the host has the scene, the light
+    // manager and the sky params. The skeleton renders the shadow map and the two dispatches on the
+    // RHI list, between the primary and the reproject, from these inputs. The legacy's exact shape
+    // is kept: the final switch is `godRaysEnabled && (sunExists || useSkyBrightest)`, the intensity
+    // is 8x the clamped sky param, and the sun fields are the toward-the-sun direction and the
+    // fixed-up colour (or the sky texture's brightest point when the god rays take their sun from
+    // it); when the final switch is off the module still records the clear path, so image 64 is
+    // never stale.
+    {
+        const float godRaysIntensity = (drawInfo.pSkyParams == nullptr)
+            ? 1.0f : std::max(drawInfo.pSkyParams->godRaysIntensity, 0.0f);
+        const bool godRaysEnabled =
+            ((drawInfo.pSkyParams == nullptr) || (drawInfo.pSkyParams->godRaysEnabled != 0)) &&
+            (godRaysIntensity > 0.0f);
+
+        float sunColor[3] = {}, sunDir[3] = {}, sunAngularRadius = 0.0047f;
+        const bool sunExists =
+            scene->GetLightManager()->GetLastDirectionalLight(sunColor, sunDir, &sunAngularRadius);
+
+        const bool useSkyBrightest =
+            (drawInfo.pSkyParams != nullptr) &&
+            (drawInfo.pSkyParams->skyType == RG_SKY_TYPE_RASTERIZED_GEOMETRY) &&
+            (drawInfo.pSkyParams->godRaysFromSkyTexture != 0);
+
+        const bool godRaysOn = godRaysEnabled && (sunExists || useSkyBrightest);
+
+        sky.godRays.enabled = godRaysOn;
+        sky.godRays.intensity = 8.0f * godRaysIntensity;
+        sky.godRays.eccentricity = 0.75f;
+
+        if (godRaysOn)
+        {
+            // The shadow map's light direction: from the sun, or the negated sky direction when the
+            // god rays take their sun from the sky texture (VulkanDevice.cpp:945-951).
+            for (int k = 0; k < 3; k++)
+            {
+                if (useSkyBrightest)
+                {
+                    sky.godRays.shadowLightDirection[k] = -drawInfo.pSkyParams->godRaysSkyDirection.data[k];
+                    sky.godRays.sunDirection[k] = drawInfo.pSkyParams->godRaysSkyDirection.data[k];
+                    sky.godRays.sunColor[k] = drawInfo.pSkyParams->godRaysSkyColor.data[k];
+                }
+                else
+                {
+                    sky.godRays.shadowLightDirection[k] = sunDir[k];
+                    sky.godRays.sunDirection[k] = -sunDir[k];
+                    sky.godRays.sunColor[k] = sunColor[k];
+                }
+            }
+        }
+
+        sky.godRays.hasAabb = scene->HasAABB();
+        if (sky.godRays.hasAabb)
+        {
+            float aabbMin[3], aabbMax[3];
+            scene->GetAABB(aabbMin, aabbMax);
+
+            for (int k = 0; k < 3; k++)
+            {
+                const float halfSize = std::max((aabbMax[k] - aabbMin[k]) * 0.5f, 1.0f);
+                sky.godRays.aabbMin[k] = aabbMin[k];
+                sky.godRays.aabbMax[k] = aabbMax[k];
+                sky.godRays.worldCenter[k] = (aabbMin[k] + aabbMax[k]) * 0.5f;
+                sky.godRays.worldHalfSizeInv[k] = 1.0f / halfSize;
+            }
+
+            sky.godRays.staticCollector = scene->GetASManager()->GetStaticCollector().get();
+            sky.godRays.dynamicCollector = scene->GetASManager()->GetDynamicCollector(frameIndex).get();
+        }
+    }
+
     // The RHI pass waits on the acquire semaphore itself, so the semaphore is
     // taken away from the renderer: it may be waited on only once per signal.
     VkPipelineStageFlags semaphoreWaitStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;

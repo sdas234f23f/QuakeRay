@@ -41,12 +41,15 @@ class GlobalUniform;
 class RhiDebugTracePass;
 class RhiRtComposePass;
 class RhiRtDirectPass;
+class RhiRtGodRaysPass;
 class RhiRtIndirectPass;
 class RhiRtPrimaryPass;
+class RhiShadowMapPass;
 class RhiSkyPass;
 class RhiUiPass;
 class Swapchain;
 class Tonemapping;
+class VertexCollector;
 
 namespace rhi
 {
@@ -133,6 +136,31 @@ public:
         uint64_t swapchainVertexStagingSize = 0;
         uint64_t swapchainIndexStagingSize = 0;
         bool disableRasterization = false;
+
+        // -- the god rays and their shadow map (A5.2) --
+        // The host block of the legacy frame (VulkanDevice.cpp:908-1007) precomputed: the final
+        // switch, the intensity and the eccentricity, the sun (the direction toward the sun for the
+        // params and the light direction for the shadow map), the world box and the geometry
+        // sources the shadow map draws. The shadow map's view-projection is not here: the skeleton
+        // takes it from the shadow pass's render of the same frame. Everything runs only under
+        // 'hasAabb' (the legacy guard); with 'enabled' false the skeleton still records the clear
+        // path so image 64 is never stale.
+        struct GodRays
+        {
+            bool enabled = false;                   // godRaysOn: the final switch, not the cvar
+            bool hasAabb = false;                   // scene->HasAABB()
+            float intensity = 0.0f;                 // 8.0f * rt_godrays_intensity (clamped >= 0)
+            float eccentricity = 0.75f;
+            float aabbMin[3] = {};
+            float aabbMax[3] = {};
+            float shadowLightDirection[3] = {};     // the shadow map's from-sun light direction
+            float sunDirection[4] = {};             // toward the sun, for the params (xyz)
+            float sunColor[4] = {};                 // the fixed-up colour (xyz)
+            float worldCenter[3] = {};
+            float worldHalfSizeInv[3] = {};         // 1 / max(halfSize, 1) per axis
+            const VertexCollector *staticCollector = nullptr;
+            const VertexCollector *dynamicCollector = nullptr;
+        } godRays;
         // The engine's global uniform: the world shader's set 1, the source of the bytes the
         // skeleton writes into the uniform wrap every frame, and the CPU copy the host-only exposure
         // parameters read. The host owns it, so the field keeps the shared_ptr (the traced mode's
@@ -208,6 +236,11 @@ public:
     // it is non-null, the traced chain runs it after the indirect pass and the present samples its
     // display-referred FINAL image directly, instead of ALBEDO plus the direct term. Optional: a
     // null one keeps the A4.2a present, and the host creates it only under 'rhicompose'.
+    // 'pShadowMapPass' and 'pGodRaysPass' are the host's A5.2 passes (RhiShadowMapPass,
+    // RhiRtGodRaysPass): in the traced chain, once the primary ran, Render records the shadow map,
+    // and when it drew something the god-rays trace and filter whose output CmPrepareFinal adds.
+    // Optional: a null one draws the frame without shafts; the frame inputs carry the host-computed
+    // sun/world/intensity values (VulkanDevice.cpp:908-1007).
     // 'pUiPass' is the host's 2D-UI pass (RhiUiPass, RHI/RhiUiPass.h): when it is non-null and the
     // compose ran, Render draws the frame's SWAPCHAIN overlay (the HUD, the console, the menus) into
     // the compose's upscaled image after the TAAU, from the per-slot staging geometry the frame
@@ -223,6 +256,8 @@ public:
                                 RhiRtDirectPass *pRtDirectPass,
                                 RhiRtIndirectPass *pRtIndirectPass,
                                 RhiRtComposePass *pRtComposePass,
+                                RhiShadowMapPass *pShadowMapPass,
+                                RhiRtGodRaysPass *pGodRaysPass,
                                 RhiUiPass *pUiPass,
                                 FrameMode mode,
                                 PrintFunction pfnPrint);
@@ -348,6 +383,14 @@ private:
     // pass when it is non-null; the present then samples its display-referred FINAL image. Not
     // owned; null when the host's 'rhicompose' flag is off or the creation failed.
     RhiRtComposePass *rtComposePass = nullptr;
+
+    // The host's shadow-map and god-rays passes (RHI/RhiShadowMapPass.h, RHI/RhiRtGodRaysPass.h),
+    // driven in the traced chain on the same list: the shadow map renders after the primary and,
+    // when it drew something, the god-rays pass dispatches the trace and the filter whose output
+    // CmPrepareFinal reads. Not owned; null when the host's creation failed, in which case the frame
+    // is drawn without shafts.
+    RhiShadowMapPass *shadowMapPass = nullptr;
+    RhiRtGodRaysPass *godRaysPass = nullptr;
 
     // The 2D-UI pass (RhiUiPass, RHI/RhiUiPass.h), driven in the traced chain once the compose ran:
     // it draws the frame's SWAPCHAIN overlay into the compose's upscaled image. Not owned; null

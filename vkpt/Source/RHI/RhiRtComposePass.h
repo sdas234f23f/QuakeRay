@@ -136,7 +136,7 @@ class RhiFrameContext;
 // (vulkan-compute.cpp:145). The push-constant iterations receive their index with
 // `setPushConstants` between `setComputeState` and `dispatch` (nvrhi.h:3430-3440).
 //
-// 77 engine images are wrapped per slot, one wrap per union entry (the .cpp's COMPOSE_IMAGES
+// 80 engine images are wrapped per slot, one wrap per union entry (the .cpp's COMPOSE_IMAGES
 // table), and the passes share the wraps, so the pass-to-pass hand-offs are NVRHI's own
 // UAV -> SRV -> UAV transitions on one wrap: 117 written by the adapter and read by the interleave
 // or the atrous composite; 111-114 written by the gradient chain and read by the temporal pass;
@@ -147,20 +147,25 @@ class RhiFrameContext;
 // ShFramebuffers_BindingsSwapped): the module adds the pairs' previous-role members (1, 4, 6, 8, 20,
 // 24, 78, 80, 82, 84, 86, 92, 94, 96, 98, 100, 116, 120, 122) beside their current-role
 // counterparts, each resolved through `Framebuffers::GetImageHandles(image, frameIndex)` so that
-// every slot has a wrap for the current and the previous role. On the first two frames of a run the
-// `_PREV` images are undefined (the engine clears nothing, Framebuffers.cpp:694-768); the shaders'
-// bounds checks bound the effect exactly as in the legacy path.
+// every slot has a wrap for the current and the previous role. Three of the 80 are the god-rays
+// hand-off images (63 GOD_RAYS, 64 GOD_RAYS_FILTERED, 89 Q2_GOD_RAYS_THROUGHPUT_DIST): they are in
+// the union for the announcement and the restore discipline below, but only 64 is bound by a set of
+// this module (the final composition's SRV at raw 188); the god-rays module is their writer and
+// has to leave them in GENERAL. On the first two frames of a run the `_PREV` images are undefined
+// (the engine clears nothing, Framebuffers.cpp:694-768); the shaders' bounds checks bound the
+// effect exactly as in the legacy path.
 //
 // The image-state contract, per entry point: the engine leaves every framebuffer image in
 // VK_IMAGE_LAYOUT_GENERAL - NVRHI's UnorderedAccess - and a native wrap keeps no state between
-// command lists (RhiTextureSource.h), so every call announces that state for all 77 wraps before
+// command lists (RhiTextureSource.h), so every call announces that state for all 80 wraps before
 // its first binding and moves every image whose last use on the list was a sampled read back to
 // UnorderedAccess (RenderGradientReproject restores its 17 sampled reads, the filtered `Render`
-// path its 51-image CHAIN_RESTORE_IMAGES list, `RenderTaaU` its 3, and the unfiltered path keeps
-// A4.4's 18-image list). The three module-owned stand-ins are the render-sized god-rays zero
-// substitute for the image no RHI pass writes (64, see the .cpp), the 1x1x1 volumetric dummy and
-// the nearest-filter sampler the TAAU history is sampled with (the engine's own choice for image
-// 120, whose flags lack BILINEAR_SAMPLER; Framebuffers.cpp:813-815).
+// path its 54-image CHAIN_RESTORE_IMAGES list, `RenderTaaU` its 3, and the unfiltered path its
+// 21-image list). The announcement is true for images the earlier RHI passes (primary, direct,
+// indirect, god rays) wrote or read on the same list, because each of those passes restores its
+// own sampled reads to GENERAL as well. The two module-owned stand-ins are the 1x1x1 volumetric
+// dummy and the nearest-filter sampler the TAAU history is sampled with (the engine's own choice
+// for image 120, whose flags lack BILINEAR_SAMPLER; Framebuffers.cpp:813-815).
 //
 // What the legacy chain has around this sequence and the module deliberately does not record:
 //  - `CmQ2Fog` (`ApplyFog`): there is no caller anywhere in the tree (Q2Denoiser.cpp:659-690 is
@@ -169,32 +174,35 @@ class RhiFrameContext;
 //    present samples it, without the effect/sharpen chain (`rt_bloom` 0, `rt_sharpen` 0 and the
 //    `rt_upscale_*` 0 default configuration make that equivalent, VulkanDevice.cpp:1100-1136);
 //  - the raster world/emissive overlay (`Rasterizer::DrawToFinalImage`, VulkanDevice.cpp:1071);
-//  - god rays: the filtered image has no writer under `rhiframe`, so the final composition reads
-//    the module's zero substitute and the gate has to force `rt_godrays 0` for a legacy reference
-//    without shafts (RhiSkyPass's stand-in mechanism, A4.2b).
+//  - god rays: the shadow map, the two `GodRays` dispatches and their host block are
+//    `RhiShadowMapPass`'s and `RhiRtGodRaysPass`'s; the host records them before this module on the
+//    same list. This module consumes only their output image 64 as a plain union SRV in the final
+//    composition and restores it to UnorderedAccess, and it announces 63/64/89 with the rest of the
+//    union: the god-rays module must leave all of them in GENERAL (its own restore discipline) or
+//    this module's announcement names a state the images are not in.
 //
 // Host contract (the skeleton wires the passes; the module only records):
 //  - Create takes the engine `Tonemapping` object (the exposure pair's per-slot buffers) and the
 //    folder the engine blobs load from; the thirteen blobs above are read from it;
 //  - the host order per traced frame, all on the frame context's open list of the same slot and
 //    between the ray-tracing passes and the present:
-//      primary -> (filterEnabled: RenderGradientReproject) -> direct -> indirect -> Render ->
-//      RenderTaaU -> present;
+//      shadow map -> primary -> god rays -> (filterEnabled: RenderGradientReproject) -> direct ->
+//      indirect -> Render -> RenderTaaU -> present;
 //  - `filterEnabled` is `uniform->GetData()->fltEnable[0] >= 0.5f`, computed after the host wrote
 //    the frame's uniform bytes: the adapter and the gradient chain it selects must match the
 //    value the primary/direct/indirect raygens were dispatched with (`q2GetIsGradient` reads image
 //    115 only when it is raised). `RenderGradientReproject` is called only while it is raised;
 //  - 'width'/'height' are the render resolution and 'upscaledWidth'/'upscaledHeight' the engine's
-//    upscaled size (`ResolutionState`): the 1/3 images (101-104, 111-116), the upscaled images
-//    (29, 119, 120) and every render-sized image are wrapped to those extents, and the same values
-//    have to be passed to all three calls of a frame. The TAAU dispatch runs over the upscaled
-//    size; the shaders read `globalUniform.renderWidth/renderHeight/upscaledRenderWidth/
+//    upscaled size (`ResolutionState`): the half image (63), the 1/3 images (101-104, 111-116), the
+//    upscaled images (29, 119, 120) and every render-sized image are wrapped to those extents, and
+//    the same values have to be passed to all three calls of a frame. The TAAU dispatch runs over
+//    the upscaled size; the shaders read `globalUniform.renderWidth/renderHeight/upscaledRenderWidth/
 //    upscaledRenderHeight`, which the host's uniform bytes have to carry;
 //  - the exposure params (the legacy `Tonemapping::CalculateExposure` host block) have to be
 //    written before `Render`, because the histogram and the average consume them in the same list;
 //  - Call ReleaseTargets() before Framebuffers::PrepareForSize destroys the framebuffer images;
 //    the next call re-reads the handles and re-wraps, so the pass survives a resize. The
-//    tonemapping wraps and the stand-ins are not framebuffer-dependent and stay.
+//    tonemapping wraps and the module's stand-ins are not framebuffer-dependent and stay.
 //
 // The pass is a no-op until Create succeeded and while an input is missing (no framebuffers, no
 // uniform, an image handle or extent the RHI cannot wrap, a zero upscaled size); every early
@@ -222,7 +230,7 @@ public:
     // engine blobs from, with the trailing separator; the thirteen blobs above are read from it
     // (the seven chain blobs are a hard requirement of A4.5). The pass logs through 'pfnPrint'.
     // Returns false and leaves the pass unusable if a shader, a layout, a pipeline, a
-    // specialization, the TAAU sampler, the tonemapping wrap or a stand-in cannot be created.
+    // specialization, the TAAU sampler or the tonemapping wrap cannot be created.
     bool Create(nvrhi::IDevice *pDevice,
                 rhi::RhiFrameContext *pFrameContext,
                 const Tonemapping *pTonemapping,
@@ -324,17 +332,17 @@ private:
     // the same pointer-change rule the other passes use.
     struct Target
     {
-        // The 77 engine images (the .cpp's COMPOSE_IMAGES table) the slot currently wraps and the
+        // The 80 engine images (the .cpp's COMPOSE_IMAGES table) the slot currently wraps and the
         // twelve sets over them. The handles are kept in the form the entry point received them,
         // not as VkImages, because they are what the change detection compares; a change in any of
         // them or in any of the three sizes means the engine re-created the framebuffers (or the
         // resolution changed) and the wraps and the sets have to follow.
-        uint64_t imageHandles[77] = {};
+        uint64_t imageHandles[80] = {};
         uint32_t width = 0;
         uint32_t height = 0;
         uint32_t upscaledWidth = 0;
         uint32_t upscaledHeight = 0;
-        nvrhi::TextureHandle engineTextures[77];
+        nvrhi::TextureHandle engineTextures[80];
         nvrhi::BindingSetHandle gradientReprojectSet;
         nvrhi::BindingSetHandle adapterSet;
         nvrhi::BindingSetHandle gradientImgSet;
@@ -356,10 +364,11 @@ private:
 
     bool LoadShader(const char *pFileName, nvrhi::ShaderType type, nvrhi::ShaderHandle &result);
 
-    // The shared preamble of the three entry points: validates the arguments, resolves the 77
-    // image handles and extents of 'frameIndex', retires and re-wraps everything when the engine
-    // re-created an image or any of the three sizes changed, prepares the god-rays stand-in, the
-    // twelve sets and the uniform set. Returns the slot's target, or null when the call cannot be
+    // The shared preamble of the three entry points: validates the arguments (including the command
+    // list, whose null the entry points would otherwise dereference in AnnounceFrameImages),
+    // resolves the 80 image handles and extents of 'frameIndex', retires and re-wraps everything
+    // when the engine re-created an image or any of the three sizes changed, prepares the twelve
+    // sets and the uniform set. Returns the slot's target, or null when the call cannot be
     // recorded - which the caller treats as a silent skip.
     Target *PrepareFrame(nvrhi::ICommandList *pCommandList,
                          uint32_t frameIndex,
@@ -370,9 +379,11 @@ private:
                          uint32_t upscaledHeight,
                          nvrhi::IBuffer *pUniformBuffer);
 
-    // Declares the engine's resting state (UnorderedAccess, i.e. GENERAL) for all 77 wraps on the
+    // Declares the engine's resting state (UnorderedAccess, i.e. GENERAL) for all 80 wraps on the
     // list, before the entry point's first binding touches one. A repeated call is a no-op: the
-    // declaration writes the tracked state, it emits no barrier.
+    // declaration writes the tracked state, it emits no barrier. The declaration is a claim about
+    // the physical layout each earlier pass left behind; the god-rays images (63/64/89) rest on the
+    // god-rays module's own restore discipline (the class comment).
     void AnnounceFrameImages(nvrhi::ICommandList *pCommandList, const Target &target) const;
 
     // Queues a same-state UnorderedAccess requirement for one union image - the per-iteration and
@@ -385,16 +396,9 @@ private:
                                      FramebufferImageIndex image) const;
 
     // Builds the twelve set-0 sets over the module's exact layouts when they are missing (the
-    // first frame of a slot, after a framebuffer re-create and after a god-rays substitute
-    // replacement). Returns false when a binding cannot be filled - a table/image mismatch, which
-    // the module's static assertions make unreachable.
+    // first frame of a slot or after a framebuffer re-create). Returns false when a binding cannot
+    // be filled - a table/image mismatch, which the module's static assertions make unreachable.
     bool PrepareFramebufferSets(Target &target);
-
-    // The render-sized zero stand-in for the god-rays image 64, which no RHI pass writes. It is
-    // size-keyed, cleared to zero once per wrap lifetime, and its replacement retires every slot's
-    // framebuffer sets (the prepare-final set references it). Returns false when it cannot be
-    // created, which skips the frame.
-    bool PrepareGodRaysStandIn(nvrhi::ICommandList *pCommandList, uint32_t width, uint32_t height);
 
     // Set 1 over the module's compute uniform layout, rebuilt when the pointer changed. Returns
     // false when the buffer is not the static constant-buffer wrap the shader's
@@ -416,8 +420,7 @@ private:
                         const uint32_t *pPushConstant = nullptr);
 
     // Retires the slot's twelve framebuffer sets. Used by the framebuffer re-create path and by
-    // the god-rays substitute replacement, whose new texture the prepare-final set has to
-    // reference.
+    // ReleaseTargets.
     void ReleaseFramebufferSets(Target &target);
     void ReleaseFramebufferTarget(Target &target);
     void ReleaseTarget(Target &target);
@@ -496,14 +499,10 @@ private:
     nvrhi::BindingSetHandle tonemappingUavSets[MAX_FRAMES_IN_FLIGHT];
     nvrhi::BindingSetHandle tonemappingSrvSets[MAX_FRAMES_IN_FLIGHT];
 
-    // The module-owned stand-ins: the render-sized god-rays zero substitute (re-created on a size
-    // change), the real empty set, the 1x1x1 RGBA16F volumetric dummy with its sampler and set,
-    // and the nearest-filter sampler the TAAU binds for the history (the engine binds its nearest
-    // sampler for image 120, Framebuffers.cpp:813-815). The dummy is cleared to zero once, on the
-    // first list that binds it.
-    nvrhi::TextureHandle godRaysZeroTexture;
-    uint32_t godRaysZeroWidth = 0;
-    uint32_t godRaysZeroHeight = 0;
+    // The module-owned stand-ins: the real empty set, the 1x1x1 RGBA16F volumetric dummy with its
+    // sampler and set, and the nearest-filter sampler the TAAU binds for the history (the engine
+    // binds its nearest sampler for image 120, Framebuffers.cpp:813-815). The dummy is cleared to
+    // zero once, on the first list that binds it.
     nvrhi::TextureHandle volumetricDummyTexture;
     nvrhi::SamplerHandle volumetricDummySampler;
     nvrhi::BindingSetHandle volumetricSet;
@@ -521,7 +520,6 @@ private:
     bool warnedMissingUniform = false;
     bool warnedBadUniform = false;
     bool warnedBadTable = false;
-    bool warnedZeroTexture = false;
 
     bool created = false;
 };

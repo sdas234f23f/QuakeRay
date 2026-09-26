@@ -84,12 +84,14 @@ constexpr uint32_t FRAMEBUFFER_SRV_OFFSET = 124;
 constexpr uint32_t FRAMEBUFFER_SAMPLER_OFFSET = 248;
 
 // The size class of one union image: the engine's `GetFramebufSize` maps the generated flags onto
-// the render size, the `(render + 1) / 3` third (FB_IMAGE_FLAGS_FRAMEBUF_FLAGS_FORCE_SIZE_1_3:
+// the render size, the `(render + 1) / 2` half (FB_IMAGE_FLAGS_FRAMEBUF_FLAGS_FORCE_SIZE_1_2: the
+// god-rays image 63), the `(render + 1) / 3` third (FB_IMAGE_FLAGS_FRAMEBUF_FLAGS_FORCE_SIZE_1_3:
 // 101-104 and 111-116) and the upscaled size (FB_IMAGE_FLAGS_FRAMEBUF_FLAGS_UPSCALED_SIZE:
 // 29, 119, 120) (Framebuffers.cpp:628-692).
 enum class ComposeImageSize : uint8_t
 {
     Render,
+    Half,
     Third,
     Upscaled,
 };
@@ -100,16 +102,20 @@ struct ComposeImage
     ComposeImageSize size;
 };
 
-// The union of the engine images the thirteen passes touch, deduplicated: 77 images, each wrapped
+// The union of the engine images the thirteen passes touch, deduplicated: 80 images, each wrapped
 // once per slot and shared by the twelve framebuffer sets, so NVRHI's own UAV -> SRV -> UAV
 // transitions on one wrap order the pass-to-pass hand-offs (the class comment's list). The first
 // 27 entries are the A4.4 compose union; the rest are the chain's, both members of every `_PREV`
 // role pair included (1, 4, 6, 8, 20, 24, 78, 80, 82, 84, 86, 92, 94, 96, 98, 100, 116, 120, 122),
 // resolved through `Framebuffers::GetImageHandles(image, frameIndex)` which applies the engine's
-// per-slot role swap (Framebuffers.cpp:33-53). Image 64 GOD_RAYS_FILTERED is deliberately *not*
-// here: its only read binds the module's zero stand-in instead (see the class comment), because
-// nothing writes the engine image under `rhiframe`.
-constexpr uint32_t COMPOSE_IMAGE_COUNT = 77;
+// per-slot role swap (Framebuffers.cpp:33-53). Three entries are the god-rays hand-off: 63 GOD_RAYS
+// (the trace's half-res storage image and the filter's sampled input), 64 GOD_RAYS_FILTERED (the
+// filter's render-sized storage image, sampled by the final composition at raw 188) and 89
+// Q2_GOD_RAYS_THROUGHPUT_DIST (the trace's sampled input). Only 64 is bound by a set of this module;
+// the three are part of the union so the per-list announcement below names their resting state and
+// the restore lists return the ones this module moves to it. The god-rays module owns their
+// contents and has to leave them in GENERAL (see the class comment).
+constexpr uint32_t COMPOSE_IMAGE_COUNT = 80;
 constexpr ComposeImage COMPOSE_IMAGES[COMPOSE_IMAGE_COUNT] =
 {
     { FB_IMAGE_INDEX_ALBEDO,                ComposeImageSize::Render }, //   0  framebufAlbedo           (adapter/gradient-reproj/atrous/PF)
@@ -143,6 +149,8 @@ constexpr ComposeImage COMPOSE_IMAGES[COMPOSE_IMAGE_COUNT] =
     { FB_IMAGE_INDEX_ACID_FOG,              ComposeImageSize::Render }, //  60  framebufAcidFog          (checkerboard UAV, final SRV)
     { FB_IMAGE_INDEX_SCREEN_EMIS_R_T,       ComposeImageSize::Render }, //  61  framebufScreenEmisRT     (checkerboard SRV)
     { FB_IMAGE_INDEX_SCREEN_EMISSION,       ComposeImageSize::Render }, //  62  framebufScreenEmission   (checkerboard UAV, final SRV)
+    { FB_IMAGE_INDEX_GOD_RAYS,              ComposeImageSize::Half },   //  63  framebufGodRays          (god-rays trace UAV, filter SRV)
+    { FB_IMAGE_INDEX_GOD_RAYS_FILTERED,     ComposeImageSize::Render }, //  64  framebufGodRaysFiltered  (god-rays filter UAV, final SRV at raw 188)
     { FB_IMAGE_INDEX_BLOOM_INPUT,           ComposeImageSize::Render }, //  65  framebufBloomInput       (final UAV; bloom is off)
     { FB_IMAGE_INDEX_Q2_COLOR_L_F_S_H,      ComposeImageSize::Render }, //  73  framebufQ2ColorLF_SH     (adapter UAV, gradientImg/temporal SRV)
     { FB_IMAGE_INDEX_Q2_COLOR_L_F_C_O_C_G,  ComposeImageSize::Render }, //  75  framebufQ2ColorLF_COCG   (adapter UAV, temporal SRV)
@@ -157,6 +165,7 @@ constexpr ComposeImage COMPOSE_IMAGES[COMPOSE_IMAGE_COUNT] =
     { FB_IMAGE_INDEX_Q2_METALLIC,           ComposeImageSize::Render }, //  85  framebufQ2Metallic       (reproj UAV)
     { FB_IMAGE_INDEX_Q2_METALLIC_PREV,      ComposeImageSize::Render }, //  86  framebufQ2Metallic_Prev  (reproj SRV)
     { FB_IMAGE_INDEX_Q2_TRANSPARENT,        ComposeImageSize::Render }, //  88  framebufQ2Transparent    (adapter/atrous SRV)
+    { FB_IMAGE_INDEX_Q2_GOD_RAYS_THROUGHPUT_DIST, ComposeImageSize::Render }, // 89 framebufQ2GodRaysThroughputDist (primary/Q2-reflrefr UAV, god-rays trace SRV)
     { FB_IMAGE_INDEX_Q2_FOG_ACCUM,          ComposeImageSize::Render }, //  90  framebufQ2FogAccum       (adapter/atrous SRV)
     { FB_IMAGE_INDEX_Q2_HIST_COLOR_L_F_S_H, ComposeImageSize::Render }, //  91  framebufQ2HistColorLF_SH (temporal UAV, atrous SRV)
     { FB_IMAGE_INDEX_Q2_HIST_COLOR_L_F_S_H_PREV, ComposeImageSize::Render }, // 92 framebufQ2HistColorLF_SH_Prev (gradientImg/temporal SRV)
@@ -191,18 +200,16 @@ constexpr ComposeImage COMPOSE_IMAGES[COMPOSE_IMAGE_COUNT] =
     { FB_IMAGE_INDEX_Q2_RNG_SEED_PREV,      ComposeImageSize::Render }, // 122  framebufQ2RngSeed_Prev   (reproj SRV)
 };
 
-static_assert(COMPOSE_IMAGE_COUNT == 77,
-              "the per-slot image arrays of RhiRtComposePass.h are sized 77 (COMPOSE_IMAGES)");
+static_assert(COMPOSE_IMAGE_COUNT == 80,
+              "the per-slot image arrays of RhiRtComposePass.h are sized 80 (COMPOSE_IMAGES)");
 
-// One item of a pass's set 0: the engine image, the binding kind, whether the module substitutes
-// its god-rays zero stand-in for that binding, and whether the item is a sampler (only the TAAU
-// history carries one). 'isUAV' selects both the layout item and the set item type; 'image' also
-// carries the raw binding, through the generated array of the matching kind.
+// One item of a pass's set 0: the engine image, the binding kind and whether the item is a sampler
+// (only the TAAU history carries one). 'isUAV' selects both the layout item and the set item type;
+// 'image' also carries the raw binding, through the generated array of the matching kind.
 struct ComposeBinding
 {
     FramebufferImageIndex image;
     bool isUAV;
-    bool isGodRaysStandIn;
     bool isSampler;
 };
 
@@ -213,33 +220,33 @@ struct ComposeBinding
 constexpr uint32_t GRADIENT_REPROJECT_BINDING_COUNT = 27;
 constexpr ComposeBinding GRADIENT_REPROJECT_BINDINGS[GRADIENT_REPROJECT_BINDING_COUNT] =
 {
-    { FB_IMAGE_INDEX_ALBEDO,               true,  false, false }, //   0  framebufAlbedo
-    { FB_IMAGE_INDEX_NORMAL,               true,  false, false }, //   3  framebufNormal
-    { FB_IMAGE_INDEX_METALLIC_ROUGHNESS,   true,  false, false }, //   7  framebufMetallicRoughness
-    { FB_IMAGE_INDEX_SURFACE_POSITION,     true,  false, false }, //  19  framebufSurfacePosition
-    { FB_IMAGE_INDEX_VIEW_DIRECTION,       true,  false, false }, //  23  framebufViewDirection
-    { FB_IMAGE_INDEX_Q2_BASE_COLOR,        true,  false, false }, //  83  framebufQ2BaseColor
-    { FB_IMAGE_INDEX_Q2_METALLIC,          true,  false, false }, //  85  framebufQ2Metallic
-    { FB_IMAGE_INDEX_Q2_GRAD_H_F_SPEC_PING, true, false, false }, // 113  framebufQ2GradHFSpecPing
-    { FB_IMAGE_INDEX_Q2_GRAD_SMPL_POS,     true,  false, false }, // 115  framebufQ2GradSmplPos
-    { FB_IMAGE_INDEX_Q2_RNG_SEED,          true,  false, false }, // 121  framebufQ2RngSeed
-    { FB_IMAGE_INDEX_ALBEDO_PREV,          false, false, false }, // 125  framebufAlbedo_Prev_Sampled
-    { FB_IMAGE_INDEX_NORMAL_PREV,          false, false, false }, // 128  framebufNormal_Prev_Sampled
-    { FB_IMAGE_INDEX_NORMAL_GEOMETRY,      false, false, false }, // 129  framebufNormalGeometry_Sampled
-    { FB_IMAGE_INDEX_NORMAL_GEOMETRY_PREV, false, false, false }, // 130  framebufNormalGeometry_Prev_Sampled
-    { FB_IMAGE_INDEX_METALLIC_ROUGHNESS_PREV, false, false, false }, // 132 framebufMetallicRoughness_Prev_Sampled
-    { FB_IMAGE_INDEX_MOTION,               false, false, false }, // 137  framebufMotion_Sampled
-    { FB_IMAGE_INDEX_SURFACE_POSITION_PREV, false, false, false }, // 144 framebufSurfacePosition_Prev_Sampled
-    { FB_IMAGE_INDEX_VIEW_DIRECTION_PREV,  false, false, false }, // 148  framebufViewDirection_Prev_Sampled
-    { FB_IMAGE_INDEX_THROUGHPUT,           false, false, false }, // 150  framebufThroughput_Sampled
-    { FB_IMAGE_INDEX_Q2_COLOR_H_F_PREV,    false, false, false }, // 202  framebufQ2ColorHF_Prev_Sampled
-    { FB_IMAGE_INDEX_Q2_COLOR_SPEC_PREV,   false, false, false }, // 204  framebufQ2ColorSpec_Prev_Sampled
-    { FB_IMAGE_INDEX_Q2_VIEW_DEPTH,        false, false, false }, // 205  framebufQ2ViewDepth_Sampled
-    { FB_IMAGE_INDEX_Q2_VIEW_DEPTH_PREV,   false, false, false }, // 206  framebufQ2ViewDepth_Prev_Sampled
-    { FB_IMAGE_INDEX_Q2_BASE_COLOR_PREV,   false, false, false }, // 208  framebufQ2BaseColor_Prev_Sampled
-    { FB_IMAGE_INDEX_Q2_METALLIC_PREV,     false, false, false }, // 210  framebufQ2Metallic_Prev_Sampled
-    { FB_IMAGE_INDEX_Q2_GRAD_SMPL_POS_PREV, false, false, false }, // 240 framebufQ2GradSmplPos_Prev_Sampled
-    { FB_IMAGE_INDEX_Q2_RNG_SEED_PREV,     false, false, false }, // 246  framebufQ2RngSeed_Prev_Sampled
+    { FB_IMAGE_INDEX_ALBEDO,               true, false }, //   0  framebufAlbedo
+    { FB_IMAGE_INDEX_NORMAL,               true, false }, //   3  framebufNormal
+    { FB_IMAGE_INDEX_METALLIC_ROUGHNESS,   true, false }, //   7  framebufMetallicRoughness
+    { FB_IMAGE_INDEX_SURFACE_POSITION,     true, false }, //  19  framebufSurfacePosition
+    { FB_IMAGE_INDEX_VIEW_DIRECTION,       true, false }, //  23  framebufViewDirection
+    { FB_IMAGE_INDEX_Q2_BASE_COLOR,        true, false }, //  83  framebufQ2BaseColor
+    { FB_IMAGE_INDEX_Q2_METALLIC,          true, false }, //  85  framebufQ2Metallic
+    { FB_IMAGE_INDEX_Q2_GRAD_H_F_SPEC_PING, true, false }, // 113  framebufQ2GradHFSpecPing
+    { FB_IMAGE_INDEX_Q2_GRAD_SMPL_POS,     true, false }, // 115  framebufQ2GradSmplPos
+    { FB_IMAGE_INDEX_Q2_RNG_SEED,          true, false }, // 121  framebufQ2RngSeed
+    { FB_IMAGE_INDEX_ALBEDO_PREV,          false, false }, // 125  framebufAlbedo_Prev_Sampled
+    { FB_IMAGE_INDEX_NORMAL_PREV,          false, false }, // 128  framebufNormal_Prev_Sampled
+    { FB_IMAGE_INDEX_NORMAL_GEOMETRY,      false, false }, // 129  framebufNormalGeometry_Sampled
+    { FB_IMAGE_INDEX_NORMAL_GEOMETRY_PREV, false, false }, // 130  framebufNormalGeometry_Prev_Sampled
+    { FB_IMAGE_INDEX_METALLIC_ROUGHNESS_PREV, false, false }, // 132 framebufMetallicRoughness_Prev_Sampled
+    { FB_IMAGE_INDEX_MOTION,               false, false }, // 137  framebufMotion_Sampled
+    { FB_IMAGE_INDEX_SURFACE_POSITION_PREV, false, false }, // 144 framebufSurfacePosition_Prev_Sampled
+    { FB_IMAGE_INDEX_VIEW_DIRECTION_PREV,  false, false }, // 148  framebufViewDirection_Prev_Sampled
+    { FB_IMAGE_INDEX_THROUGHPUT,           false, false }, // 150  framebufThroughput_Sampled
+    { FB_IMAGE_INDEX_Q2_COLOR_H_F_PREV,    false, false }, // 202  framebufQ2ColorHF_Prev_Sampled
+    { FB_IMAGE_INDEX_Q2_COLOR_SPEC_PREV,   false, false }, // 204  framebufQ2ColorSpec_Prev_Sampled
+    { FB_IMAGE_INDEX_Q2_VIEW_DEPTH,        false, false }, // 205  framebufQ2ViewDepth_Sampled
+    { FB_IMAGE_INDEX_Q2_VIEW_DEPTH_PREV,   false, false }, // 206  framebufQ2ViewDepth_Prev_Sampled
+    { FB_IMAGE_INDEX_Q2_BASE_COLOR_PREV,   false, false }, // 208  framebufQ2BaseColor_Prev_Sampled
+    { FB_IMAGE_INDEX_Q2_METALLIC_PREV,     false, false }, // 210  framebufQ2Metallic_Prev_Sampled
+    { FB_IMAGE_INDEX_Q2_GRAD_SMPL_POS_PREV, false, false }, // 240 framebufQ2GradSmplPos_Prev_Sampled
+    { FB_IMAGE_INDEX_Q2_RNG_SEED_PREV,     false, false }, // 246  framebufQ2RngSeed_Prev_Sampled
 };
 
 // CmQ2Adapter: 5 storage images and 12 sampled images (measured: exactly these 17 bindings, all in
@@ -249,23 +256,23 @@ constexpr ComposeBinding GRADIENT_REPROJECT_BINDINGS[GRADIENT_REPROJECT_BINDING_
 constexpr uint32_t ADAPTER_BINDING_COUNT = 17;
 constexpr ComposeBinding ADAPTER_BINDINGS[ADAPTER_BINDING_COUNT] =
 {
-    { FB_IMAGE_INDEX_Q2_COLOR_L_F_S_H,     true,  false, false }, //  73  framebufQ2ColorLF_SH
-    { FB_IMAGE_INDEX_Q2_COLOR_L_F_C_O_C_G, true,  false, false }, //  75  framebufQ2ColorLF_COCG
-    { FB_IMAGE_INDEX_Q2_COLOR_H_F,         true,  false, false }, //  77  framebufQ2ColorHF
-    { FB_IMAGE_INDEX_Q2_COLOR_SPEC,        true,  false, false }, //  79  framebufQ2ColorSpec
-    { FB_IMAGE_INDEX_Q2_COLOR,             true,  false, false }, // 117  framebufQ2Color
-    { FB_IMAGE_INDEX_ALBEDO,               false, false, false }, // 124  framebufAlbedo_Sampled
-    { FB_IMAGE_INDEX_IS_SKY,               false, false, false }, // 126  framebufIsSky_Sampled
-    { FB_IMAGE_INDEX_NORMAL,               false, false, false }, // 127  framebufNormal_Sampled
-    { FB_IMAGE_INDEX_METALLIC_ROUGHNESS,   false, false, false }, // 131  framebufMetallicRoughness_Sampled
-    { FB_IMAGE_INDEX_UNFILTERED_DIRECT,    false, false, false }, // 138  framebufUnfilteredDirect_Sampled
-    { FB_IMAGE_INDEX_UNFILTERED_SPECULAR,  false, false, false }, // 139  framebufUnfilteredSpecular_Sampled
-    { FB_IMAGE_INDEX_UNFILTERED_INDIRECT_S_H_R, false, false, false }, // 140  framebufUnfilteredIndirectSH_R_Sampled
-    { FB_IMAGE_INDEX_UNFILTERED_INDIRECT_S_H_G, false, false, false }, // 141  framebufUnfilteredIndirectSH_G_Sampled
-    { FB_IMAGE_INDEX_UNFILTERED_INDIRECT_S_H_B, false, false, false }, // 142  framebufUnfilteredIndirectSH_B_Sampled
-    { FB_IMAGE_INDEX_THROUGHPUT,           false, false, false }, // 150  framebufThroughput_Sampled
-    { FB_IMAGE_INDEX_Q2_TRANSPARENT,       false, false, false }, // 212  framebufQ2Transparent_Sampled
-    { FB_IMAGE_INDEX_Q2_FOG_ACCUM,         false, false, false }, // 214  framebufQ2FogAccum_Sampled
+    { FB_IMAGE_INDEX_Q2_COLOR_L_F_S_H,     true, false }, //  73  framebufQ2ColorLF_SH
+    { FB_IMAGE_INDEX_Q2_COLOR_L_F_C_O_C_G, true, false }, //  75  framebufQ2ColorLF_COCG
+    { FB_IMAGE_INDEX_Q2_COLOR_H_F,         true, false }, //  77  framebufQ2ColorHF
+    { FB_IMAGE_INDEX_Q2_COLOR_SPEC,        true, false }, //  79  framebufQ2ColorSpec
+    { FB_IMAGE_INDEX_Q2_COLOR,             true, false }, // 117  framebufQ2Color
+    { FB_IMAGE_INDEX_ALBEDO,               false, false }, // 124  framebufAlbedo_Sampled
+    { FB_IMAGE_INDEX_IS_SKY,               false, false }, // 126  framebufIsSky_Sampled
+    { FB_IMAGE_INDEX_NORMAL,               false, false }, // 127  framebufNormal_Sampled
+    { FB_IMAGE_INDEX_METALLIC_ROUGHNESS,   false, false }, // 131  framebufMetallicRoughness_Sampled
+    { FB_IMAGE_INDEX_UNFILTERED_DIRECT,    false, false }, // 138  framebufUnfilteredDirect_Sampled
+    { FB_IMAGE_INDEX_UNFILTERED_SPECULAR,  false, false }, // 139  framebufUnfilteredSpecular_Sampled
+    { FB_IMAGE_INDEX_UNFILTERED_INDIRECT_S_H_R, false, false }, // 140  framebufUnfilteredIndirectSH_R_Sampled
+    { FB_IMAGE_INDEX_UNFILTERED_INDIRECT_S_H_G, false, false }, // 141  framebufUnfilteredIndirectSH_G_Sampled
+    { FB_IMAGE_INDEX_UNFILTERED_INDIRECT_S_H_B, false, false }, // 142  framebufUnfilteredIndirectSH_B_Sampled
+    { FB_IMAGE_INDEX_THROUGHPUT,           false, false }, // 150  framebufThroughput_Sampled
+    { FB_IMAGE_INDEX_Q2_TRANSPARENT,       false, false }, // 212  framebufQ2Transparent_Sampled
+    { FB_IMAGE_INDEX_Q2_FOG_ACCUM,         false, false }, // 214  framebufQ2FogAccum_Sampled
 };
 
 // CmQ2GradientImg: 2 storage images and 6 sampled images. The A4.5 pair fix reads
@@ -274,14 +281,14 @@ constexpr ComposeBinding ADAPTER_BINDINGS[ADAPTER_BINDING_COUNT] =
 constexpr uint32_t GRADIENT_IMG_BINDING_COUNT = 8;
 constexpr ComposeBinding GRADIENT_IMG_BINDINGS[GRADIENT_IMG_BINDING_COUNT] =
 {
-    { FB_IMAGE_INDEX_Q2_GRAD_L_F_PING,      true,  false, false }, // 111  framebufQ2GradLFPing
-    { FB_IMAGE_INDEX_Q2_GRAD_H_F_SPEC_PING, true,  false, false }, // 113  framebufQ2GradHFSpecPing
-    { FB_IMAGE_INDEX_MOTION,                false, false, false }, // 137  framebufMotion_Sampled
-    { FB_IMAGE_INDEX_Q2_COLOR_L_F_S_H,      false, false, false }, // 197  framebufQ2ColorLF_SH_Sampled
-    { FB_IMAGE_INDEX_Q2_COLOR_H_F,          false, false, false }, // 201  framebufQ2ColorHF_Sampled
-    { FB_IMAGE_INDEX_Q2_COLOR_SPEC,         false, false, false }, // 203  framebufQ2ColorSpec_Sampled
-    { FB_IMAGE_INDEX_Q2_HIST_COLOR_L_F_S_H_PREV, false, false, false }, // 216 framebufQ2HistColorLF_SH_Prev_Sampled
-    { FB_IMAGE_INDEX_Q2_GRAD_SMPL_POS,      false, false, false }, // 239  framebufQ2GradSmplPos_Sampled
+    { FB_IMAGE_INDEX_Q2_GRAD_L_F_PING,      true, false }, // 111  framebufQ2GradLFPing
+    { FB_IMAGE_INDEX_Q2_GRAD_H_F_SPEC_PING, true, false }, // 113  framebufQ2GradHFSpecPing
+    { FB_IMAGE_INDEX_MOTION,                false, false }, // 137  framebufMotion_Sampled
+    { FB_IMAGE_INDEX_Q2_COLOR_L_F_S_H,      false, false }, // 197  framebufQ2ColorLF_SH_Sampled
+    { FB_IMAGE_INDEX_Q2_COLOR_H_F,          false, false }, // 201  framebufQ2ColorHF_Sampled
+    { FB_IMAGE_INDEX_Q2_COLOR_SPEC,         false, false }, // 203  framebufQ2ColorSpec_Sampled
+    { FB_IMAGE_INDEX_Q2_HIST_COLOR_L_F_S_H_PREV, false, false }, // 216 framebufQ2HistColorLF_SH_Prev_Sampled
+    { FB_IMAGE_INDEX_Q2_GRAD_SMPL_POS,      false, false }, // 239  framebufQ2GradSmplPos_Sampled
 };
 
 // CmQ2GradientAtrous: 4 storage images and no sampled image; the A4.5 pair fix reads all four
@@ -290,10 +297,10 @@ constexpr ComposeBinding GRADIENT_IMG_BINDINGS[GRADIENT_IMG_BINDING_COUNT] =
 constexpr uint32_t GRADIENT_ATROUS_BINDING_COUNT = 4;
 constexpr ComposeBinding GRADIENT_ATROUS_BINDINGS[GRADIENT_ATROUS_BINDING_COUNT] =
 {
-    { FB_IMAGE_INDEX_Q2_GRAD_L_F_PING,      true, false, false }, // 111  framebufQ2GradLFPing
-    { FB_IMAGE_INDEX_Q2_GRAD_L_F_PONG,      true, false, false }, // 112  framebufQ2GradLFPong
-    { FB_IMAGE_INDEX_Q2_GRAD_H_F_SPEC_PING, true, false, false }, // 113  framebufQ2GradHFSpecPing
-    { FB_IMAGE_INDEX_Q2_GRAD_H_F_SPEC_PONG, true, false, false }, // 114  framebufQ2GradHFSpecPong
+    { FB_IMAGE_INDEX_Q2_GRAD_L_F_PING,      true, false }, // 111  framebufQ2GradLFPing
+    { FB_IMAGE_INDEX_Q2_GRAD_L_F_PONG,      true, false }, // 112  framebufQ2GradLFPong
+    { FB_IMAGE_INDEX_Q2_GRAD_H_F_SPEC_PING, true, false }, // 113  framebufQ2GradHFSpecPing
+    { FB_IMAGE_INDEX_Q2_GRAD_H_F_SPEC_PONG, true, false }, // 114  framebufQ2GradHFSpecPong
 };
 
 // CmQ2Temporal: 9 storage images and 21 sampled images; `[numthreads(15, 15, 1)]`. It reads the
@@ -301,36 +308,36 @@ constexpr ComposeBinding GRADIENT_ATROUS_BINDINGS[GRADIENT_ATROUS_BINDING_COUNT]
 constexpr uint32_t TEMPORAL_BINDING_COUNT = 30;
 constexpr ComposeBinding TEMPORAL_BINDINGS[TEMPORAL_BINDING_COUNT] =
 {
-    { FB_IMAGE_INDEX_Q2_HIST_COLOR_L_F_S_H,      true, false, false }, //  91  framebufQ2HistColorLF_SH
-    { FB_IMAGE_INDEX_Q2_HIST_COLOR_L_F_C_O_C_G,  true, false, false }, //  93  framebufQ2HistColorLF_COCG
-    { FB_IMAGE_INDEX_Q2_HIST_MOMENTS_H_F,        true, false, false }, //  97  framebufQ2HistMomentsHF
-    { FB_IMAGE_INDEX_Q2_FILTERED_SPEC,           true, false, false }, //  99  framebufQ2FilteredSpec
-    { FB_IMAGE_INDEX_Q2_ATROUS_PING_L_F_S_H,     true, false, false }, // 101  framebufQ2AtrousPingLF_SH
-    { FB_IMAGE_INDEX_Q2_ATROUS_PING_L_F_C_O_C_G, true, false, false }, // 103  framebufQ2AtrousPingLF_COCG
-    { FB_IMAGE_INDEX_Q2_ATROUS_PING_H_F,         true, false, false }, // 105  framebufQ2AtrousPingHF
-    { FB_IMAGE_INDEX_Q2_ATROUS_PING_SPEC,        true, false, false }, // 107  framebufQ2AtrousPingSpec
-    { FB_IMAGE_INDEX_Q2_ATROUS_PING_MOMENTS,     true, false, false }, // 109  framebufQ2AtrousPingMoments
-    { FB_IMAGE_INDEX_NORMAL,                     false, false, false }, // 127  framebufNormal_Sampled
-    { FB_IMAGE_INDEX_NORMAL_PREV,                false, false, false }, // 128  framebufNormal_Prev_Sampled
-    { FB_IMAGE_INDEX_NORMAL_GEOMETRY,            false, false, false }, // 129  framebufNormalGeometry_Sampled
-    { FB_IMAGE_INDEX_NORMAL_GEOMETRY_PREV,       false, false, false }, // 130  framebufNormalGeometry_Prev_Sampled
-    { FB_IMAGE_INDEX_METALLIC_ROUGHNESS,         false, false, false }, // 131  framebufMetallicRoughness_Sampled
-    { FB_IMAGE_INDEX_DEPTH_GRAD,                 false, false, false }, // 135  framebufDepthGrad_Sampled
-    { FB_IMAGE_INDEX_MOTION,                     false, false, false }, // 137  framebufMotion_Sampled
-    { FB_IMAGE_INDEX_THROUGHPUT,                 false, false, false }, // 150  framebufThroughput_Sampled
-    { FB_IMAGE_INDEX_Q2_COLOR_L_F_S_H,           false, false, false }, // 197  framebufQ2ColorLF_SH_Sampled
-    { FB_IMAGE_INDEX_Q2_COLOR_L_F_C_O_C_G,       false, false, false }, // 199  framebufQ2ColorLF_COCG_Sampled
-    { FB_IMAGE_INDEX_Q2_COLOR_H_F,               false, false, false }, // 201  framebufQ2ColorHF_Sampled
-    { FB_IMAGE_INDEX_Q2_COLOR_SPEC,              false, false, false }, // 203  framebufQ2ColorSpec_Sampled
-    { FB_IMAGE_INDEX_Q2_VIEW_DEPTH,              false, false, false }, // 205  framebufQ2ViewDepth_Sampled
-    { FB_IMAGE_INDEX_Q2_VIEW_DEPTH_PREV,         false, false, false }, // 206  framebufQ2ViewDepth_Prev_Sampled
-    { FB_IMAGE_INDEX_Q2_HIST_COLOR_L_F_S_H_PREV, false, false, false }, // 216  framebufQ2HistColorLF_SH_Prev_Sampled
-    { FB_IMAGE_INDEX_Q2_HIST_COLOR_L_F_C_O_C_G_PREV, false, false, false }, // 218 framebufQ2HistColorLF_COCG_Prev_Sampled
-    { FB_IMAGE_INDEX_Q2_HIST_COLOR_H_F_PREV,     false, false, false }, // 220  framebufQ2HistColorHF_Prev_Sampled
-    { FB_IMAGE_INDEX_Q2_HIST_MOMENTS_H_F_PREV,   false, false, false }, // 222  framebufQ2HistMomentsHF_Prev_Sampled
-    { FB_IMAGE_INDEX_Q2_FILTERED_SPEC_PREV,      false, false, false }, // 224  framebufQ2FilteredSpec_Prev_Sampled
-    { FB_IMAGE_INDEX_Q2_GRAD_L_F_PONG,           false, false, false }, // 236  framebufQ2GradLFPong_Sampled
-    { FB_IMAGE_INDEX_Q2_GRAD_H_F_SPEC_PONG,      false, false, false }, // 238  framebufQ2GradHFSpecPong_Sampled
+    { FB_IMAGE_INDEX_Q2_HIST_COLOR_L_F_S_H,      true, false }, //  91  framebufQ2HistColorLF_SH
+    { FB_IMAGE_INDEX_Q2_HIST_COLOR_L_F_C_O_C_G,  true, false }, //  93  framebufQ2HistColorLF_COCG
+    { FB_IMAGE_INDEX_Q2_HIST_MOMENTS_H_F,        true, false }, //  97  framebufQ2HistMomentsHF
+    { FB_IMAGE_INDEX_Q2_FILTERED_SPEC,           true, false }, //  99  framebufQ2FilteredSpec
+    { FB_IMAGE_INDEX_Q2_ATROUS_PING_L_F_S_H,     true, false }, // 101  framebufQ2AtrousPingLF_SH
+    { FB_IMAGE_INDEX_Q2_ATROUS_PING_L_F_C_O_C_G, true, false }, // 103  framebufQ2AtrousPingLF_COCG
+    { FB_IMAGE_INDEX_Q2_ATROUS_PING_H_F,         true, false }, // 105  framebufQ2AtrousPingHF
+    { FB_IMAGE_INDEX_Q2_ATROUS_PING_SPEC,        true, false }, // 107  framebufQ2AtrousPingSpec
+    { FB_IMAGE_INDEX_Q2_ATROUS_PING_MOMENTS,     true, false }, // 109  framebufQ2AtrousPingMoments
+    { FB_IMAGE_INDEX_NORMAL,                     false, false }, // 127  framebufNormal_Sampled
+    { FB_IMAGE_INDEX_NORMAL_PREV,                false, false }, // 128  framebufNormal_Prev_Sampled
+    { FB_IMAGE_INDEX_NORMAL_GEOMETRY,            false, false }, // 129  framebufNormalGeometry_Sampled
+    { FB_IMAGE_INDEX_NORMAL_GEOMETRY_PREV,       false, false }, // 130  framebufNormalGeometry_Prev_Sampled
+    { FB_IMAGE_INDEX_METALLIC_ROUGHNESS,         false, false }, // 131  framebufMetallicRoughness_Sampled
+    { FB_IMAGE_INDEX_DEPTH_GRAD,                 false, false }, // 135  framebufDepthGrad_Sampled
+    { FB_IMAGE_INDEX_MOTION,                     false, false }, // 137  framebufMotion_Sampled
+    { FB_IMAGE_INDEX_THROUGHPUT,                 false, false }, // 150  framebufThroughput_Sampled
+    { FB_IMAGE_INDEX_Q2_COLOR_L_F_S_H,           false, false }, // 197  framebufQ2ColorLF_SH_Sampled
+    { FB_IMAGE_INDEX_Q2_COLOR_L_F_C_O_C_G,       false, false }, // 199  framebufQ2ColorLF_COCG_Sampled
+    { FB_IMAGE_INDEX_Q2_COLOR_H_F,               false, false }, // 201  framebufQ2ColorHF_Sampled
+    { FB_IMAGE_INDEX_Q2_COLOR_SPEC,              false, false }, // 203  framebufQ2ColorSpec_Sampled
+    { FB_IMAGE_INDEX_Q2_VIEW_DEPTH,              false, false }, // 205  framebufQ2ViewDepth_Sampled
+    { FB_IMAGE_INDEX_Q2_VIEW_DEPTH_PREV,         false, false }, // 206  framebufQ2ViewDepth_Prev_Sampled
+    { FB_IMAGE_INDEX_Q2_HIST_COLOR_L_F_S_H_PREV, false, false }, // 216  framebufQ2HistColorLF_SH_Prev_Sampled
+    { FB_IMAGE_INDEX_Q2_HIST_COLOR_L_F_C_O_C_G_PREV, false, false }, // 218 framebufQ2HistColorLF_COCG_Prev_Sampled
+    { FB_IMAGE_INDEX_Q2_HIST_COLOR_H_F_PREV,     false, false }, // 220  framebufQ2HistColorHF_Prev_Sampled
+    { FB_IMAGE_INDEX_Q2_HIST_MOMENTS_H_F_PREV,   false, false }, // 222  framebufQ2HistMomentsHF_Prev_Sampled
+    { FB_IMAGE_INDEX_Q2_FILTERED_SPEC_PREV,      false, false }, // 224  framebufQ2FilteredSpec_Prev_Sampled
+    { FB_IMAGE_INDEX_Q2_GRAD_L_F_PONG,           false, false }, // 236  framebufQ2GradLFPong_Sampled
+    { FB_IMAGE_INDEX_Q2_GRAD_H_F_SPEC_PONG,      false, false }, // 238  framebufQ2GradHFSpecPong_Sampled
 };
 
 // CmQ2AtrousLF: 4 storage images and 3 sampled images; the A4.5 pair fix reads the ping/pong LF
@@ -339,13 +346,13 @@ constexpr ComposeBinding TEMPORAL_BINDINGS[TEMPORAL_BINDING_COUNT] =
 constexpr uint32_t ATROUS_LF_BINDING_COUNT = 7;
 constexpr ComposeBinding ATROUS_LF_BINDINGS[ATROUS_LF_BINDING_COUNT] =
 {
-    { FB_IMAGE_INDEX_Q2_ATROUS_PING_L_F_S_H,     true, false, false }, // 101  framebufQ2AtrousPingLF_SH
-    { FB_IMAGE_INDEX_Q2_ATROUS_PONG_L_F_S_H,     true, false, false }, // 102  framebufQ2AtrousPongLF_SH
-    { FB_IMAGE_INDEX_Q2_ATROUS_PING_L_F_C_O_C_G, true, false, false }, // 103  framebufQ2AtrousPingLF_COCG
-    { FB_IMAGE_INDEX_Q2_ATROUS_PONG_L_F_C_O_C_G, true, false, false }, // 104  framebufQ2AtrousPongLF_COCG
-    { FB_IMAGE_INDEX_NORMAL_GEOMETRY,            false, false, false }, // 129  framebufNormalGeometry_Sampled
-    { FB_IMAGE_INDEX_DEPTH_GRAD,                 false, false, false }, // 135  framebufDepthGrad_Sampled
-    { FB_IMAGE_INDEX_Q2_VIEW_DEPTH,              false, false, false }, // 205  framebufQ2ViewDepth_Sampled
+    { FB_IMAGE_INDEX_Q2_ATROUS_PING_L_F_S_H,     true, false }, // 101  framebufQ2AtrousPingLF_SH
+    { FB_IMAGE_INDEX_Q2_ATROUS_PONG_L_F_S_H,     true, false }, // 102  framebufQ2AtrousPongLF_SH
+    { FB_IMAGE_INDEX_Q2_ATROUS_PING_L_F_C_O_C_G, true, false }, // 103  framebufQ2AtrousPingLF_COCG
+    { FB_IMAGE_INDEX_Q2_ATROUS_PONG_L_F_C_O_C_G, true, false }, // 104  framebufQ2AtrousPongLF_COCG
+    { FB_IMAGE_INDEX_NORMAL_GEOMETRY,            false, false }, // 129  framebufNormalGeometry_Sampled
+    { FB_IMAGE_INDEX_DEPTH_GRAD,                 false, false }, // 135  framebufDepthGrad_Sampled
+    { FB_IMAGE_INDEX_Q2_VIEW_DEPTH,              false, false }, // 205  framebufQ2ViewDepth_Sampled
 };
 
 // CmQ2Atrous: 8 storage images and 15 sampled images; the A4.5 pair fix reads the HF/SPEC/moments
@@ -355,38 +362,38 @@ constexpr ComposeBinding ATROUS_LF_BINDINGS[ATROUS_LF_BINDING_COUNT] =
 constexpr uint32_t ATROUS_BINDING_COUNT = 23;
 constexpr ComposeBinding ATROUS_BINDINGS[ATROUS_BINDING_COUNT] =
 {
-    { FB_IMAGE_INDEX_Q2_HIST_COLOR_H_F,          true, false, false }, //  95  framebufQ2HistColorHF
-    { FB_IMAGE_INDEX_Q2_ATROUS_PING_H_F,         true, false, false }, // 105  framebufQ2AtrousPingHF
-    { FB_IMAGE_INDEX_Q2_ATROUS_PONG_H_F,         true, false, false }, // 106  framebufQ2AtrousPongHF
-    { FB_IMAGE_INDEX_Q2_ATROUS_PING_SPEC,        true, false, false }, // 107  framebufQ2AtrousPingSpec
-    { FB_IMAGE_INDEX_Q2_ATROUS_PONG_SPEC,        true, false, false }, // 108  framebufQ2AtrousPongSpec
-    { FB_IMAGE_INDEX_Q2_ATROUS_PING_MOMENTS,     true, false, false }, // 109  framebufQ2AtrousPingMoments
-    { FB_IMAGE_INDEX_Q2_ATROUS_PONG_MOMENTS,     true, false, false }, // 110  framebufQ2AtrousPongMoments
-    { FB_IMAGE_INDEX_Q2_COLOR,                   true, false, false }, // 117  framebufQ2Color (iteration 3 composite)
-    { FB_IMAGE_INDEX_ALBEDO,                     false, false, false }, // 124  framebufAlbedo_Sampled
-    { FB_IMAGE_INDEX_IS_SKY,                     false, false, false }, // 126  framebufIsSky_Sampled
-    { FB_IMAGE_INDEX_NORMAL,                     false, false, false }, // 127  framebufNormal_Sampled
-    { FB_IMAGE_INDEX_NORMAL_GEOMETRY,            false, false, false }, // 129  framebufNormalGeometry_Sampled
-    { FB_IMAGE_INDEX_METALLIC_ROUGHNESS,         false, false, false }, // 131  framebufMetallicRoughness_Sampled
-    { FB_IMAGE_INDEX_DEPTH_GRAD,                 false, false, false }, // 135  framebufDepthGrad_Sampled
-    { FB_IMAGE_INDEX_THROUGHPUT,                 false, false, false }, // 150  framebufThroughput_Sampled
-    { FB_IMAGE_INDEX_Q2_VIEW_DEPTH,              false, false, false }, // 205  framebufQ2ViewDepth_Sampled
-    { FB_IMAGE_INDEX_Q2_TRANSPARENT,             false, false, false }, // 212  framebufQ2Transparent_Sampled
-    { FB_IMAGE_INDEX_Q2_FOG_ACCUM,               false, false, false }, // 214  framebufQ2FogAccum_Sampled
-    { FB_IMAGE_INDEX_Q2_HIST_COLOR_L_F_S_H,      false, false, false }, // 215  framebufQ2HistColorLF_SH_Sampled
-    { FB_IMAGE_INDEX_Q2_HIST_COLOR_L_F_C_O_C_G,  false, false, false }, // 217  framebufQ2HistColorLF_COCG_Sampled
-    { FB_IMAGE_INDEX_Q2_HIST_MOMENTS_H_F,        false, false, false }, // 221  framebufQ2HistMomentsHF_Sampled
-    { FB_IMAGE_INDEX_Q2_ATROUS_PING_L_F_S_H,     false, false, false }, // 225  framebufQ2AtrousPingLF_SH_Sampled
-    { FB_IMAGE_INDEX_Q2_ATROUS_PING_L_F_C_O_C_G, false, false, false }, // 227  framebufQ2AtrousPingLF_COCG_Sampled
+    { FB_IMAGE_INDEX_Q2_HIST_COLOR_H_F,          true, false }, //  95  framebufQ2HistColorHF
+    { FB_IMAGE_INDEX_Q2_ATROUS_PING_H_F,         true, false }, // 105  framebufQ2AtrousPingHF
+    { FB_IMAGE_INDEX_Q2_ATROUS_PONG_H_F,         true, false }, // 106  framebufQ2AtrousPongHF
+    { FB_IMAGE_INDEX_Q2_ATROUS_PING_SPEC,        true, false }, // 107  framebufQ2AtrousPingSpec
+    { FB_IMAGE_INDEX_Q2_ATROUS_PONG_SPEC,        true, false }, // 108  framebufQ2AtrousPongSpec
+    { FB_IMAGE_INDEX_Q2_ATROUS_PING_MOMENTS,     true, false }, // 109  framebufQ2AtrousPingMoments
+    { FB_IMAGE_INDEX_Q2_ATROUS_PONG_MOMENTS,     true, false }, // 110  framebufQ2AtrousPongMoments
+    { FB_IMAGE_INDEX_Q2_COLOR,                   true, false }, // 117  framebufQ2Color (iteration 3 composite)
+    { FB_IMAGE_INDEX_ALBEDO,                     false, false }, // 124  framebufAlbedo_Sampled
+    { FB_IMAGE_INDEX_IS_SKY,                     false, false }, // 126  framebufIsSky_Sampled
+    { FB_IMAGE_INDEX_NORMAL,                     false, false }, // 127  framebufNormal_Sampled
+    { FB_IMAGE_INDEX_NORMAL_GEOMETRY,            false, false }, // 129  framebufNormalGeometry_Sampled
+    { FB_IMAGE_INDEX_METALLIC_ROUGHNESS,         false, false }, // 131  framebufMetallicRoughness_Sampled
+    { FB_IMAGE_INDEX_DEPTH_GRAD,                 false, false }, // 135  framebufDepthGrad_Sampled
+    { FB_IMAGE_INDEX_THROUGHPUT,                 false, false }, // 150  framebufThroughput_Sampled
+    { FB_IMAGE_INDEX_Q2_VIEW_DEPTH,              false, false }, // 205  framebufQ2ViewDepth_Sampled
+    { FB_IMAGE_INDEX_Q2_TRANSPARENT,             false, false }, // 212  framebufQ2Transparent_Sampled
+    { FB_IMAGE_INDEX_Q2_FOG_ACCUM,               false, false }, // 214  framebufQ2FogAccum_Sampled
+    { FB_IMAGE_INDEX_Q2_HIST_COLOR_L_F_S_H,      false, false }, // 215  framebufQ2HistColorLF_SH_Sampled
+    { FB_IMAGE_INDEX_Q2_HIST_COLOR_L_F_C_O_C_G,  false, false }, // 217  framebufQ2HistColorLF_COCG_Sampled
+    { FB_IMAGE_INDEX_Q2_HIST_MOMENTS_H_F,        false, false }, // 221  framebufQ2HistMomentsHF_Sampled
+    { FB_IMAGE_INDEX_Q2_ATROUS_PING_L_F_S_H,     false, false }, // 225  framebufQ2AtrousPingLF_SH_Sampled
+    { FB_IMAGE_INDEX_Q2_ATROUS_PING_L_F_C_O_C_G, false, false }, // 227  framebufQ2AtrousPingLF_COCG_Sampled
 };
 
 // CmQ2Interleave: 1 storage image and 2 sampled images.
 constexpr uint32_t INTERLEAVE_BINDING_COUNT = 3;
 constexpr ComposeBinding INTERLEAVE_BINDINGS[INTERLEAVE_BINDING_COUNT] =
 {
-    { FB_IMAGE_INDEX_PRE_FINAL, true,  false, false }, //  27  framebufPreFinal
-    { FB_IMAGE_INDEX_THROUGHPUT, false, false, false }, // 150  framebufThroughput_Sampled
-    { FB_IMAGE_INDEX_Q2_COLOR,  false, false, false }, // 241  framebufQ2Color_Sampled
+    { FB_IMAGE_INDEX_PRE_FINAL, true, false }, //  27  framebufPreFinal
+    { FB_IMAGE_INDEX_THROUGHPUT, false, false }, // 150  framebufThroughput_Sampled
+    { FB_IMAGE_INDEX_Q2_COLOR,  false, false }, // 241  framebufQ2Color_Sampled
 };
 
 // CmLuminanceHistogram: 1 sampled image and no storage image - the exposure histogram only reads
@@ -394,20 +401,20 @@ constexpr ComposeBinding INTERLEAVE_BINDINGS[INTERLEAVE_BINDING_COUNT] =
 constexpr uint32_t HISTOGRAM_BINDING_COUNT = 1;
 constexpr ComposeBinding HISTOGRAM_BINDINGS[HISTOGRAM_BINDING_COUNT] =
 {
-    { FB_IMAGE_INDEX_PRE_FINAL, false, false, false }, // 151  framebufPreFinal_Sampled
+    { FB_IMAGE_INDEX_PRE_FINAL, false, false }, // 151  framebufPreFinal_Sampled
 };
 
 // CmCheckerboard: 3 storage images and 4 sampled images.
 constexpr uint32_t CHECKERBOARD_BINDING_COUNT = 7;
 constexpr ComposeBinding CHECKERBOARD_BINDINGS[CHECKERBOARD_BINDING_COUNT] =
 {
-    { FB_IMAGE_INDEX_FINAL,            true,  false, false }, //  28  framebufFinal
-    { FB_IMAGE_INDEX_ACID_FOG,         true,  false, false }, //  60  framebufAcidFog
-    { FB_IMAGE_INDEX_SCREEN_EMISSION,  true,  false, false }, //  62  framebufScreenEmission
-    { FB_IMAGE_INDEX_THROUGHPUT,       false, false, false }, // 150  framebufThroughput_Sampled
-    { FB_IMAGE_INDEX_PRE_FINAL,        false, false, false }, // 151  framebufPreFinal_Sampled
-    { FB_IMAGE_INDEX_ACID_FOG_R_T,     false, false, false }, // 183  framebufAcidFogRT_Sampled
-    { FB_IMAGE_INDEX_SCREEN_EMIS_R_T,  false, false, false }, // 185  framebufScreenEmisRT_Sampled
+    { FB_IMAGE_INDEX_FINAL,            true, false }, //  28  framebufFinal
+    { FB_IMAGE_INDEX_ACID_FOG,         true, false }, //  60  framebufAcidFog
+    { FB_IMAGE_INDEX_SCREEN_EMISSION,  true, false }, //  62  framebufScreenEmission
+    { FB_IMAGE_INDEX_THROUGHPUT,       false, false }, // 150  framebufThroughput_Sampled
+    { FB_IMAGE_INDEX_PRE_FINAL,        false, false }, // 151  framebufPreFinal_Sampled
+    { FB_IMAGE_INDEX_ACID_FOG_R_T,     false, false }, // 183  framebufAcidFogRT_Sampled
+    { FB_IMAGE_INDEX_SCREEN_EMIS_R_T,  false, false }, // 185  framebufScreenEmisRT_Sampled
 };
 
 // CmPrepareFinal: 5 storage images and 11 sampled images (measured: 17 set-0 items in the shipped
@@ -415,29 +422,27 @@ constexpr ComposeBinding CHECKERBOARD_BINDINGS[CHECKERBOARD_BINDING_COUNT] =
 // the class comment). Unlike the other four tables the UAVs come last: if a future edit ever binds
 // one image both ways in this set, the last requirement applied would be the UAV's and the image
 // would end the chain in GENERAL, which the engine's convention and the next frame's writes need;
-// today no image is bound both ways here. The god-rays entry binds the module's zero stand-in
-// instead of the engine image 64 (the A4.2b zero-texture mechanism): the image has no writer under
-// `rhiframe` and the engine leaves the framebuffer images undefined, so binding it would add stale
-// light to every frame.
+// today no image is bound both ways here. The god-rays entry is the real union image 64, written by
+// the god-rays filter before this module records (raw 188, `framebufGodRaysFiltered_Sampled`).
 constexpr uint32_t PREPARE_FINAL_BINDING_COUNT = 16;
 constexpr ComposeBinding PREPARE_FINAL_BINDINGS[PREPARE_FINAL_BINDING_COUNT] =
 {
-    { FB_IMAGE_INDEX_ALBEDO,               false, false, false }, // 124  framebufAlbedo_Sampled
-    { FB_IMAGE_INDEX_NORMAL,               false, false, false }, // 127  framebufNormal_Sampled
-    { FB_IMAGE_INDEX_DEPTH_WORLD,          false, false, false }, // 133  framebufDepthWorld_Sampled
-    { FB_IMAGE_INDEX_MOTION,               false, false, false }, // 137  framebufMotion_Sampled
-    { FB_IMAGE_INDEX_UNFILTERED_DIRECT,    false, false, false }, // 138  framebufUnfilteredDirect_Sampled
-    { FB_IMAGE_INDEX_UNFILTERED_SPECULAR,  false, false, false }, // 139  framebufUnfilteredSpecular_Sampled
-    { FB_IMAGE_INDEX_PRIMARY_TO_REFL_REFR, false, false, false }, // 149  framebufPrimaryToReflRefr_Sampled
-    { FB_IMAGE_INDEX_THROUGHPUT,           false, false, false }, // 150  framebufThroughput_Sampled
-    { FB_IMAGE_INDEX_ACID_FOG,             false, false, false }, // 184  framebufAcidFog_Sampled
-    { FB_IMAGE_INDEX_SCREEN_EMISSION,      false, false, false }, // 186  framebufScreenEmission_Sampled
-    { FB_IMAGE_INDEX_GOD_RAYS_FILTERED,    false, true,  false }, // 188  framebufGodRaysFiltered_Sampled -> zero stand-in
-    { FB_IMAGE_INDEX_UNFILTERED_INDIRECT_S_H_R, true, false, false }, //  16  framebufUnfilteredIndirectSH_R
-    { FB_IMAGE_INDEX_UNFILTERED_INDIRECT_S_H_G, true, false, false }, //  17  framebufUnfilteredIndirectSH_G
-    { FB_IMAGE_INDEX_UNFILTERED_INDIRECT_S_H_B, true, false, false }, //  18  framebufUnfilteredIndirectSH_B
-    { FB_IMAGE_INDEX_FINAL,                true,  false, false }, //  28  framebufFinal
-    { FB_IMAGE_INDEX_BLOOM_INPUT,          true,  false, false }, //  65  framebufBloomInput
+    { FB_IMAGE_INDEX_ALBEDO,               false, false }, // 124  framebufAlbedo_Sampled
+    { FB_IMAGE_INDEX_NORMAL,               false, false }, // 127  framebufNormal_Sampled
+    { FB_IMAGE_INDEX_DEPTH_WORLD,          false, false }, // 133  framebufDepthWorld_Sampled
+    { FB_IMAGE_INDEX_MOTION,               false, false }, // 137  framebufMotion_Sampled
+    { FB_IMAGE_INDEX_UNFILTERED_DIRECT,    false, false }, // 138  framebufUnfilteredDirect_Sampled
+    { FB_IMAGE_INDEX_UNFILTERED_SPECULAR,  false, false }, // 139  framebufUnfilteredSpecular_Sampled
+    { FB_IMAGE_INDEX_PRIMARY_TO_REFL_REFR, false, false }, // 149  framebufPrimaryToReflRefr_Sampled
+    { FB_IMAGE_INDEX_THROUGHPUT,           false, false }, // 150  framebufThroughput_Sampled
+    { FB_IMAGE_INDEX_ACID_FOG,             false, false }, // 184  framebufAcidFog_Sampled
+    { FB_IMAGE_INDEX_SCREEN_EMISSION,      false, false }, // 186  framebufScreenEmission_Sampled
+    { FB_IMAGE_INDEX_GOD_RAYS_FILTERED,    false, false }, // 188  framebufGodRaysFiltered_Sampled
+    { FB_IMAGE_INDEX_UNFILTERED_INDIRECT_S_H_R, true, false }, //  16  framebufUnfilteredIndirectSH_R
+    { FB_IMAGE_INDEX_UNFILTERED_INDIRECT_S_H_G, true, false }, //  17  framebufUnfilteredIndirectSH_G
+    { FB_IMAGE_INDEX_UNFILTERED_INDIRECT_S_H_B, true, false }, //  18  framebufUnfilteredIndirectSH_B
+    { FB_IMAGE_INDEX_FINAL,                true, false }, //  28  framebufFinal
+    { FB_IMAGE_INDEX_BLOOM_INPUT,          true, false }, //  65  framebufBloomInput
 };
 
 // CmQ2TAAU: 2 storage images, 3 sampled images and the game's sampler for the history (image 120,
@@ -445,12 +450,12 @@ constexpr ComposeBinding PREPARE_FINAL_BINDINGS[PREPARE_FINAL_BINDING_COUNT] =
 constexpr uint32_t TAAU_BINDING_COUNT = 6;
 constexpr ComposeBinding TAAU_BINDINGS[TAAU_BINDING_COUNT] =
 {
-    { FB_IMAGE_INDEX_UPSCALED_PING,       true,  false, false }, //  29  framebufUpscaledPing
-    { FB_IMAGE_INDEX_Q2_TAA_HISTORY,      true,  false, false }, // 119  framebufQ2TaaHistory
-    { FB_IMAGE_INDEX_FINAL,               false, false, false }, // 152  framebufFinal_Sampled
-    { FB_IMAGE_INDEX_MOTION_DLSS,         false, false, false }, // 155  framebufMotionDlss_Sampled
-    { FB_IMAGE_INDEX_Q2_TAA_HISTORY_PREV, false, false, false }, // 244  framebufQ2TaaHistory_Prev_Sampled
-    { FB_IMAGE_INDEX_Q2_TAA_HISTORY_PREV, false, false, true  }, // 368  framebufQ2TaaHistory_Prev_Sampler
+    { FB_IMAGE_INDEX_UPSCALED_PING,       true, false }, //  29  framebufUpscaledPing
+    { FB_IMAGE_INDEX_Q2_TAA_HISTORY,      true, false }, // 119  framebufQ2TaaHistory
+    { FB_IMAGE_INDEX_FINAL,               false, false }, // 152  framebufFinal_Sampled
+    { FB_IMAGE_INDEX_MOTION_DLSS,         false, false }, // 155  framebufMotionDlss_Sampled
+    { FB_IMAGE_INDEX_Q2_TAA_HISTORY_PREV, false, false }, // 244  framebufQ2TaaHistory_Prev_Sampled
+    { FB_IMAGE_INDEX_Q2_TAA_HISTORY_PREV, false, true  }, // 368  framebufQ2TaaHistory_Prev_Sampler
 };
 
 // The engine raw binding of one entry: the storage-image array for the UAVs, the sampled array for
@@ -481,8 +486,8 @@ uint32_t GetComposeSlot(const ComposeBinding &binding)
 
 constexpr uint32_t COMPOSE_IMAGE_NONE = COMPOSE_IMAGE_COUNT;
 
-// The union-table position of an engine image, or COMPOSE_IMAGE_NONE when the image is not wrapped
-// by the module (which is legal only for the god-rays stand-in entry).
+// The union-table position of an engine image, or COMPOSE_IMAGE_NONE when the image is not part of
+// the union (which the tables' static assertions rule out for every binding).
 constexpr uint32_t FindComposeImage(FramebufferImageIndex image)
 {
     for (uint32_t i = 0; i < COMPOSE_IMAGE_COUNT; i++)
@@ -505,6 +510,9 @@ VkExtent2D GetComposeImageExtent(const ComposeImage &entry,
 {
     switch (entry.size)
     {
+        case ComposeImageSize::Half:
+            return {std::max(1u, (width + 1) / 2), std::max(1u, (height + 1) / 2)};
+
         case ComposeImageSize::Third:
             return {std::max(1u, (width + 1) / COMPOSE_STRATA_SIZE),
                     std::max(1u, (height + 1) / COMPOSE_STRATA_SIZE)};
@@ -519,9 +527,8 @@ VkExtent2D GetComposeImageExtent(const ComposeImage &entry,
 }
 
 // The twelve pass tables have to agree with the union table item by item: every engine-bound entry
-// has to resolve to an image the module wraps, and the stand-in entry has to be the one binding
-// over the one image that is deliberately not wrapped. The static assertion below runs at compile
-// time, so a hand-edited table cannot produce a half-filled binding set at run time.
+// has to resolve to an image the module wraps. The static assertion below runs at compile time, so
+// a hand-edited table cannot produce a half-filled binding set at run time.
 constexpr bool ComposeTablesAreConsistent()
 {
     const ComposeBinding *const tables[] =
@@ -559,19 +566,7 @@ constexpr bool ComposeTablesAreConsistent()
     {
         for (uint32_t i = 0; i < counts[table]; i++)
         {
-            const bool wrapped = FindComposeImage(tables[table][i].image) != COMPOSE_IMAGE_NONE;
-
-            if (tables[table][i].isGodRaysStandIn)
-            {
-                // The substitute replaces exactly one sampled read of image 64, the god-rays
-                // filtered image the module does not wrap. Any other stand-in entry is a bug.
-                if (wrapped || tables[table][i].isUAV || tables[table][i].isSampler ||
-                    tables[table][i].image != FB_IMAGE_INDEX_GOD_RAYS_FILTERED)
-                {
-                    return false;
-                }
-            }
-            else if (!wrapped)
+            if (FindComposeImage(tables[table][i].image) == COMPOSE_IMAGE_NONE)
             {
                 return false;
             }
@@ -597,21 +592,25 @@ constexpr bool AreComposeImagesDistinct()
     return true;
 }
 
-// The images whose last use on the list was a sampled read, per path. The pass that reads an image
-// last decides its state: NVRHI moves every sampled image of a bound set to
-// VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL (vulkan-resource-bindings.cpp:398-435) and applies the
-// requirements of every binding item, used by the shader or not
+// The images whose last use on the list was a sampled read, per path, plus the god-rays hand-off.
+// The pass that reads an image last decides its state: NVRHI moves every sampled image of a bound
+// set to VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL (vulkan-resource-bindings.cpp:398-435) and
+// applies the requirements of every binding item, used by the shader or not
 // (vulkan-state-tracking.cpp:29-63). The engine leaves every framebuffer image in
 // VK_IMAGE_LAYOUT_GENERAL (= UnorderedAccess) and the next frame's passes write or sample through
 // their own wraps, so each entry point has to move its own sampled reads back to UnorderedAccess
 // (the class comment's state discipline). An image bound only as a storage image ends in GENERAL
 // already and is not listed.
 //
-// The unfiltered path is A4.4's 18-image list, unchanged. The filtered path adds the images the
-// ASVGF chain reads last: the `_PREV` histories and the reproject's sampled inputs, the temporal
-// and a-trous SRVs, and the adapter's four channel UAVs (73/75/77/79), which the temporal pass
-// reads as sampled images after the adapter wrote them as storage images.
-constexpr uint32_t COMPOSE_RESTORE_COUNT = 18;
+// The unfiltered path is A4.4's 18-image list plus the three god-rays images below. The filtered
+// path adds the images the ASVGF chain reads last: the `_PREV` histories and the reproject's
+// sampled inputs, the temporal and a-trous SRVs, and the adapter's four channel UAVs (73/75/77/79),
+// which the temporal pass reads as sampled images after the adapter wrote them as storage images.
+// The god-rays images are in both lists: 64 is sampled by the final composition in either path, so
+// it is the image this module really moves to read-only and has to move back; 63/89 are bound by no
+// compose set, and their requirement is a same-state UnorderedAccess barrier that names the
+// god-rays module's hand-off (the class comment's contract), not a transition.
+constexpr uint32_t COMPOSE_RESTORE_COUNT = 21;
 constexpr FramebufferImageIndex COMPOSE_RESTORE_IMAGES[COMPOSE_RESTORE_COUNT] =
 {
     FB_IMAGE_INDEX_ALBEDO,
@@ -629,12 +628,15 @@ constexpr FramebufferImageIndex COMPOSE_RESTORE_IMAGES[COMPOSE_RESTORE_COUNT] =
     FB_IMAGE_INDEX_ACID_FOG,
     FB_IMAGE_INDEX_SCREEN_EMIS_R_T,
     FB_IMAGE_INDEX_SCREEN_EMISSION,
+    FB_IMAGE_INDEX_GOD_RAYS,
+    FB_IMAGE_INDEX_GOD_RAYS_FILTERED,
     FB_IMAGE_INDEX_Q2_TRANSPARENT,
+    FB_IMAGE_INDEX_Q2_GOD_RAYS_THROUGHPUT_DIST,
     FB_IMAGE_INDEX_Q2_FOG_ACCUM,
     FB_IMAGE_INDEX_Q2_COLOR,
 };
 
-constexpr uint32_t CHAIN_RESTORE_COUNT = 51;
+constexpr uint32_t CHAIN_RESTORE_COUNT = 54;
 constexpr FramebufferImageIndex CHAIN_RESTORE_IMAGES[CHAIN_RESTORE_COUNT] =
 {
     FB_IMAGE_INDEX_ALBEDO,
@@ -660,6 +662,8 @@ constexpr FramebufferImageIndex CHAIN_RESTORE_IMAGES[CHAIN_RESTORE_COUNT] =
     FB_IMAGE_INDEX_ACID_FOG,
     FB_IMAGE_INDEX_SCREEN_EMIS_R_T,
     FB_IMAGE_INDEX_SCREEN_EMISSION,
+    FB_IMAGE_INDEX_GOD_RAYS,
+    FB_IMAGE_INDEX_GOD_RAYS_FILTERED,
     FB_IMAGE_INDEX_Q2_COLOR_L_F_S_H,
     FB_IMAGE_INDEX_Q2_COLOR_L_F_C_O_C_G,
     FB_IMAGE_INDEX_Q2_COLOR_H_F,
@@ -671,6 +675,7 @@ constexpr FramebufferImageIndex CHAIN_RESTORE_IMAGES[CHAIN_RESTORE_COUNT] =
     FB_IMAGE_INDEX_Q2_BASE_COLOR_PREV,
     FB_IMAGE_INDEX_Q2_METALLIC_PREV,
     FB_IMAGE_INDEX_Q2_TRANSPARENT,
+    FB_IMAGE_INDEX_Q2_GOD_RAYS_THROUGHPUT_DIST,
     FB_IMAGE_INDEX_Q2_FOG_ACCUM,
     FB_IMAGE_INDEX_Q2_HIST_COLOR_L_F_S_H,
     FB_IMAGE_INDEX_Q2_HIST_COLOR_L_F_S_H_PREV,
@@ -789,7 +794,7 @@ constexpr bool AreRestoreImagesWrapped()
 }
 
 static_assert(ComposeTablesAreConsistent(),
-              "every compose binding has to resolve to a union image or be the god-rays stand-in");
+              "every compose binding has to resolve to a union image");
 static_assert(AreComposeImagesDistinct(), "the compose image union must not repeat an image");
 static_assert(AreRestoreImagesWrapped(), "every restored image has to be in the compose image union");
 
@@ -866,14 +871,12 @@ nvrhi::ComputePipelineHandle CreateComposePipeline(nvrhi::IDevice *device,
 }
 
 // The set over one exact layout. Every engine-bound entry takes the slot's wrap of that image; the
-// stand-in entry takes the module's god-rays zero texture; the sampler entry takes the module's
-// TAAU history sampler. Returns null when an entry cannot be filled, which the module's static
-// assertions and the Render-time stand-in check make unreachable for the shipped tables.
+// sampler entry takes the module's TAAU history sampler. Returns null when an entry cannot be
+// filled, which the module's static assertions make unreachable for the shipped tables.
 nvrhi::BindingSetHandle CreateFramebufferSet(nvrhi::IDevice *device,
                                              const ComposeBinding *pBindings,
                                              uint32_t count,
                                              const nvrhi::TextureHandle *pEngineTextures,
-                                             nvrhi::ITexture *pGodRaysStandIn,
                                              nvrhi::ISampler *pSampler,
                                              nvrhi::IBindingLayout *pLayout)
 {
@@ -897,17 +900,9 @@ nvrhi::BindingSetHandle CreateFramebufferSet(nvrhi::IDevice *device,
             continue;
         }
 
-        nvrhi::ITexture *texture = nullptr;
-
-        if (pBindings[i].isGodRaysStandIn)
-        {
-            texture = pGodRaysStandIn;
-        }
-        else
-        {
-            const uint32_t imageSlot = FindComposeImage(pBindings[i].image);
-            texture = imageSlot != COMPOSE_IMAGE_NONE ? pEngineTextures[imageSlot].Get() : nullptr;
-        }
+        const uint32_t imageSlot = FindComposeImage(pBindings[i].image);
+        nvrhi::ITexture *texture =
+            imageSlot != COMPOSE_IMAGE_NONE ? pEngineTextures[imageSlot].Get() : nullptr;
 
         if (texture == nullptr)
         {
@@ -981,10 +976,6 @@ RhiRtComposePass::~RhiRtComposePass()
         tonemappingSrvSets[i] = nullptr;
         tonemappingBuffers[i] = nullptr;
     }
-
-    godRaysZeroTexture = nullptr;
-    godRaysZeroWidth = 0;
-    godRaysZeroHeight = 0;
 
     volumetricSet = nullptr;
     emptySet = nullptr;
@@ -1202,8 +1193,8 @@ bool RhiRtComposePass::Create(nvrhi::IDevice *pDevice,
     // Set 4: the sampled volumetric volume at raw binding 1 and its sampler at raw binding 2
     // (measured: `OpDecorate %g_volumetric_Sampled DescriptorSet 4 / Binding 1`, `Texture3D<float4>`
     // rgba16f, and `%g_volumetric_Sampler` at raw 2). The sampler offset of 0 keeps the slot as the
-    // raw binding. The read is dead at runtime (see the zero stand-in below), so the module binds a
-    // 1x1x1 dummy instead of the engine's 160x88x64 image.
+    // raw binding. The read is dead at runtime (see the volumetric dummy below), so the module binds
+    // a 1x1x1 dummy instead of the engine's 160x88x64 image.
     {
         nvrhi::BindingLayoutDesc desc;
         desc.visibility = nvrhi::ShaderType::Compute;
@@ -1496,7 +1487,7 @@ RhiRtComposePass::Target *RhiRtComposePass::PrepareFrame(nvrhi::ICommandList *pC
 
     Target &target = targets[frameIndex];
 
-    // The 77 images of this slot. `GetImageHandles` resolves the engine's ping-pong and history-role
+    // The 80 images of this slot. `GetImageHandles` resolves the engine's ping-pong and history-role
     // swap (Framebuffers.cpp:33-53), so the handle of a `_Prev`-paired variable is the slot's
     // current image, which is the one the engine's own per-slot descriptor set binds to the
     // variable's fixed raw binding - the shader never sees the swap. The 4-tuple overload supplies
@@ -1588,14 +1579,6 @@ RhiRtComposePass::Target *RhiRtComposePass::PrepareFrame(nvrhi::ICommandList *pC
         target.upscaledHeight = upscaledHeight;
     }
 
-    // The stand-in for image 64, before the sets that bind it. It is created and cleared on this
-    // list when it is new or the resolution changed; a replacement retires both slots' framebuffer
-    // sets, because the prepare-final set references the old texture.
-    if (!PrepareGodRaysStandIn(pCommandList, width, height))
-    {
-        return nullptr;
-    }
-
     if (!PrepareFramebufferSets(target) || !PrepareUniformSet(target, pUniformBuffer))
     {
         return nullptr;
@@ -1608,11 +1591,12 @@ void RhiRtComposePass::AnnounceFrameImages(nvrhi::ICommandList *pCommandList, co
 {
     // The image state contract, spelled out on the class: the engine leaves every framebuffer image
     // in VK_IMAGE_LAYOUT_GENERAL - NVRHI's UnorderedAccess - and this native wrap keeps no state
-    // between command lists (RhiTextureSource.h), so every list announces that state for all 77
-    // images before the first use. The primary, direct and indirect passes wrote or read some of
-    // them on this very list through their own wraps; the physical layout they left them in is
-    // exactly this GENERAL state, so the announcement is the truth and the SRV/UAV bindings'
-    // automatic transitions start from it.
+    // between command lists (RhiTextureSource.h), so every list announces that state for all 80
+    // images before the first use. The primary, direct, indirect and god-rays passes wrote or read
+    // some of them on this very list through their own wraps; the physical layout they left them in
+    // is exactly this GENERAL state - the god-rays module restores its sampled reads like every
+    // other pass does (the class comment's hand-off contract) - so the announcement is the truth
+    // and the SRV/UAV bindings' automatic transitions start from it.
     for (uint32_t i = 0; i < COMPOSE_IMAGE_COUNT; i++)
     {
         pCommandList->beginTrackingTextureState(
@@ -1786,9 +1770,11 @@ void RhiRtComposePass::Render(nvrhi::ICommandList *pCommandList,
     // The images whose last use was a sampled read rest in the read-only layout now; move them back
     // to UnorderedAccess, the engine's GENERAL, so the next frame's passes start from the state
     // their own announcements claim and their UAV writes are legal. The unfiltered path restores
-    // A4.4's list (which includes 27 and 117: without them the next frame's interleave and adapter
-    // UAV writes would run against a read-only image); the filtered path restores the chain's list
-    // as well.
+    // A4.4's list plus the god-rays images (which includes 27 and 117: without them the next
+    // frame's interleave and adapter UAV writes would run against a read-only image); the filtered
+    // path restores the chain's list as well. 64 is the god-rays image this module samples; 63/89
+    // end in a same-state requirement that only names the god-rays module's hand-off (the restore
+    // lists' comment).
     if (filterEnabled)
     {
         for (uint32_t i = 0; i < CHAIN_RESTORE_COUNT; i++)
@@ -1912,9 +1898,8 @@ void RhiRtComposePass::ReleaseTargets()
 void RhiRtComposePass::ReleaseFramebufferSets(Target &target)
 {
     // Anything a recorded list may still reference has to go through the frame context's retire
-    // queue: the sets reference the wraps of engine images (and the god-rays stand-in) the GPU may
-    // still be reading. The queue takes its reference now, so the handles below can be cleared
-    // immediately.
+    // queue: the sets reference the wraps of engine images the GPU may still be reading. The queue
+    // takes its reference now, so the handles below can be cleared immediately.
     if (frameContext != nullptr)
     {
         if (target.gradientReprojectSet != nullptr)
@@ -2023,14 +2008,13 @@ void RhiRtComposePass::ReleaseTarget(Target &target)
 
 bool RhiRtComposePass::PrepareFramebufferSets(Target &target)
 {
-    nvrhi::ITexture *const godRaysStandIn = godRaysZeroTexture.Get();
     nvrhi::ISampler *const taauSampler = taauHistorySampler.Get();
 
     if (target.gradientReprojectSet == nullptr)
     {
         target.gradientReprojectSet = CreateFramebufferSet(
             device, GRADIENT_REPROJECT_BINDINGS, GRADIENT_REPROJECT_BINDING_COUNT,
-            target.engineTextures, nullptr, nullptr, gradientReprojectFramebufferLayout);
+            target.engineTextures, nullptr, gradientReprojectFramebufferLayout);
 
         if (target.gradientReprojectSet == nullptr)
         {
@@ -2046,7 +2030,7 @@ bool RhiRtComposePass::PrepareFramebufferSets(Target &target)
     if (target.adapterSet == nullptr)
     {
         target.adapterSet = CreateFramebufferSet(device, ADAPTER_BINDINGS, ADAPTER_BINDING_COUNT,
-                                                 target.engineTextures, nullptr, nullptr,
+                                                 target.engineTextures, nullptr,
                                                  adapterFramebufferLayout);
 
         if (target.adapterSet == nullptr)
@@ -2063,7 +2047,7 @@ bool RhiRtComposePass::PrepareFramebufferSets(Target &target)
     if (target.gradientImgSet == nullptr)
     {
         target.gradientImgSet = CreateFramebufferSet(device, GRADIENT_IMG_BINDINGS, GRADIENT_IMG_BINDING_COUNT,
-                                                     target.engineTextures, nullptr, nullptr,
+                                                     target.engineTextures, nullptr,
                                                      gradientImgFramebufferLayout);
 
         if (target.gradientImgSet == nullptr)
@@ -2080,7 +2064,7 @@ bool RhiRtComposePass::PrepareFramebufferSets(Target &target)
     if (target.gradientAtrousSet == nullptr)
     {
         target.gradientAtrousSet = CreateFramebufferSet(device, GRADIENT_ATROUS_BINDINGS, GRADIENT_ATROUS_BINDING_COUNT,
-                                                        target.engineTextures, nullptr, nullptr,
+                                                        target.engineTextures, nullptr,
                                                         gradientAtrousFramebufferLayout);
 
         if (target.gradientAtrousSet == nullptr)
@@ -2097,7 +2081,7 @@ bool RhiRtComposePass::PrepareFramebufferSets(Target &target)
     if (target.temporalSet == nullptr)
     {
         target.temporalSet = CreateFramebufferSet(device, TEMPORAL_BINDINGS, TEMPORAL_BINDING_COUNT,
-                                                  target.engineTextures, nullptr, nullptr,
+                                                  target.engineTextures, nullptr,
                                                   temporalFramebufferLayout);
 
         if (target.temporalSet == nullptr)
@@ -2114,7 +2098,7 @@ bool RhiRtComposePass::PrepareFramebufferSets(Target &target)
     if (target.atrousLfSet == nullptr)
     {
         target.atrousLfSet = CreateFramebufferSet(device, ATROUS_LF_BINDINGS, ATROUS_LF_BINDING_COUNT,
-                                                  target.engineTextures, nullptr, nullptr,
+                                                  target.engineTextures, nullptr,
                                                   atrousLfFramebufferLayout);
 
         if (target.atrousLfSet == nullptr)
@@ -2131,7 +2115,7 @@ bool RhiRtComposePass::PrepareFramebufferSets(Target &target)
     if (target.atrousSet == nullptr)
     {
         target.atrousSet = CreateFramebufferSet(device, ATROUS_BINDINGS, ATROUS_BINDING_COUNT,
-                                                target.engineTextures, nullptr, nullptr,
+                                                target.engineTextures, nullptr,
                                                 atrousFramebufferLayout);
 
         if (target.atrousSet == nullptr)
@@ -2148,7 +2132,7 @@ bool RhiRtComposePass::PrepareFramebufferSets(Target &target)
     if (target.interleaveSet == nullptr)
     {
         target.interleaveSet = CreateFramebufferSet(device, INTERLEAVE_BINDINGS, INTERLEAVE_BINDING_COUNT,
-                                                    target.engineTextures, nullptr, nullptr,
+                                                    target.engineTextures, nullptr,
                                                     interleaveFramebufferLayout);
 
         if (target.interleaveSet == nullptr)
@@ -2165,7 +2149,7 @@ bool RhiRtComposePass::PrepareFramebufferSets(Target &target)
     if (target.histogramSet == nullptr)
     {
         target.histogramSet = CreateFramebufferSet(device, HISTOGRAM_BINDINGS, HISTOGRAM_BINDING_COUNT,
-                                                   target.engineTextures, nullptr, nullptr,
+                                                   target.engineTextures, nullptr,
                                                    histogramFramebufferLayout);
 
         if (target.histogramSet == nullptr)
@@ -2182,7 +2166,7 @@ bool RhiRtComposePass::PrepareFramebufferSets(Target &target)
     if (target.checkerboardSet == nullptr)
     {
         target.checkerboardSet = CreateFramebufferSet(device, CHECKERBOARD_BINDINGS, CHECKERBOARD_BINDING_COUNT,
-                                                      target.engineTextures, nullptr, nullptr,
+                                                      target.engineTextures, nullptr,
                                                       checkerboardFramebufferLayout);
 
         if (target.checkerboardSet == nullptr)
@@ -2199,8 +2183,7 @@ bool RhiRtComposePass::PrepareFramebufferSets(Target &target)
     if (target.prepareFinalSet == nullptr)
     {
         target.prepareFinalSet = CreateFramebufferSet(device, PREPARE_FINAL_BINDINGS, PREPARE_FINAL_BINDING_COUNT,
-                                                      target.engineTextures,
-                                                      godRaysStandIn, nullptr,
+                                                      target.engineTextures, nullptr,
                                                       prepareFinalFramebufferLayout);
 
         if (target.prepareFinalSet == nullptr)
@@ -2217,7 +2200,7 @@ bool RhiRtComposePass::PrepareFramebufferSets(Target &target)
     if (target.taauSet == nullptr)
     {
         target.taauSet = CreateFramebufferSet(device, TAAU_BINDINGS, TAAU_BINDING_COUNT,
-                                              target.engineTextures, nullptr, taauSampler,
+                                              target.engineTextures, taauSampler,
                                               taauFramebufferLayout);
 
         if (target.taauSet == nullptr)
@@ -2231,84 +2214,6 @@ bool RhiRtComposePass::PrepareFramebufferSets(Target &target)
         }
     }
 
-    return true;
-}
-
-bool RhiRtComposePass::PrepareGodRaysStandIn(nvrhi::ICommandList *pCommandList, uint32_t width, uint32_t height)
-{
-    if (godRaysZeroTexture != nullptr && godRaysZeroWidth == width && godRaysZeroHeight == height)
-    {
-        return true;
-    }
-
-    if (godRaysZeroTexture != nullptr)
-    {
-        // A new resolution: the replaced texture goes through the retire queue like every other
-        // resource a recorded list may still sample, and the sets that reference it are retired
-        // too (the prepare-final set is the only one; the release is shared so the invariant stays
-        // in one place). The next PrepareFramebufferSets rebuilds them over the new texture.
-        for (Target &target : targets)
-        {
-            ReleaseFramebufferSets(target);
-        }
-
-        if (frameContext != nullptr)
-        {
-            frameContext->Retire(godRaysZeroTexture);
-        }
-
-        godRaysZeroTexture = nullptr;
-        godRaysZeroWidth = 0;
-        godRaysZeroHeight = 0;
-    }
-
-    // The stand-in has to match the read it replaces: `.Load(int3(pix, 0))` at render coordinates
-    // (CmPrepareFinal.comp.hlsl:446-449), so it is render-sized, and its B10G11R11 format is the
-    // engine image's `ShFramebuffers_Formats[FB_IMAGE_INDEX_GOD_RAYS_FILTERED]` so the view the
-    // shader sees matches the one the engine's own set would have bound.
-    nvrhi::TextureDesc desc;
-    desc.width = width;
-    desc.height = height;
-    desc.format = nvrhi::Format::R11G11B10_FLOAT;
-    // isShaderResource is the eSampled usage the Texture_SRV binding needs. isUAV is what
-    // `clearTextureFloat`'s validation requires: it refuses a texture with both isRenderTarget and
-    // isUAV false (validation-commandlist.cpp:234-241). An NVRHI-created texture always carries
-    // TRANSFER_SRC | TRANSFER_DST (vulkan-texture.cpp:102-107), so the clear is legal here - unlike
-    // on the engine's image 64, whose usage set has no TRANSFER_DST and where `clearTextureFloat`
-    // would trip a new VUID.
-    desc.isShaderResource = true;
-    desc.isUAV = true;
-    // The resting state of a compute-visibility SRV binding (state-tracking.cpp:455-464, mapping in
-    // vulkan-constants.cpp:238-241). keepInitialState makes every later list start from it instead
-    // of Unknown, so the once-cleared zero contents are not discarded by an undefined-sourced
-    // transition on the second frame.
-    desc.initialState = nvrhi::ResourceStates::NonPixelShaderResource;
-    desc.keepInitialState = true;
-    desc.debugName = "RhiRtComposePass god-rays zero stand-in (render-sized, temporary until A5)";
-
-    godRaysZeroTexture = rhi::createTexture(device, desc, desc.debugName);
-
-    if (godRaysZeroTexture == nullptr)
-    {
-        if (!warnedZeroTexture)
-        {
-            warnedZeroTexture = true;
-            LogMessage(print, "Warning: RHI: the compose pass cannot create its god-rays zero stand-in, the compose is skipped");
-        }
-        return false;
-    }
-
-    // One clear per wrap lifetime is enough: nothing ever writes the texture. clearTextureFloat
-    // moves it to CopyDest and clears it; the setTextureState below is the CopyDest ->
-    // NonPixelShaderResource transition the first SRV use would emit anyway, made explicit so the
-    // desc's resting state is the truth at the list's close.
-    pCommandList->clearTextureFloat(godRaysZeroTexture, nvrhi::AllSubresources,
-                                    nvrhi::Color(0.f, 0.f, 0.f, 0.f));
-    pCommandList->setTextureState(godRaysZeroTexture, nvrhi::AllSubresources,
-                                  nvrhi::ResourceStates::NonPixelShaderResource);
-
-    godRaysZeroWidth = width;
-    godRaysZeroHeight = height;
     return true;
 }
 

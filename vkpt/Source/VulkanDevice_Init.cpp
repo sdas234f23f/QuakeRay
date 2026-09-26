@@ -37,8 +37,10 @@
 #include "RHI/RhiDebugTracePass.h"
 #include "RHI/RhiRtComposePass.h"
 #include "RHI/RhiRtDirectPass.h"
+#include "RHI/RhiRtGodRaysPass.h"
 #include "RHI/RhiRtIndirectPass.h"
 #include "RHI/RhiRtPrimaryPass.h"
+#include "RHI/RhiShadowMapPass.h"
 #include "RHI/RhiFrameContext.h"
 #include "RHI/RhiSkyPass.h"
 #include "RHI/RhiTextureSource.h"
@@ -449,6 +451,18 @@ VulkanDevice::VulkanDevice( const RgInstanceCreateInfo* info )
                     }
                 }
 
+                // The shadow-map pass of A5.2 (RHI/RhiShadowMapPass.h): the depth-only raster pass
+                // that feeds the god-rays compute. It needs only the device and the shader folder; a
+                // failure leaves the pointer null and the skeleton then skips both the shadow render
+                // and the dispatches (the god-rays pass cannot run without it).
+                rhiShadowMapPass = std::make_shared<RhiShadowMapPass>();
+                if (!rhiShadowMapPass->Create(nvrhi->GetDevice(), info->pShaderFolderPath,
+                                              [this](const char *pMessage) { Print(pMessage); }))
+                {
+                    rhiShadowMapPass.reset();
+                    Print("Warning: RHI: the shadow-map pass is unavailable, the god rays will be skipped");
+                }
+
                 // The indirect / GI pass of A4.3 (RHI/RhiRtIndirectPass.h): the bounce-light term of
                 // the traced chain, created only with the primary and the direct pass - it borrows
                 // their layout handles and the light set, so it is destroyed before both. Its set 5
@@ -485,6 +499,31 @@ VulkanDevice::VulkanDevice( const RgInstanceCreateInfo* info )
                         else
                         {
                             rhiRtIndirectPass->SetBlueNoiseTexture(blueNoiseTexture);
+
+                            // The god-rays pass of A5.2 (RHI/RhiRtGodRaysPass.h): the half-res trace
+                            // and the full-res filter that end in image 64 CmPrepareFinal adds. It
+                            // takes the blue-noise wrap the indirect pass's set 5 binds and, once
+                            // the shadow-map pass exists, its texture and sampler - the exact
+                            // handles, so the shared tracker drives the image (RhiRtGodRaysPass.h
+                            // documents the contract). A failure leaves the pointer null: the frame
+                            // is drawn without shafts.
+                            rhiRtGodRaysPass = std::make_shared<RhiRtGodRaysPass>();
+                            if (!rhiRtGodRaysPass->Create(nvrhi->GetDevice(), rhiFrameContext.get(),
+                                                          info->pShaderFolderPath,
+                                                          [this](const char *pMessage) { Print(pMessage); }))
+                            {
+                                rhiRtGodRaysPass.reset();
+                                Print("Warning: RHI: the god-rays pass is unavailable, the frame is drawn without shafts");
+                            }
+                            else
+                            {
+                                rhiRtGodRaysPass->SetBlueNoiseTexture(blueNoiseTexture);
+                                if (rhiShadowMapPass != nullptr && rhiShadowMapPass->IsCreated())
+                                {
+                                    rhiRtGodRaysPass->SetShadowMap(rhiShadowMapPass->GetTexture(),
+                                                                   rhiShadowMapPass->GetSampler());
+                                }
+                            }
                         }
                     }
                 }
@@ -559,6 +598,8 @@ VulkanDevice::VulkanDevice( const RgInstanceCreateInfo* info )
                 rhiRtDirectPass.get(),
                 rhiRtIndirectPass.get(),
                 rhiRtComposePass.get(),
+                rhiShadowMapPass.get(),
+                rhiRtGodRaysPass.get(),
                 rhiUiPass.get(),
                 frameMode,
                 [this](const char *pMessage) { Print(pMessage); });
@@ -637,13 +678,16 @@ VulkanDevice::~VulkanDevice()
     // be released before both of them
     nvrhiFrameSkeleton.reset();
 
-    // The skeleton references all of them, so they follow it immediately; all seven wrap engine
+    // The skeleton references all of them, so they follow it immediately; all nine wrap engine
     // buffers/images and quote the RHI device, so they precede the table/context and the device
     // below. The direct pass borrows the primary's layout handles and the indirect pass borrows
     // both, so the indirect goes before the direct, and the direct before the primary; the UI pass
-    // borrows the table and the frame context only.
+    // borrows the table and the frame context only, and the god-rays pass borrows the shadow map's
+    // texture and sampler, so it goes before the shadow-map pass.
     rhiDebugTracePass.reset();
     rhiRtComposePass.reset();
+    rhiRtGodRaysPass.reset();
+    rhiShadowMapPass.reset();
     rhiUiPass.reset();
     rhiRtIndirectPass.reset();
     rhiRtDirectPass.reset();

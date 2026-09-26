@@ -338,13 +338,17 @@ private:
     // Makes 'buffer' at least 'needed' bytes large: creates a new buffer sized to the doubled
     // capacity (capped at 'maxCapacity', the collector's staging size) and retires the replaced one.
     // The buffer carries 'structStride' and the build-input flag, so it serves the BLAS build and the
-    // vertex-data set (bindings 1 and 3) at once. Returns false if the new buffer could not be
-    // created.
+    // vertex-data set (bindings 1 and 3) at once, and the vertex/index flags so the RHI shadow-map
+    // pass can draw the dynamic geometry from the same copies (the flags add the matching Vulkan
+    // usage bits to an RHI-created buffer, vulkan-buffer.cpp:51-55, which the vertex/index bindings
+    // require). Returns false if the new buffer could not be created.
     bool EnsureDynamicCopyBuffer(nvrhi::BufferHandle &buffer,
                                  uint64_t &capacity,
                                  uint64_t needed,
                                  uint64_t maxCapacity,
                                  uint32_t structStride,
+                                 bool isVertexBuffer,
+                                 bool isIndexBuffer,
                                  uint32_t frameIndex,
                                  const char *kind);
 

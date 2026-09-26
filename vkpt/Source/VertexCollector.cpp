@@ -62,17 +62,24 @@ VertexCollector::VertexCollector( VkDevice                                  _dev
         isDynamic ? VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT
                   : VK_BUFFER_USAGE_TRANSFER_DST_BIT;
 
+    // The vertex/index usage bits serve the raster consumers of these buffers: the RHI shadow-map
+    // pass (RHI/RhiShadowMapPass) and the engine's own ShadowMap both bind the collector's
+    // device-local buffers as Vulkan vertex/index buffers, and Vulkan requires the bits for those
+    // bindings (VUID-vkCmdBindVertexBuffers-pBuffers-00627 and
+    // VUID-vkCmdBindIndexBuffer-buffer-08784). The bits are additive to the storage, device-address
+    // and build-input uses below.
+
     // vertex buffers
     vertBuffer->Init(
         _allocator, _bufferSize,
-        transferUsage | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR,
+        transferUsage | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR,
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
         isDynamic ? "Dynamic Vertices data buffer" : "Static Vertices data buffer");
 
     // index buffers
     indexBuffer->Init(
         _allocator, INDEX_BUFFER_SIZE,
-        transferUsage | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR,
+        transferUsage | VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR,
         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
         isDynamic ? "Dynamic Index data buffer" : "Static Index data buffer");
 

@@ -74,8 +74,10 @@ class NvrhiFrameSkeleton;
 class RhiDebugTracePass;
 class RhiRtComposePass;
 class RhiRtDirectPass;
+class RhiRtGodRaysPass;
 class RhiRtIndirectPass;
 class RhiRtPrimaryPass;
+class RhiShadowMapPass;
 class RhiUiPass;
 struct NvrhiRequirements;
 
@@ -305,6 +307,15 @@ private:
     // which then presents its FINAL image. Null when the flag is off or the creation failed; the
     // traced chain then keeps the A4.2a diagnostic present.
     std::shared_ptr<RhiRtComposePass>       rhiRtComposePass;
+    // The RHI shadow-map and god-rays passes of A5.2 (RHI/RhiShadowMapPass.h,
+    // RHI/RhiRtGodRaysPass.h): the depth-only raster pass and the two compute dispatches that
+    // produce the shafts CmPrepareFinal adds. Created with the other RT passes; the skeleton drives
+    // them on the traced frame's list, and the god-rays pass takes the shadow map's texture and
+    // sampler plus the blue-noise wrap. Null when the creation failed; the frame is then drawn
+    // without shafts.
+    std::shared_ptr<RhiShadowMapPass>       rhiShadowMapPass;
+    std::shared_ptr<RhiRtGodRaysPass>       rhiRtGodRaysPass;
+
     // The RHI 2D-UI pass (RHI/RhiUiPass.h): the game's SWAPCHAIN overlay (the HUD, the console, the
     // menus, the screen effects) drawn into the compose's upscaled image after the TAAU, created
     // with the other RHI passes and referenced by the skeleton. Null when the creation failed; the

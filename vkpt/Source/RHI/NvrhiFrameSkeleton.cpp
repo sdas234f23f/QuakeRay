@@ -26,8 +26,10 @@
 #include "RhiDebugTracePass.h"
 #include "RhiRtComposePass.h"
 #include "RhiRtDirectPass.h"
+#include "RhiRtGodRaysPass.h"
 #include "RhiRtIndirectPass.h"
 #include "RhiRtPrimaryPass.h"
+#include "RhiShadowMapPass.h"
 #include "RhiTextureSource.h"
 #include "RhiUiPass.h"
 #include "RhiDescriptors.h"
@@ -92,6 +94,8 @@ NvrhiFrameSkeleton::NvrhiFrameSkeleton(nvrhi::IDevice *pDevice,
                                        RhiRtDirectPass *pRtDirectPass,
                                        RhiRtIndirectPass *pRtIndirectPass,
                                        RhiRtComposePass *pRtComposePass,
+                                       RhiShadowMapPass *pShadowMapPass,
+                                       RhiRtGodRaysPass *pGodRaysPass,
                                        RhiUiPass *pUiPass,
                                        FrameMode mode,
                                        PrintFunction pfnPrint)
@@ -104,6 +108,8 @@ NvrhiFrameSkeleton::NvrhiFrameSkeleton(nvrhi::IDevice *pDevice,
     , rtDirectPass(pRtDirectPass)
     , rtIndirectPass(pRtIndirectPass)
     , rtComposePass(pRtComposePass)
+    , shadowMapPass(pShadowMapPass)
+    , godRaysPass(pGodRaysPass)
     , uiPass(pUiPass)
     , frameMode(mode)
     , textureTable(pTextureTable)
@@ -475,6 +481,60 @@ bool NvrhiFrameSkeleton::Render(const Swapchain *pSwapchain, uint32_t frameIndex
         // documents the entry point). `filterEnabled` is the same fltEnable the raygens are
         // dispatched with, i.e. the value of the uniform bytes just uploaded.
         const bool filterEnabled = uniform != nullptr && uniform->fltEnable[0] >= 0.5f;
+
+        // The god rays and their shadow map (A5.2), on the same list right after the primary and
+        // before the reproject - the legacy order (VulkanDevice.cpp:901 -> :908-1028 -> :1032). The
+        // shape mirrors the legacy host block exactly, corners included: everything runs only when
+        // the scene has an AABB (:954); with god rays disabled (or sunless) the module still records
+        // the clear path so image 64 is never stale (:964-969); and a shadow render that draws
+        // nothing skips the dispatches (:970-1006). The shadow map's view-projection goes into the
+        // params in the same call (the shadow render writes it even when it returns false).
+        if (godRaysPass != nullptr && godRaysPass->IsCreated() && sky.godRays.hasAabb)
+        {
+            if (!sky.godRays.enabled)
+            {
+                RhiRtGodRaysPass::Params params = {};
+                params.godRaysIntensity = sky.godRays.intensity;
+                params.godRaysEccentricity = sky.godRays.eccentricity;
+                params.godRaysEnabled = 0;
+
+                godRaysPass->Render(commandList, frameIndex, sky.framebuffers, sky.width, sky.height,
+                                    worldUniformBuffer.Get(), params, false);
+            }
+            else if (shadowMapPass != nullptr && shadowMapPass->IsCreated())
+            {
+                RhiShadowMapPass::GeometryBuffers geometry;
+                geometry.staticVertices = vertexData.staticVertices;
+                geometry.staticIndices = vertexData.staticIndices;
+                geometry.dynamicVertices = vertexData.dynamicVertices;
+                geometry.dynamicIndices = vertexData.dynamicIndices;
+
+                float shadowMapVP[16];
+                float shadowMapDepthScale = 0.0f;
+
+                if (shadowMapPass->Render(commandList, sky.godRays.shadowLightDirection,
+                                          sky.godRays.aabbMin, sky.godRays.aabbMax,
+                                          sky.godRays.staticCollector, sky.godRays.dynamicCollector,
+                                          geometry, shadowMapVP, &shadowMapDepthScale))
+                {
+                    RhiRtGodRaysPass::Params params = {};
+                    memcpy(params.sunDirection, sky.godRays.sunDirection, sizeof(params.sunDirection));
+                    memcpy(params.sunColor, sky.godRays.sunColor, sizeof(params.sunColor));
+                    memcpy(params.worldCenter, sky.godRays.worldCenter, sizeof(params.worldCenter));
+                    memcpy(params.worldHalfSizeInv, sky.godRays.worldHalfSizeInv,
+                           sizeof(params.worldHalfSizeInv));
+                    memcpy(params.shadowMapVP, shadowMapVP, sizeof(params.shadowMapVP));
+                    params.shadowMapDepthScale = shadowMapDepthScale;
+                    params.godRaysIntensity = sky.godRays.intensity;
+                    params.godRaysEccentricity = sky.godRays.eccentricity;
+                    params.godRaysEnabled = 1;
+
+                    godRaysPass->Render(commandList, frameIndex, sky.framebuffers, sky.width, sky.height,
+                                        worldUniformBuffer.Get(), params,
+                                        uniform != nullptr && uniform->reflectRefractMaxDepth > 0);
+                }
+            }
+        }
 
         if (rtComposePass != nullptr && filterEnabled)
         {
@@ -1137,6 +1197,14 @@ void NvrhiFrameSkeleton::DestroySwapchainResources()
     if (rtComposePass != nullptr)
     {
         rtComposePass->ReleaseTargets();
+    }
+
+    // The god-rays pass wraps the eight engine images it reads and writes (63/64 among them) and
+    // keeps its per-slot wraps and sets over them, so it drops them here as well; the shadow map and
+    // the blue-noise wrap are not framebuffer images and stay.
+    if (godRaysPass != nullptr)
+    {
+        godRaysPass->ReleaseTargets();
     }
 
     // The UI pass keeps per-slot framebuffers over the compose's upscaled wraps, so it drops them

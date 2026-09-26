@@ -130,11 +130,20 @@ nvrhi::BufferDesc MakeCopySourceBufferDesc(uint64_t byteSize, std::string debugN
 //    first bind transition-free and keeps the claim for every later list. The engine's writes are
 //    invisible to NVRHI, so without a claim the first use would report an unknown prior state
 //    (state-tracking.cpp:290-297).
-nvrhi::BufferDesc MakeVertexDataBufferDesc(uint64_t byteSize, uint32_t structStride, std::string debugName)
+nvrhi::BufferDesc MakeVertexDataBufferDesc(uint64_t byteSize, uint32_t structStride,
+                                           bool isVertexBuffer, bool isIndexBuffer,
+                                           std::string debugName)
 {
     nvrhi::BufferDesc desc;
     desc.byteSize = byteSize;
     desc.structStride = structStride;
+
+    // The flags serve the raster consumer of the same static buffers: the RHI shadow-map pass binds
+    // them as vertex/index buffers and NVRHI's binding checks read the flags (the Vulkan usage bits
+    // come from the engine's own creation, VertexCollector.cpp - a native wrap cannot add bits).
+    desc.isVertexBuffer = isVertexBuffer;
+    desc.isIndexBuffer = isIndexBuffer;
+
     desc.initialState = nvrhi::ResourceStates::NonPixelShaderResource;
     desc.keepInitialState = true;
     desc.debugName = std::move(debugName);
@@ -440,12 +449,14 @@ bool RhiAccelStructs::Create(nvrhi::IDevice *pDevice,
             nvrhi::ObjectTypes::VK_Buffer,
             nvrhi::Object(static_cast<uint64_t>(reinterpret_cast<uintptr_t>(staticCollector->GetVertexBuffer()))),
             MakeVertexDataBufferDesc(staticCollector->GetVertexBufferSize(), sizeof(ShVertex),
+                                     true, false,
                                      "RHI static vertices (vertex data)"));
 
         staticIndexData = pDevice->createHandleForNativeBuffer(
             nvrhi::ObjectTypes::VK_Buffer,
             nvrhi::Object(static_cast<uint64_t>(reinterpret_cast<uintptr_t>(staticCollector->GetIndexBuffer()))),
             MakeVertexDataBufferDesc(staticCollector->GetIndexBufferSize(), sizeof(uint32_t),
+                                     false, true,
                                      "RHI static indices (vertex data)"));
 
         if (staticVertexData == nullptr || staticIndexData == nullptr)
@@ -498,10 +509,10 @@ bool RhiAccelStructs::Create(nvrhi::IDevice *pDevice,
             vertexDataCreationFailed =
                 !EnsureDynamicCopyBuffer(dynamicCopies[i].vertex, dynamicCopies[i].vertexCapacity,
                                          sizeof(ShVertex), uint64_t(dynamicCollector->GetVertexBufferSize()),
-                                         sizeof(ShVertex), i, "vertex") ||
+                                         sizeof(ShVertex), true, false, i, "vertex") ||
                 !EnsureDynamicCopyBuffer(dynamicCopies[i].index, dynamicCopies[i].indexCapacity,
                                          sizeof(uint32_t), uint64_t(dynamicCollector->GetIndexBufferSize()),
-                                         sizeof(uint32_t), i, "index") ||
+                                         sizeof(uint32_t), false, true, i, "index") ||
                 !EnsureVertexDataCopyBuffer(vertexDataCopies[i].geometryInstances,
                                             vertexDataCopies[i].geometryInstancesCapacity,
                                             sizeof(ShGeometryInstance), uint64_t(geomInfoMgr->GetBufferSize()),
@@ -790,6 +801,8 @@ bool RhiAccelStructs::EnsureDynamicCopyBuffer(nvrhi::BufferHandle &buffer,
                                               uint64_t needed,
                                               uint64_t maxCapacity,
                                               uint32_t structStride,
+                                              bool isVertexBuffer,
+                                              bool isIndexBuffer,
                                               uint32_t frameIndex,
                                               const char *kind)
 {
@@ -821,6 +834,13 @@ bool RhiAccelStructs::EnsureDynamicCopyBuffer(nvrhi::BufferHandle &buffer,
     desc.byteSize = newCapacity;
     desc.structStride = structStride;
     desc.isAccelStructBuildInput = true;
+
+    // The raster consumer of the same copies: the RHI shadow-map pass draws the dynamic geometry
+    // from them as vertex/index buffers, so the flags (and the usage bits they add on an
+    // RHI-created buffer, vulkan-buffer.cpp:51-55) follow the kind of data the call site passes.
+    desc.isVertexBuffer = isVertexBuffer;
+    desc.isIndexBuffer = isIndexBuffer;
+
     desc.initialState = nvrhi::ResourceStates::CopyDest;
     desc.keepInitialState = true;
     desc.debugName = std::string("RHI dynamic ") + kind + " slot " + std::to_string(frameIndex) + " (AS input)";
@@ -959,7 +979,8 @@ void RhiAccelStructs::AppendDynamicSlot(nvrhi::ICommandList *pCommandList,
     if (vertexBytes > 0)
     {
         if (!EnsureDynamicCopyBuffer(copies.vertex, copies.vertexCapacity, vertexBytes,
-                                     uint64_t(collector->GetVertexBufferSize()), sizeof(ShVertex), frameIndex,
+                                     uint64_t(collector->GetVertexBufferSize()), sizeof(ShVertex),
+                                     true, false, frameIndex,
                                      "vertex"))
         {
             dynamicCreationFailed = true;
@@ -973,7 +994,8 @@ void RhiAccelStructs::AppendDynamicSlot(nvrhi::ICommandList *pCommandList,
     if (indexBytes > 0)
     {
         if (!EnsureDynamicCopyBuffer(copies.index, copies.indexCapacity, indexBytes,
-                                     uint64_t(collector->GetIndexBufferSize()), sizeof(uint32_t), frameIndex,
+                                     uint64_t(collector->GetIndexBufferSize()), sizeof(uint32_t),
+                                     false, true, frameIndex,
                                      "index"))
         {
             dynamicCreationFailed = true;
