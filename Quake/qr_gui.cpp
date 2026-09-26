@@ -288,6 +288,7 @@ void QR_GUI_Init (void *sdl_window, void *rg_instance, const char *font_path)
 	if (!ImGui_ImplSDL2_InitForOther ((SDL_Window *)sdl_window))
 	{
 		fprintf (stderr, "qr gui: SDL2 backend init failed\n");
+		ImGui::DestroyContext (); // the context is created before the backend
 		return;
 	}
 
@@ -342,6 +343,13 @@ void QR_GUI_Shutdown (void)
 {
 	if (!g_ready)
 		return;
+
+	// the font atlas is the bridge's own material and outlives the context
+	if (g_font_material != RG_NO_MATERIAL && g_instance)
+	{
+		rgDestroyMaterial (g_instance, g_font_material);
+		g_font_material = RG_NO_MATERIAL;
+	}
 
 	ImGui_ImplSDL2_Shutdown ();
 	ImGui::DestroyContext ();

@@ -60,8 +60,22 @@ VkDeviceAddress ScratchBuffer::GetScratchAddress(VkDeviceSize scratchSize)
     }
 
     // couldn't find chunk, create new one
+    const size_t chunkCount = chunks.size();
+
     AddChunk(std::max(SCRATCH_CHUNK_BUFFER_SIZE, alignedSize));
-    return chunks.back().buffer.GetAddress();
+
+    if (chunks.size() != chunkCount)
+    {
+        // Reserve the fresh chunk for this request: it starts at offset 0, so
+        // returning its address without advancing the offset would hand the
+        // same address to the next request of the same size while this build
+        // is still using it.
+        chunks.back().currentOffset = alignedSize;
+        return chunks.back().buffer.GetAddress();
+    }
+
+    // no allocator to add a chunk with: the build that asked will fail anyway
+    return 0;
 }
 
 void ScratchBuffer::Reset()

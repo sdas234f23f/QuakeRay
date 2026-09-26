@@ -3989,5 +3989,18 @@ void QR_Editor_OnNewMap (void)
 
 void QR_Editor_Shutdown (void)
 {
+	// The host is going down without a session: the editor's own buffers (the
+	// material snapshots and the preview pixels and their materials) go back
+	// here, since QRE_StopEditor -- the usual owner of that teardown -- also
+	// re-applies the touched materials and the renderer is what is leaving.
+	if (qre.active)
+	{
+		QRE_FreePreview ();
+		QRE_FreeSnapshot ();
+		QRE_FreeLightSnapshot ();
+		qre.active = false;
+		qre.panel_open = false;
+	}
+
 	QR_GUI_Shutdown ();
 }
