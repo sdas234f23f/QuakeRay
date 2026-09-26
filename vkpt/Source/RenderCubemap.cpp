@@ -1078,6 +1078,17 @@ void vkpt::RenderCubemap::CreateProceduralSkyDescriptors(const std::shared_ptr<S
 
     cloudsSampler = samplerManager->GetSampler(RG_SAMPLER_FILTER_LINEAR, RG_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, RG_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
 
+    // The history a copy is read from is sampled at the nearest texel and not between
+    // them. A copy is the march of another frame resampled where its cloud has moved
+    // to, and a bilinear read blurs it a little -- and every copy a texel takes before
+    // it is marched again pays that blur once more, so the texels of the map drift
+    // apart in sharpness. That is a standing difference between the marched quarter
+    // and the copies, and the faster the wind the more the eye reads it as a dither
+    // over the clouds. A read at the nearest texel leaves the value the march left
+    // alone; what a copy is wrong by then is at most half a texel of displacement,
+    // which a smooth field of cloud does not show.
+    VkSampler cloudsHistorySampler = samplerManager->GetSampler(RG_SAMPLER_FILTER_NEAREST, RG_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, RG_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
+
     for (uint32_t frame = 0; frame < MAX_FRAMES_IN_FLIGHT; frame++)
     {
         cloudsWritten[frame].imageView = clouds[frame].view;
@@ -1087,7 +1098,7 @@ void vkpt::RenderCubemap::CreateProceduralSkyDescriptors(const std::shared_ptr<S
         cloudsSampled[frame].imageView = clouds[frame].view;
         cloudsSampled[frame].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-        cloudsHistory[frame].sampler = cloudsSampler;
+        cloudsHistory[frame].sampler = cloudsHistorySampler;
         cloudsHistory[frame].imageView = clouds[1 - frame].view;
         cloudsHistory[frame].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     }
