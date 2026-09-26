@@ -8,6 +8,9 @@
 ### Fixed
 - **The masks of a few materials named files that do not exist.** `progs/soldier.mdl` named `textures/soldiers_skin0_luma.png` while the file is `textures/soldier_skin0_luma.png`, so the soldier's emissive mask never loaded: no light and no visible glow. The gloss of `v_axe` and the emissive masks of `v_rock` and `v_rock2` had the same kind of wrong path. All four now name the files that are there.
 
+### Changed
+- **`rt_stats` takes a level, and the CPU panel is rebuilt four times a second** — the command used to take the panels as whitespace-separated numbers, so showing everything meant `rt_stats 1 2 3` (the comma spelling its own usage line advertised, `rt_stats 1,2,3`, was rejected all along: a comma is neither a separator nor a panel number), and there was no one word for "all of it". The argument is a level now: `1` is the ray counters, `2` adds the GPU pass timings and `3` adds the CPU frame profile, each level showing the panels of the ones below it, `0` hides the readout, a bare `rt_stats` prints what is on and anything else prints the usage. The panels themselves and `rt_stats_dump` are unchanged, and a value of the archived `rt_stats_panels` left by the old form is folded into the level that shows the panels it named as it is set — an old `rt_stats 2`, the GPU panel alone, becomes the ray counters and the GPU timings — so the config, the dump and the benchmark log name a level too. The CPU profile spent a full second on every window as well, so on a still scene its numbers could stand for seconds: the window is `rt_stats_interval` now (`0.25` by default, clamped to `0.05`–`3`, and a value that is not a number falls back to the default instead of slipping past the clamp), which is how often the panel and its maxima are taken.
+
 
 ## v0.14.0
 

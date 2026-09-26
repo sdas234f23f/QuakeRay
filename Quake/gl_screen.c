@@ -606,9 +606,9 @@ under the other, with a blank line between them, so the whole frame can be read
 as a single column.
 
 The GPU numbers come from the backend's frame stats and the CPU numbers from
-rt_prof_report, refreshed once a second by RT_Prof_Update. Slots hold the longest
-sample of the reporting window rather than the values of one frame, so they must
-not be added up.
+rt_prof_report, refreshed every `rt_stats_interval` seconds by RT_Prof_Update.
+Slots hold the longest sample of the reporting window rather than the values of
+one frame, so they must not be added up.
 
 Returns the line the next section should start at.
 ================
@@ -713,7 +713,8 @@ SCR_DrawRTProf
 
 The CPU side of the frame, the last section of the readout. It starts at the line
 the sections above left off at, so that the panels continue one another, and the
-numbers come from rt_prof_report, refreshed once a second by RT_Prof_Update.
+numbers come from rt_prof_report, refreshed every `rt_stats_interval` seconds by
+RT_Prof_Update.
 ================
 */
 void SCR_DrawRTProf (cb_context_t *cbx, int x, int y)

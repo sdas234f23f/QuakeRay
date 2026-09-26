@@ -276,6 +276,7 @@ task_handle_t prev_end_rendering_task = INVALID_TASK_HANDLE;
 	CVAR_DEF_T (rt_reflrefr_earlyout, "1") \
 	CVAR_DEF_T (rt_nee_samples, "1") \
 	CVAR_DEF_T (rt_stats_panels, "0") \
+	CVAR_DEF_T (rt_stats_interval, "0.25") \
 	CVAR_DEF_T (rt_worldcensus, "0") \
 	CVAR_DEF_T (rt_worldlights_stats, "0") \
 	CVAR_DEF_T (rt_worldclusters_grid, "1") \
@@ -301,8 +302,11 @@ RT frame profiler -- rt_stats 3
 
 Times the CPU side of the frame, which the GPU timestamps of panel 2 do not
 cover: the geometry marking chain, the per-pass scene submission and the main
-thread's wait for the task graph. The results are drawn on screen once a second
-by SCR_DrawRTStats, and rt_stats_dump writes one snapshot to qperfdump.log.
+thread's wait for the task graph. The results are drawn on screen by
+SCR_DrawRTStats and SCR_DrawRTProf, and rt_prof_report, which the two of them
+read, is rebuilt every `rt_stats_interval` seconds (a quarter of a second by
+default, so the readout moves instead of standing still for a whole one) by
+RT_Prof_Update; rt_stats_dump writes one snapshot to qperfdump.log.
 
 The slots are written from worker threads without synchronization, so taking the
 report and the reset that follows it can race a running task; for a diagnostic
@@ -317,9 +321,10 @@ static double   rt_prof_window_start;
 static int      rt_prof_frames;
 static qboolean rt_prof_active;
 
-/* rt_bench: the same slots, summed over a whole demo run instead of maximized over a one
-   second window. The on-screen panel wants the worst frame of the window; a benchmark wants
-   the cost of an average frame, so every slot is added up and the longest one kept as well.
+/* rt_bench: the same slots, summed over a whole demo run instead of maximized over one
+   `rt_stats_interval` window. The on-screen panel wants the worst frame of the window; a
+   benchmark wants the cost of an average frame, so every slot is added up and the longest
+   one kept as well.
    The run is started by CL_Bench_f when the timedemo clock starts and reported when the demo
    ends, and the profiler is forced on for its duration whatever rt_stats asks for. */
 static qboolean rt_bench_active;
@@ -468,8 +473,16 @@ void RT_Prof_Update (void)
 		return;
 	}
 
+	/* A cvar can hold a value no comparison reaches --- a "nan" typed in the console or
+	   written into a config --- and the clamp would hand it straight back, making every
+	   frame look like the end of a window; such a value falls back to the default. */
+	double interval = CLAMP (0.05, CVAR_TO_FLOAT (rt_stats_interval), 3.0);
+
+	if (!(interval >= 0.05 && interval <= 3.0))
+		interval = 0.25;
+
 	const double elapsed = now - rt_prof_window_start;
-	if (elapsed < 1.0)
+	if (elapsed < interval)
 		return;
 
 	rt_prof_window_start = now;
@@ -664,6 +677,30 @@ qboolean RT_StatsPanel (int panel)
 
 /*
 ================
+RT_StatsPanelsFixup -- keeps the panels cvar a level
+
+The command writes the panels of a level, but the cvar is archived, and a value
+written before the command took levels can name a panel without the ones below
+it: an old "rt_stats 3" was the CPU panel alone, a mask of 4. The readout has no
+such state any more, so the panels below a set one are folded in --- the smallest
+level that shows everything the value asked for --- and the value is written
+back, which is what makes the config, the dump and the benchmark log name a
+level too. A value that is not one of the eight masks at all (a huge or negative
+number typed in the console) folds into the level of no panels, which is off.
+================
+*/
+static void RT_StatsPanelsFixup (cvar_t *var)
+{
+	const float    raw = var->value;
+	const unsigned mask = (raw > 0.0f && raw < 8.0f) ? (unsigned)raw : 0u;
+	const unsigned level = mask | (mask >> 1) | (mask >> 2);
+
+	if (mask != level)
+		Cvar_SetValueQuick (var, (float)level);
+}
+
+/*
+================
 RT_ProfSlotName
 
 Labels of the profile slots, shared by the on-screen panel and the dump so both
@@ -739,7 +776,7 @@ void RT_StatsCapture (rt_stats_snapshot_t *snap)
 
 /*
 ================
-RT_StatsPrintPanels -- state line shared by rt_stats and its old spellings
+RT_StatsPrintPanels -- state line printed by rt_stats after a change or a query
 ================
 */
 static void RT_StatsPrintPanels (const char *prefix)
@@ -752,25 +789,24 @@ static void RT_StatsPrintPanels (const char *prefix)
 			on[n++] = (char)('0' + i);
 	on[n] = 0;
 
-	Con_Printf ("%s showing %s   (1 = ray counters, 2 = GPU pass timings, 3 = CPU profile)\n",
+	Con_Printf ("%s showing %s   (1 = ray counters, 2 = + GPU pass timings, 3 = + CPU profile, 0 = off)\n",
 	            prefix, n ? on : "nothing");
 }
 
 /*
 ================
-RT_Stats_f -- rt_stats 1,2,3
+RT_Stats_f -- rt_stats 1, 2 or 3
 
-Replaces the three readouts that used to be switched one by one: the argument
-lists the panels to show, so "rt_stats 1,2,3" shows all of them, "rt_stats 2"
-only the GPU timings and "rt_stats 0" hides the readout. Without an argument the
-current selection is printed.
+The argument is the level of the readout, and each level stands for the panels
+of the ones below it: 1 is the ray counters, 2 adds the GPU pass timings and 3
+adds the CPU frame profile, which is all of it; 0 hides the readout. Without an
+argument the panels in force are printed, and anything else prints the usage.
 ================
 */
 static void RT_Stats_f (void)
 {
-	unsigned int mask = 0;
-	qboolean     invalid = false;
-	int          i;
+	const char *arg;
+	int         level;
 
 	if (Cmd_Argc () < 2)
 	{
@@ -778,28 +814,19 @@ static void RT_Stats_f (void)
 		return;
 	}
 
-	for (i = 1; i < Cmd_Argc (); i++)
+	arg = Cmd_Argv (1);
+
+	if (Cmd_Argc () > 2 || arg[0] == 0 || arg[1] != 0 || arg[0] < '0' || arg[0] > '0' + RT_STATS_PROFILE)
 	{
-		const char *arg = Cmd_Argv (i);
-
-		for (; *arg; arg++)
-		{
-			const int panel = *arg - '0';
-
-			if (panel < 0 || panel > RT_STATS_PROFILE)
-				invalid = true;
-			else if (panel > 0)
-				mask |= 1u << (panel - 1);
-		}
-	}
-
-	if (invalid)
-	{
-		Con_Printf ("rt_stats: expected the panels 1, 2 and 3, like \"rt_stats 1,2,3\"\n");
+		Con_Printf ("rt_stats: expected one level 0 to %d: 1 = ray counters, 2 = + GPU pass timings, 3 = + CPU profile, 0 = off\n",
+		            (int)RT_STATS_PROFILE);
 		return;
 	}
 
-	Cvar_SetValueQuick (&rt_stats_panels, (float)mask);
+	level = arg[0] - '0';
+
+	// a level is the panels up to it, so the bits below the level's own are set too
+	Cvar_SetValueQuick (&rt_stats_panels, (float)((1u << level) - 1u));
 	RT_StatsPrintPanels ("rt_stats is");
 }
 
@@ -973,7 +1000,7 @@ static void RT_StatsDump_f (void)
 	Con_Printf ("rt_stats_dump: appending the frame to %s\n", rt_stats_dump_job.path);
 
 	if (!RT_StatsPanel (RT_STATS_RAYS) || !RT_StatsPanel (RT_STATS_PASSES))
-		Con_Printf ("rt_stats_dump: ray counters need rt_stats 1 and the GPU timings need rt_stats 2\n");
+		Con_Printf ("rt_stats_dump: the ray counters and the GPU timings are written when rt_stats 2 or higher is on\n");
 }
 
 
@@ -2804,6 +2831,11 @@ void VID_Init (void)
 
 		Cvar_RegisterVariable (&rt_light_report_filter);
 		Cvar_RegisterVariable (&rt_sun_edit);
+
+		// The panels cvar is archived and used to hold any set of panels; the command
+		// takes a level now, so a value left by the old form --- or typed by hand --- is
+		// folded into the panels of the level it asks for as it is set.
+		Cvar_SetCallback (&rt_stats_panels, RT_StatsPanelsFixup);
 
 		// The colour settings are read per light, so they watch their cvar instead of
 		// comparing its string on every read. Registered after the cvars, which is

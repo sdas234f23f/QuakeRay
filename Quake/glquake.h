@@ -697,8 +697,10 @@ typedef struct
 	int      clusterDropped;     // additions refused because the registry was full
 } rt_prof_report_t;
 
-// Which readouts the rt_stats command asks for, as a bit per panel number. The
-// command is the only writer, so the value can be cached for a frame at a time.
+// Which readouts the rt_stats command asks for, as a bit per panel number: its
+// level argument sets the bits up to the level, so 2 is the ray counters and the
+// GPU pass timings and 3 is all of them. The command is the only writer, so the
+// value can be cached for a frame at a time.
 extern cvar_t rt_stats_panels;
 
 enum
