@@ -133,6 +133,11 @@ constexpr float CLOUD_SHADOW_MIN_SUN_HEIGHT = 0.05f;
 constexpr uint32_t CLOUD_UPDATE_QUARTERS = 2;
 constexpr uint32_t CLOUD_UPDATE_FRAMES = CLOUD_UPDATE_QUARTERS * CLOUD_UPDATE_QUARTERS;
 
+// The order the four quarters are marched in -- see the comment on `cloudsCycle`
+// in the header for why the counter is one for both maps and why the order is not
+// 0, 1, 2, 3.
+constexpr uint32_t CLOUD_QUARTER_ORDER[CLOUD_UPDATE_FRAMES] = { 0, 2, 1, 3 };
+
 // Whether two sets of the sky's parameters describe the same look of the cloud
 // layer: the sun, the sky that lights the layer, the layer's own colour and body,
 // and the march through it. The rest of ProceduralSkyParams is where the frame is
@@ -1087,7 +1092,7 @@ void vkpt::RenderCubemap::CreateProceduralSkyDescriptors(const std::shared_ptr<S
     // over the clouds. A read at the nearest texel leaves the value the march left
     // alone; what a copy is wrong by then is at most half a texel of displacement,
     // which a smooth field of cloud does not show.
-    VkSampler cloudsHistorySampler = samplerManager->GetSampler(RG_SAMPLER_FILTER_NEAREST, RG_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, RG_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
+    cloudsHistorySampler = samplerManager->GetSampler(RG_SAMPLER_FILTER_NEAREST, RG_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, RG_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
 
     for (uint32_t frame = 0; frame < MAX_FRAMES_IN_FLIGHT; frame++)
     {
@@ -1278,7 +1283,7 @@ void vkpt::RenderCubemap::DispatchClouds(VkCommandBuffer cmd, const ProceduralSk
     const uint32_t wg = Utils::GetWorkGroupCount(cloudsSize, 16);
     vkCmdDispatch(cmd, wg, wg, 6);
 
-    cloudsCycle[frameIndex] = cloudsWhole > 0 ? 0 : (cloudsCycle[frameIndex] + 1) % CLOUD_UPDATE_FRAMES;
+    cloudsCycle = cloudsWhole > 0 ? 0 : (cloudsCycle + 1) % CLOUD_UPDATE_FRAMES;
     if (cloudsWhole > 0)
     {
         cloudsWhole--;
@@ -1908,7 +1913,7 @@ void vkpt::RenderCubemap::UpdateQualityDescriptors()
         cloudsSampled[frame].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         cloudsSampled[frame].imageView = clouds[frame].view;
 
-        cloudsHistory[frame].sampler = cloudsSampler;
+        cloudsHistory[frame].sampler = cloudsHistorySampler;
         cloudsHistory[frame].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         cloudsHistory[frame].imageView = clouds[1 - frame].view;
     }
@@ -2035,7 +2040,7 @@ void vkpt::RenderCubemap::DrawProcedural(VkCommandBuffer cmd, const ProceduralSk
         // and the shadow of it are the same shadow of the same cloud. All of them are
         // part of the params the cache below compares, so the layer is never
         // remembered away while it is being drawn.
-        params.cloudAnchor[3] = cloudsWhole > 0 ? float(CLOUD_UPDATE_FRAMES) : float(cloudsCycle[frameIndex]);
+        params.cloudAnchor[3] = cloudsWhole > 0 ? float(CLOUD_UPDATE_FRAMES) : float(CLOUD_QUARTER_ORDER[cloudsCycle]);
         for (int i = 0; i < 4; i++)
         {
             // Nothing of the volume may be read while it is not standing: the getter
