@@ -36,6 +36,8 @@
 #include "RhiDescriptors.h"
 #include "RhiFrameContext.h"
 #include "RhiPipeline.h"
+#include "RhiProceduralSkyPass.h"
+#include "RhiRasterOverlayPass.h"
 #include "RhiResources.h"
 #include "RhiSkyPass.h"
 #include "RhiTextureTable.h"
@@ -96,6 +98,8 @@ NvrhiFrameSkeleton::NvrhiFrameSkeleton(nvrhi::IDevice *pDevice,
                                        RhiRtIndirectPass *pRtIndirectPass,
                                        RhiRtComposePass *pRtComposePass,
                                        RhiRtReflRefrPass *pReflRefrPass,
+                                       RhiProceduralSkyPass *pProceduralSkyPass,
+                                       RhiRasterOverlayPass *pRasterOverlayPass,
                                        RhiShadowMapPass *pShadowMapPass,
                                        RhiRtGodRaysPass *pGodRaysPass,
                                        RhiUiPass *pUiPass,
@@ -111,6 +115,8 @@ NvrhiFrameSkeleton::NvrhiFrameSkeleton(nvrhi::IDevice *pDevice,
     , rtIndirectPass(pRtIndirectPass)
     , rtComposePass(pRtComposePass)
     , reflRefrPass(pReflRefrPass)
+    , proceduralSkyPass(pProceduralSkyPass)
+    , rasterOverlayPass(pRasterOverlayPass)
     , shadowMapPass(pShadowMapPass)
     , godRaysPass(pGodRaysPass)
     , uiPass(pUiPass)
@@ -466,6 +472,21 @@ bool NvrhiFrameSkeleton::Render(const Swapchain *pSwapchain, uint32_t frameIndex
         passVertexData.dynamicVerticesPrev = vertexData.previousDynamicVertices;
         passVertexData.prevDynamicIndices = vertexData.previousDynamicIndices;
 
+        // The uniform bytes the traced raygens read; the passes below take their per-frame inputs
+        // from the same CPU copy the write above uploaded.
+        const ShGlobalUniform *uniform = sky.uniform != nullptr ? sky.uniform->GetData() : nullptr;
+
+        // The procedural sky (A5.4): the default frame's cube content, the same RenderCubemap ->
+        // DrawProcedural call the legacy frame records before the trace (VulkanDevice.cpp:862), so
+        // the primary, indirect and reflect/refract passes sample a written cube on the same list.
+        // Only when the uniform selects SKY_TYPE_PROCEDURAL; the module early-outs by its params
+        // when nothing changed (clouds off), like the legacy.
+        if (proceduralSkyPass != nullptr && proceduralSkyPass->IsCreated() && uniform != nullptr &&
+            uniform->skyType == SKY_TYPE_PROCEDURAL)
+        {
+            proceduralSkyPass->Render(commandList, frameIndex, sky.proceduralSkyParams);
+        }
+
         rtPrimaryPass->Render(
             commandList, frameIndex,
             accelStructs != nullptr ? accelStructs->GetTopLevel(frameIndex) : nullptr,
@@ -473,10 +494,6 @@ bool NvrhiFrameSkeleton::Render(const Swapchain *pSwapchain, uint32_t frameIndex
             passVertexData,
             sky.framebuffers,
             sky.width, sky.height);
-
-        // The uniform bytes the traced raygens read; the passes below take their per-frame inputs
-        // from the same CPU copy the write above uploaded.
-        const ShGlobalUniform *uniform = sky.uniform != nullptr ? sky.uniform->GetData() : nullptr;
 
         // A4.5's gradient reproject runs before the direct pass: with the denoiser enabled the two
         // raygens read the gradient-sample-position image 115 it writes, so the host orders
@@ -660,6 +677,96 @@ bool NvrhiFrameSkeleton::Render(const Swapchain *pSwapchain, uint32_t frameIndex
             sky.tonemapping->PrepareExposureParams(frameIndex, sky.uniform, sky.exposureBias, sky.contrast);
         }
 
+        // The raster overlay (A5.5) draws the DEFAULT list inside the compose chain's window, from
+        // the same per-slot staging geometry the UI uses - the engine's device copy is recorded on
+        // the legacy command buffer, submitted after this list - and the tonemapping wraps the
+        // raster world sub-pass builds in PrepareWorld, which the traced mode never reaches, so they
+        // are built here once. The wrap creation below is the UI block's (whichever module exists
+        // runs it first in a frame); both take the same handles. The overlay's pass-owned depth, its
+        // engine-image wraps and the callback's state contract live in RhiRasterOverlayPass.h.
+        if (rasterOverlayPass != nullptr && rasterOverlayPass->IsCreated() &&
+            sky.tonemapping != nullptr && !sky.disableRasterization &&
+            sky.swapchainVertexStaging != 0 && sky.swapchainIndexStaging != 0)
+        {
+            if (worldTonemappingBuffers[0] == nullptr)
+            {
+                for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+                {
+                    nvrhi::BufferDesc tonemappingDesc;
+                    tonemappingDesc.byteSize = sky.tonemapping->GetElementSize();
+                    tonemappingDesc.structStride = sky.tonemapping->GetElementSize();
+                    tonemappingDesc.initialState = nvrhi::ResourceStates::ShaderResource;
+                    tonemappingDesc.keepInitialState = true;
+                    tonemappingDesc.debugName = "RHI world tonemapping wrap " + std::to_string(i);
+
+                    worldTonemappingBuffers[i] = device->createHandleForNativeBuffer(
+                        nvrhi::ObjectTypes::VK_Buffer,
+                        nvrhi::Object(static_cast<uint64_t>(reinterpret_cast<uintptr_t>(
+                            sky.tonemapping->GetBuffer(i)))),
+                        tonemappingDesc);
+                }
+            }
+
+            nvrhi::IBuffer *tonemappingBuffers[MAX_FRAMES_IN_FLIGHT];
+            for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+            {
+                tonemappingBuffers[i] = worldTonemappingBuffers[i].Get();
+            }
+            rasterOverlayPass->SetTonemappingBuffers(tonemappingBuffers);
+
+            if (uiVertexStagingWraps[frameIndex] == nullptr ||
+                uiVertexStagingHandles[frameIndex] != sky.swapchainVertexStaging)
+            {
+                if (uiVertexStagingWraps[frameIndex] != nullptr && frameContext != nullptr)
+                {
+                    frameContext->Retire(uiVertexStagingWraps[frameIndex]);
+                }
+
+                nvrhi::BufferDesc desc;
+                desc.byteSize = sky.swapchainVertexStagingSize;
+                desc.isVertexBuffer = true;
+                desc.initialState = nvrhi::ResourceStates::VertexBuffer;
+                desc.keepInitialState = true;
+                desc.debugName = "RHI UI vertex staging";
+
+                uiVertexStagingWraps[frameIndex] = device->createHandleForNativeBuffer(
+                    nvrhi::ObjectTypes::VK_Buffer,
+                    nvrhi::Object(static_cast<uint64_t>(sky.swapchainVertexStaging)),
+                    desc);
+                uiVertexStagingHandles[frameIndex] =
+                    uiVertexStagingWraps[frameIndex] != nullptr ? sky.swapchainVertexStaging : 0;
+            }
+
+            if (uiIndexStagingWraps[frameIndex] == nullptr ||
+                uiIndexStagingHandles[frameIndex] != sky.swapchainIndexStaging)
+            {
+                if (uiIndexStagingWraps[frameIndex] != nullptr && frameContext != nullptr)
+                {
+                    frameContext->Retire(uiIndexStagingWraps[frameIndex]);
+                }
+
+                nvrhi::BufferDesc desc;
+                desc.byteSize = sky.swapchainIndexStagingSize;
+                desc.isIndexBuffer = true;
+                desc.initialState = nvrhi::ResourceStates::IndexBuffer;
+                desc.keepInitialState = true;
+                desc.debugName = "RHI UI index staging";
+
+                uiIndexStagingWraps[frameIndex] = device->createHandleForNativeBuffer(
+                    nvrhi::ObjectTypes::VK_Buffer,
+                    nvrhi::Object(static_cast<uint64_t>(sky.swapchainIndexStaging)),
+                    desc);
+                uiIndexStagingHandles[frameIndex] =
+                    uiIndexStagingWraps[frameIndex] != nullptr ? sky.swapchainIndexStaging : 0;
+            }
+
+            if (uiVertexStagingWraps[frameIndex] != nullptr && uiIndexStagingWraps[frameIndex] != nullptr)
+            {
+                rasterOverlayPass->SetGeometryBuffers(uiVertexStagingWraps[frameIndex],
+                                                      uiIndexStagingWraps[frameIndex]);
+            }
+        }
+
         // The compose pass: the real chain over the G-buffer and the direct and indirect buffers,
         // ending in the display-referred FINAL. With `filterEnabled` its internal order is the
         // engine's denoiser chain (the reproject recorded earlier, then adapter -> GradientImg -> 7x
@@ -669,9 +776,26 @@ bool NvrhiFrameSkeleton::Render(const Swapchain *pSwapchain, uint32_t frameIndex
         // samples (RhiRtComposePass.h documents both entry points and the sizes they take).
         if (rtComposePass != nullptr)
         {
+            // The raster overlay's window: the compose calls the callback between its checkerboard
+            // and prepare-final dispatches - the legacy order (VulkanDevice.cpp:1066 -> :1071 ->
+            // :1085); the overlay writes FINAL and SCREEN_EMISSION and leaves them in UnorderedAccess
+            // (RhiRasterOverlayPass.h documents the contract).
             rtComposePass->Render(commandList, frameIndex, sky.framebuffers, sky.width, sky.height,
                                   sky.upscaledWidth, sky.upscaledHeight, filterEnabled,
-                                  worldUniformBuffer.Get());
+                                  worldUniformBuffer.Get(),
+                                  [&](nvrhi::ICommandList *pOverlayList)
+                                  {
+                                      if (rasterOverlayPass != nullptr &&
+                                          rasterOverlayPass->IsCreated() && uniform != nullptr)
+                                      {
+                                          rasterOverlayPass->Render(
+                                              pOverlayList, frameIndex, sky.framebuffers,
+                                              sky.width, sky.height, sky.jitter,
+                                              worldUniformBuffer.Get(),
+                                              sky.worldDraws, sky.worldDrawCount,
+                                              sky.view, sky.projection, sky.applyVertexColorGamma);
+                                      }
+                                  });
             rtComposePass->RenderTaaU(commandList, frameIndex, sky.framebuffers, sky.width, sky.height,
                                       sky.upscaledWidth, sky.upscaledHeight, worldUniformBuffer.Get());
 
@@ -1299,6 +1423,13 @@ void NvrhiFrameSkeleton::DestroySwapchainResources()
     if (reflRefrPass != nullptr)
     {
         reflRefrPass->ReleaseTargets();
+    }
+
+    // The raster overlay wraps FINAL, SCREEN_EMISSION, DEPTH_NDC and the emissive-blend image and
+    // owns its per-slot D32 depth, so it drops them here as well.
+    if (rasterOverlayPass != nullptr)
+    {
+        rasterOverlayPass->ReleaseTargets();
     }
 
     // A present binding set references the ALBEDO wrap and the direct-term image of one slot, so it

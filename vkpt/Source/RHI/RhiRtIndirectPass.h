@@ -118,7 +118,8 @@ class RhiRtDirectPass;
 //                                dummy cube set; the dummy cube is cleared to black once, so the
 //                                PROCEDURAL sky path the default `rt_physical_sky 1` selects reads a
 //                                defined value instead of the primary placeholder's undefined
-//                                contents (a43_recon.md §8.3);
+//                                contents (a43_recon.md §8.3). SetRenderCubemaps replaces the
+//                                placeholder pair with the procedural-sky module's real cubes;
 //   set 9/10 (portals/volumetric) - the primary's empty set; neither set is declared by the blob;
 //   set 11 ray stats           - the primary's RHI-owned RWStructuredBuffer<RtRayStats> stand-in,
 //                                raw binding 0.
@@ -170,6 +171,11 @@ class RhiRtDirectPass;
 //    the coordinator's wrap of the engine's BlueNoise image (stream 2's array-texture helper). The
 //    pass takes a reference but does not own the image. A null call clears it; Render then warns
 //    once and skips.
+//  - SetRenderCubemaps once after the procedural-sky module (stream S1, RhiProceduralSkyPass) was
+//    created and before the first Render (and only again if the cubes are replaced): the real
+//    `renderCubemap`/`renderCubemapEnv` pair and the module's LINEAR/REPEAT sampler. Set 8 keeps
+//    the black-cleared placeholder pair until then, a null call restores it, and the module's
+//    textures have to outlive this pass's use.
 //  - Render after RhiRtDirectPass::Render on the same list and before the compose chain: the raygen
 //    reads the direct pass's 15/23 writes and the primary's G-buffer, and the compose chain's
 //    adapter reads the 16-18 this pass writes. Pass the same `frameIndex`, the slot's TLAS, the
@@ -246,6 +252,35 @@ public:
     // the retire queue), and passing null clears it.
     void SetBlueNoiseTexture(nvrhi::ITexture *pTexture);
 
+    // Set 8's real content: the coordinator's `renderCubemap`/`renderCubemapEnv` pair and their
+    // sampler - stream S1's RhiProceduralSkyPass objects, handed over as bare pointers (its
+    // `GetCubemapTexture()`, `GetEnvironmentTexture()` and `GetCubemapSampler()`). The blob
+    // declares all four items (measured over RtQ2Indirect.rgen), so both cubes are required;
+    // one sampler fills both sampler positions, exactly as the placeholder pair does and as the
+    // engine's set does (both engine SAMPLER bindings name the same LINEAR/REPEAT sampler,
+    // RenderCubemap.cpp:696-697).
+    //
+    // The coordinator calls it once after RhiProceduralSkyPass was created and after this pass's
+    // Create, before the first Render; the module owns the objects and they have to outlive this
+    // pass's use (the pass keeps references but does not own the images), and the module's cubes
+    // keep NonPixelShaderResource as their initial state (RhiProceduralSkyPass), which is the
+    // state this set's Texture_SRV bindings require, so they issue no texture transition. Both
+    // cubes have to satisfy the shader's `renderCubemap`/`renderCubemapEnv` `SampleLevel(..., lod)`
+    // contracts and the engine render cubemap's shape (RenderCubemap.cpp:34-37, :489-503), so the
+    // setter enforces, for each,
+    //   dimension TextureCube, format RGBA16_FLOAT (R16G16B16A16_SFLOAT), arraySize 6,
+    //   width == height > 0,
+    //   mipLevels >= 11 (the SKY_MIP_COUNT chain `getSkyFiltered` scales its lod against;
+    //   RaygenCommon.hlsli:390-417)
+    // and refuses a cube outside it with a one-shot warning - the black-cleared 1x1 placeholder
+    // pair then stays in place. The sampler is expected to be the module's LINEAR/REPEAT one; a
+    // deviation is reported once and the sampler is used as given. A null cube (either one) or a
+    // null sampler restores the placeholder pair.
+    // The set-8 set over the pair is rebuilt on the next Render and the replaced set goes through
+    // the frame context's retire queue; the real cubes are not framebuffer images, so they and the
+    // set survive ReleaseTargets exactly like the placeholder's.
+    void SetRenderCubemaps(nvrhi::ITexture *pCubemap, nvrhi::ITexture *pEnvCubemap, nvrhi::ISampler *pSampler);
+
     // One call per frame, on the frame context's open command list of 'frameIndex', after
     // RhiRtDirectPass::Render and before the compose chain of the same slot. 'numBounceRays' is
     // `ShGlobalUniform::giBounceRays[0]` exactly as the host wrote it into this frame's uniform
@@ -263,9 +298,10 @@ public:
     // What is recorded: the wraps of the 14 set-1 images (created on first use, re-created when the
     // engine re-created an image or the size changed; the replaced wraps and the sets over them go
     // through the frame context's retire queue), the per-slot sets 0-3, the set-5 set if the
-    // blue-noise texture changed, the clear of the render-cubemap placeholder on the first list that
-    // binds it, then one `dispatchRays(width, halfRes ? (height + 1) / 2 : height, 1)` over the
-    // direct pass's set-6 set and the primary's sets 9/10/11. The five UAV images end the list in
+    // blue-noise texture changed, the set-8 set if the render-cubemap pair changed, the clear of the
+    // placeholder cube on the first list that binds the placeholder (the real cubes skip it), then
+    // one `dispatchRays(width, halfRes ? (height + 1) / 2 : height, 1)` over the direct pass's set-6
+    // set and the primary's sets 9/10/11. The five UAV images end the list in
     // UnorderedAccess; the 9 SRV-only images are moved back there after the dispatch, so the next
     // frame's writers (and this pass's own UAVs) find the layout the engine knows.
     //
@@ -287,8 +323,9 @@ public:
     // sets, and retires them through the frame context's queue. The caller has to call it before the
     // engine destroys its framebuffer images (the Framebuffers::PrepareForSize path) - otherwise the
     // wraps reference destroyed VkImages. The module-owned placeholders (the blue-noise set, the two
-    // cubemap dummies and their sets) do not reference framebuffer images and survive: the blue-noise
-    // asset and the dummies live across a resize. The next Render re-reads the handles and re-wraps,
+    // cubemap dummies and their sets) and the set-8 set over the real cubes after SetRenderCubemaps
+    // do not reference framebuffer images and survive: the blue-noise asset, the dummies and the
+    // procedural-sky cubes live across a resize. The next Render re-reads the handles and re-wraps,
     // so the pass survives a resize without a second Create.
     void ReleaseTargets();
 
@@ -345,6 +382,11 @@ private:
     // when no valid texture was set.
     bool PrepareBlueNoiseSet(nvrhi::ICommandList *pCommandList);
 
+    // Set 8: builds (or rebuilds, when a key changed) the four-item set over the coordinator's
+    // render-cubemap pair, or over the placeholder pair when none was set. Returns false when the
+    // set cannot be created.
+    bool PrepareRenderCubemapSet();
+
     nvrhi::IDevice *device = nullptr;
     PrintFunction print;
     std::string shaderFolderPath;
@@ -384,10 +426,23 @@ private:
     // The two placeholder cube sets: the 32-slot bindless table for set 7 and the two-cube set for
     // set 8, all backed by the same 1x1 dummy texture (the primary pass's placeholder, until the
     // real cubemaps get RHI accessors - a43_recon.md §8.9). 'dummyCubemapCleared' makes the black
-    // clear of the set-8 dummy a one-off.
+    // clear of the set-8 dummy a one-off; the clear is recorded only while the placeholder pair is
+    // the current set (the real cubes need no clear).
     nvrhi::TextureHandle dummyCubemapTexture;
     nvrhi::SamplerHandle dummyCubemapSampler;
     nvrhi::DescriptorTableHandle cubemapTable;
+
+    // Set 8's coordinator keys: the raw handles keep the real cubes and their sampler alive (the
+    // coordinator's SetRenderCubemaps stores them), the raw pointers are the coordinator keys the
+    // current set was built over, so a replaced key rebuilds it in PrepareRenderCubemapSet. Both
+    // texture pointers null mean the placeholder pair is the current set (what the module starts
+    // with).
+    nvrhi::TextureHandle renderCubemapTexture;
+    nvrhi::ITexture *renderCubemapSetTexture = nullptr;
+    nvrhi::TextureHandle renderCubemapEnvTexture;
+    nvrhi::ITexture *renderCubemapEnvSetTexture = nullptr;
+    nvrhi::SamplerHandle renderCubemapSampler;
+    nvrhi::ISampler *renderCubemapSetSampler = nullptr;
     nvrhi::BindingSetHandle renderCubemapSet;
     bool dummyCubemapCleared = false;
 
@@ -410,6 +465,8 @@ private:
     bool warnedBadVertexData = false;
     bool warnedMissingBlueNoise = false;
     bool warnedBadBlueNoise = false;
+    bool warnedBadRenderCubemap = false;
+    bool warnedRenderCubemapSampler = false;
     bool warnedMissingLightSet = false;
 
     bool created = false;

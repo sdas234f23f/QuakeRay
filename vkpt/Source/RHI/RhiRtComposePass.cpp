@@ -1625,7 +1625,8 @@ void RhiRtComposePass::Render(nvrhi::ICommandList *pCommandList,
                               uint32_t upscaledWidth,
                               uint32_t upscaledHeight,
                               bool filterEnabled,
-                              nvrhi::IBuffer *pUniformBuffer)
+                              nvrhi::IBuffer *pUniformBuffer,
+                              const std::function<void(nvrhi::ICommandList *)> &pfnRasterOverlay)
 {
     Target *pTarget = PrepareFrame(pCommandList, frameIndex, pFramebuffers,
                                    width, height, upscaledWidth, upscaledHeight, pUniformBuffer);
@@ -1759,6 +1760,22 @@ void RhiRtComposePass::Render(nvrhi::ICommandList *pCommandList,
 
     RecordDispatch(pCommandList, checkerboardPipeline, { target.checkerboardSet, target.uniformSet },
                    groupsX, groupsY, 1);
+
+    // The legacy `Rasterizer::DrawToFinalImage` window: the host's raster-overlay callback records
+    // the `DEFAULT` draw list into FINAL (28) and SCREEN_EMISSION (62) exactly here, between the
+    // checkerboard resolve that wrote them and the prepare-final that reads them - the legacy
+    // order checkerboard (:1066) -> overlay (:1071) -> `Finalize` (:1085) of VulkanDevice.cpp.
+    // The callback owns the state discipline of the images it uses and has to leave them in the
+    // engine's GENERAL state, i.e. back to UnorderedAccess (the header's `Render` contract); the
+    // compose's own wraps are untouched and their announced UAV claims stay true, so the
+    // prepare-final reads what the callback left. The one reason this is a callback and not a
+    // second public entry point is spelled out on `Render`: the overlay's only contract with this
+    // chain is this window, and keeping the pre-TAAU chain one atomic host call avoids exposing
+    // the module's intermediate wrap/set state.
+    if (pfnRasterOverlay)
+    {
+        pfnRasterOverlay(pCommandList);
+    }
 
     // The final composition: set 3 is the dead LPM hole, set 4 the volumetric dummy, and the
     // tonemapping buffer is bound read-only, after the exposure pair wrote it in this list.

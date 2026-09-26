@@ -162,6 +162,38 @@ constexpr uint32_t NOT_RENDER_SIZED_FLAGS =
     FB_IMAGE_FLAGS_FRAMEBUF_FLAGS_UPSCALED_SIZE |
     FB_IMAGE_FLAGS_FRAMEBUF_FLAGS_SINGLE_PIXEL_SIZE;
 
+// The engine render cubemap's level count and the shader's SKY_MIP_COUNT (RenderCubemap.cpp:34-37
+// creates both cubes with cubemapMipLevels = 11; RaygenCommon.hlsli:390 defines SKY_MIP_COUNT
+// 11.0): `getSkyFiltered` scales its lod by the mip count, so a shorter chain would clamp the
+// ambient/roughness lookups to its last mip. Set 8's real cubes have to carry the full chain.
+constexpr uint32_t RENDER_CUBEMAP_MIP_COUNT = 11;
+
+// The shape the shader's `renderCubemap.SampleLevel(renderCubemap_Sampler, direction, lod)` reads
+// and the engine render cubemap has (RenderCubemap.cpp:34-37, :489-503): a six-layer
+// R16G16B16A16_SFLOAT cube of square faces with the eleven-mip chain above. A desc outside it is a
+// host-side mistake, not a per-frame condition: SetRenderCubemap refuses it with a one-shot
+// warning and the placeholder stays.
+bool IsRenderCubemapDesc(const nvrhi::TextureDesc &desc)
+{
+    return desc.dimension == nvrhi::TextureDimension::TextureCube &&
+           desc.format == nvrhi::Format::RGBA16_FLOAT &&
+           desc.arraySize == 6 &&
+           desc.width > 0 && desc.width == desc.height &&
+           desc.mipLevels >= RENDER_CUBEMAP_MIP_COUNT;
+}
+
+// The engine's set-8 sampler: RG_SAMPLER_FILTER_LINEAR with REPEAT on both axes
+// (RenderCubemap.cpp:696-697; SamplerManager.cpp:142 fills W with REPEAT too). A different sampler
+// changes the sky look silently, so SetRenderCubemap reports a deviation once and still uses what
+// it got.
+bool IsRenderCubemapSampler(const nvrhi::SamplerDesc &desc)
+{
+    return desc.minFilter && desc.magFilter &&
+           desc.addressU == nvrhi::SamplerAddressMode::Repeat &&
+           desc.addressV == nvrhi::SamplerAddressMode::Repeat &&
+           desc.addressW == nvrhi::SamplerAddressMode::Repeat;
+}
+
 void LogMessage(const RhiRtPrimaryPass::PrintFunction &print, const std::string &message)
 {
     if (print != nullptr)
@@ -213,6 +245,10 @@ RhiRtPrimaryPass::~RhiRtPrimaryPass()
     rayStatsSet = nullptr;
     rayStatsBuffer = nullptr;
     renderCubemapSet = nullptr;
+    renderCubemapSetSampler = nullptr;
+    renderCubemapSampler = nullptr;
+    renderCubemapSetTexture = nullptr;
+    renderCubemapTexture = nullptr;
     dummyCubemapSampler = nullptr;
     dummyCubemapTexture = nullptr;
     cubemapTable = nullptr;
@@ -437,7 +473,8 @@ bool RhiRtPrimaryPass::Create(nvrhi::IDevice *pDevice,
     // sky path, so this pass binds a dummy: the sky modes this pass supports (COLOR / the raster
     // sky) never sample it, and the first list that binds it transitions it out of Common, so even
     // a wrong sky mode reads defined memory instead of undefined layouts. Its contents are
-    // undefined; replacing it with the engine's real cubes is the A5 follow-up.
+    // undefined; set 8 gets the procedural-sky module's real cube through SetRenderCubemap, and
+    // the dummy stays the fallback and the set-7 slot (A5.4).
     {
         nvrhi::TextureDesc desc;
         desc.dimension = nvrhi::TextureDimension::TextureCube;
@@ -603,6 +640,44 @@ bool RhiRtPrimaryPass::Create(nvrhi::IDevice *pDevice,
 
     created = true;
     return true;
+}
+
+void RhiRtPrimaryPass::SetRenderCubemap(nvrhi::ITexture *pCubemap, nvrhi::ISampler *pSampler)
+{
+    if (pCubemap == nullptr || pSampler == nullptr)
+    {
+        // The placeholder fallback: the module keeps its 1x1 dummy in set 8 until a valid pair
+        // arrives (or again after a null call).
+        renderCubemapTexture = nullptr;
+        renderCubemapSampler = nullptr;
+        return;
+    }
+
+    // The shape of the procedural-sky module's cube, which is the engine render cubemap's: see
+    // IsRenderCubemapDesc. A desc outside it is a host-side mistake, not a per-frame condition:
+    // it is refused with a one-shot warning and the placeholder stays in place.
+    if (!IsRenderCubemapDesc(pCubemap->getDesc()))
+    {
+        if (!warnedBadRenderCubemap)
+        {
+            warnedBadRenderCubemap = true;
+            LogMessage(print, "Warning: RHI: the primary RT pass render cubemap (set 8) has to be a "
+                              "six-layer RGBA16F TextureCube with square faces and at least eleven mips");
+        }
+        renderCubemapTexture = nullptr;
+        renderCubemapSampler = nullptr;
+        return;
+    }
+
+    if (!IsRenderCubemapSampler(pSampler->getDesc()) && !warnedRenderCubemapSampler)
+    {
+        warnedRenderCubemapSampler = true;
+        LogMessage(print, "Warning: RHI: the primary RT pass render-cubemap sampler is not the engine's "
+                          "linear/repeat one; the sky lookups may shift");
+    }
+
+    renderCubemapTexture = pCubemap;
+    renderCubemapSampler = pSampler;
 }
 
 void RhiRtPrimaryPass::Render(nvrhi::ICommandList *pCommandList,
@@ -787,6 +862,14 @@ void RhiRtPrimaryPass::Render(nvrhi::ICommandList *pCommandList,
     // the list that samples them (RhiTextureTable.h); the host's frame skeleton does this too, and
     // a repeated call is a no-op.
     textureTable->TrackPendingTextures(pCommandList);
+
+    // Set 8 over the coordinator's render cubemap, or over the placeholder pair until
+    // SetRenderCubemap delivered the real one; a changed key rebuilds the set through the retire
+    // queue.
+    if (!PrepareRenderCubemapSet())
+    {
+        return;
+    }
 
     // The twelve sets, in the layout order the pipeline was built with; the pinned backend's legacy
     // binding mode binds the list positionally (vulkan-resource-bindings.cpp:940-958). Sets 5, 6, 9
@@ -1029,6 +1112,50 @@ bool RhiRtPrimaryPass::PrepareVertexDataSet(Target &target, const VertexData &ve
         target.vertexBuffers[i] = buffers[i];
     }
 
+    return true;
+}
+
+bool RhiRtPrimaryPass::PrepareRenderCubemapSet()
+{
+    // The set follows the coordinator's keys: the real cube with its sampler, or the module's
+    // placeholder pair while the handles are null. A pointer change (SetRenderCubemap, or a null
+    // call restoring the placeholder) rebuilds it; the module starts with the null keys, which is
+    // exactly the placeholder state of the set Create built, so the first Render is a no-op until
+    // the setter changes something. The replaced set goes through the retire queue, so a list that
+    // is still executing keeps its descriptors alive.
+    const bool usePlaceholder = renderCubemapTexture == nullptr;
+    nvrhi::ITexture *const texture =
+        usePlaceholder ? dummyCubemapTexture.Get() : renderCubemapTexture.Get();
+    nvrhi::ISampler *const sampler =
+        usePlaceholder ? dummyCubemapSampler.Get() : renderCubemapSampler.Get();
+
+    if (renderCubemapSet != nullptr &&
+        renderCubemapSetTexture == renderCubemapTexture.Get() &&
+        renderCubemapSetSampler == renderCubemapSampler.Get())
+    {
+        return true;
+    }
+
+    if (renderCubemapSet != nullptr)
+    {
+        frameContext->Retire(renderCubemapSet);
+    }
+    renderCubemapSet = nullptr;
+
+    nvrhi::BindingSetDesc setDesc;
+    setDesc.addItem(nvrhi::BindingSetItem::Texture_SRV(BINDING_RENDER_CUBEMAP, texture));
+    setDesc.addItem(nvrhi::BindingSetItem::Sampler(BINDING_RENDER_CUBEMAP_SAMPLER, sampler));
+
+    renderCubemapSet = device->createBindingSet(setDesc, renderCubemapLayout);
+
+    if (renderCubemapSet == nullptr)
+    {
+        LogMessage(print, "Warning: RHI: failed to create the primary RT pass render-cubemap binding set");
+        return false;
+    }
+
+    renderCubemapSetTexture = renderCubemapTexture.Get();
+    renderCubemapSetSampler = renderCubemapSampler.Get();
     return true;
 }
 

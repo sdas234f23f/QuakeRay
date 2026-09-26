@@ -35,6 +35,8 @@
 #include "RHI/NvrhiRequirements.h"
 #include "RHI/RhiAccelStructs.h"
 #include "RHI/RhiDebugTracePass.h"
+#include "RHI/RhiProceduralSkyPass.h"
+#include "RHI/RhiRasterOverlayPass.h"
 #include "RHI/RhiRtComposePass.h"
 #include "RHI/RhiRtDirectPass.h"
 #include "RHI/RhiRtGodRaysPass.h"
@@ -425,6 +427,35 @@ VulkanDevice::VulkanDevice( const RgInstanceCreateInfo* info )
             // available and the legacy renderer keeps the frame.
             if (libconfig.rhiRayTracing)
             {
+                // The procedural sky pass of A5.4 (RHI/RhiProceduralSkyPass.h): the default sky's
+                // cube content, the `RenderCubemap::DrawProcedural` path the legacy frame records
+                // before the trace. It owns its two cube images and the sampler; the primary,
+                // indirect and reflect/refract passes take them for set 8 below. A failure leaves
+                // the pointer null and the passes keep their 1x1 placeholders.
+                rhiProceduralSkyPass = std::make_shared<RhiProceduralSkyPass>();
+                if (!rhiProceduralSkyPass->Create(nvrhi->GetDevice(), rhiFrameContext.get(),
+                                                  info->pShaderFolderPath,
+                                                  [this](const char *pMessage) { Print(pMessage); }))
+                {
+                    rhiProceduralSkyPass.reset();
+                    Print("Warning: RHI: the procedural sky pass is unavailable, the RT passes keep the placeholder cubemaps");
+                }
+
+                // The raster overlay pass of A5.5 (RHI/RhiRasterOverlayPass.h): the ported RsWorld
+                // pass over the collector's DEFAULT list into FINAL/SCREEN_EMISSION, recorded inside
+                // the compose chain's window (the skeleton hands it as the callback). It needs the
+                // device, the table, the frame context and the shader folder; the skeleton installs
+                // its geometry and tonemapping wraps. A failure leaves the pointer null and the
+                // frame is drawn without the raster overlay.
+                rhiRasterOverlayPass = std::make_shared<RhiRasterOverlayPass>();
+                if (!rhiRasterOverlayPass->Create(nvrhi->GetDevice(), rhiTextureTable.get(),
+                                                  rhiFrameContext.get(), info->pShaderFolderPath,
+                                                  [this](const char *pMessage) { Print(pMessage); }))
+                {
+                    rhiRasterOverlayPass.reset();
+                    Print("Warning: RHI: the raster overlay pass is unavailable, the frame is drawn without it");
+                }
+
                 rhiRtPrimaryPass = std::make_shared<RhiRtPrimaryPass>();
                 if (!rhiRtPrimaryPass->Create(nvrhi->GetDevice(), rhiFrameContext.get(),
                                               rhiTextureTable.get(), info->pShaderFolderPath,
@@ -547,6 +578,31 @@ VulkanDevice::VulkanDevice( const RgInstanceCreateInfo* info )
                     }
                 }
 
+                // The real set-8 cubemaps (A5.4): the three RT passes bind the procedural sky's
+                // cube and environment textures instead of their 1x1 placeholders. The module owns
+                // them and outlives the passes' use; the setters only store the keys and the sets
+                // rebuild lazily on the next Render.
+                if (rhiProceduralSkyPass != nullptr && rhiProceduralSkyPass->IsCreated())
+                {
+                    if (rhiRtPrimaryPass != nullptr)
+                    {
+                        rhiRtPrimaryPass->SetRenderCubemap(rhiProceduralSkyPass->GetCubemapTexture(),
+                                                           rhiProceduralSkyPass->GetCubemapSampler());
+                    }
+                    if (rhiRtIndirectPass != nullptr)
+                    {
+                        rhiRtIndirectPass->SetRenderCubemaps(rhiProceduralSkyPass->GetCubemapTexture(),
+                                                             rhiProceduralSkyPass->GetEnvironmentTexture(),
+                                                             rhiProceduralSkyPass->GetCubemapSampler());
+                    }
+                    if (rhiRtReflRefrPass != nullptr)
+                    {
+                        rhiRtReflRefrPass->SetRenderCubemaps(rhiProceduralSkyPass->GetCubemapTexture(),
+                                                             rhiProceduralSkyPass->GetEnvironmentTexture(),
+                                                             rhiProceduralSkyPass->GetCubemapSampler());
+                    }
+                }
+
                 // The compose pass of A4.4 (RHI/RhiRtComposePass.h), created only under
                 // 'rhicompose': the real adapter -> interleave -> exposure histogram/average ->
                 // checkerboard -> prepare-final chain ending in the display-referred FINAL, which
@@ -618,6 +674,8 @@ VulkanDevice::VulkanDevice( const RgInstanceCreateInfo* info )
                 rhiRtIndirectPass.get(),
                 rhiRtComposePass.get(),
                 rhiRtReflRefrPass.get(),
+                rhiProceduralSkyPass.get(),
+                rhiRasterOverlayPass.get(),
                 rhiShadowMapPass.get(),
                 rhiRtGodRaysPass.get(),
                 rhiUiPass.get(),
@@ -698,12 +756,13 @@ VulkanDevice::~VulkanDevice()
     // be released before both of them
     nvrhiFrameSkeleton.reset();
 
-    // The skeleton references all of them, so they follow it immediately; all ten wrap engine
+    // The skeleton references all of them, so they follow it immediately; all twelve wrap engine
     // buffers/images and quote the RHI device, so they precede the table/context and the device
     // below. The direct pass, the indirect pass and the reflect/refract pass borrow the primary's
-    // layout handles, so they go before the primary; the UI pass borrows the table and the frame
-    // context only, and the god-rays pass borrows the shadow map's texture and sampler, so it goes
-    // before the shadow-map pass.
+    // layout handles, so they go before the primary; the UI pass and the raster overlay borrow the
+    // table and the frame context only (the compose calls the overlay back), and the god-rays pass
+    // borrows the shadow map's texture and sampler, so it goes before the shadow-map pass. The
+    // procedural sky owns the cubes the three RT passes' sets reference, so it goes after them.
     rhiDebugTracePass.reset();
     rhiRtComposePass.reset();
     rhiRtGodRaysPass.reset();
@@ -713,6 +772,8 @@ VulkanDevice::~VulkanDevice()
     rhiRtDirectPass.reset();
     rhiRtReflRefrPass.reset();
     rhiRtPrimaryPass.reset();
+    rhiRasterOverlayPass.reset();
+    rhiProceduralSkyPass.reset();
     rhiAccelStructs.reset();
 
     // The table's wrapped textures reference engine images and its samplers belong to the NVRHI

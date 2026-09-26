@@ -1431,6 +1431,96 @@ bool VulkanDevice::RenderThroughRhi(const RgDrawFrameInfo &drawInfo)
     sky.portalSize = static_cast<uint64_t>(portalList->GetBufferSize());
     portalList->ResetUploads();
 
+    // The procedural sky (A5.4): the host block of the legacy frame (VulkanDevice.cpp:755-863) that
+    // fills the `RenderCubemap::DrawProcedural` params, mirrored exactly; the skeleton records the
+    // compute before the trace only when the uniform selects SKY_TYPE_PROCEDURAL.
+    {
+        RhiProceduralSkyPass::Params p = {};
+
+        // The atmosphere is painted with the sky tint (rt_sky_color), sent by the host via
+        // skyColorDefault; this keeps the tint independent from whether the sun light is enabled.
+        p.skyTint[0] = globalUniform->skyColorDefault[0];
+        p.skyTint[1] = globalUniform->skyColorDefault[1];
+        p.skyTint[2] = globalUniform->skyColorDefault[2];
+
+        // The disc is the sun itself, so it is drawn with the sun's own colour (white when the host
+        // sends none); it only reaches the visible cubemap, never the env one.
+        p.sunDiscColor[0] = p.sunDiscColor[1] = p.sunDiscColor[2] = 1.0f;
+        if (drawInfo.pSkyParams)
+        {
+            p.sunDiscColor[0] = drawInfo.pSkyParams->sunDiscColor.data[0];
+            p.sunDiscColor[1] = drawInfo.pSkyParams->sunDiscColor.data[1];
+            p.sunDiscColor[2] = drawInfo.pSkyParams->sunDiscColor.data[2];
+        }
+
+        float sunColor[3], sunDir[3], sunAngularRadius = 0.0047f;
+        const bool hasSun = scene->GetLightManager()->GetLastDirectionalLight(sunColor, sunDir, &sunAngularRadius);
+        p.sunDirection[3] = hasSun ? 1.0f : 0.0f;
+        if (hasSun)
+        {
+            // The directional light points FROM the sun toward the scene; the sky expects the
+            // direction TOWARD the sun.
+            p.sunDirection[0] = -sunDir[0];
+            p.sunDirection[1] = -sunDir[1];
+            p.sunDirection[2] = -sunDir[2];
+        }
+        else
+        {
+            // Only centres the rayleigh gradient, so it never shows as a sun, but it still has to
+            // be a normalized vector.
+            float d[3] = { 0.3f, 0.5f, 0.8f };
+            const float len = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+            p.sunDirection[0] = d[0] / len;
+            p.sunDirection[1] = d[1] / len;
+            p.sunDirection[2] = d[2] / len;
+        }
+        p.skyTint[3] = sunAngularRadius;
+        p.skyParams[0] = globalUniform->skyColorMultiplier;
+        p.skyParams[1] = globalUniform->skyColorSaturation;
+        p.skyParams[2] = 6.0f;      // sun disc intensity (VulkanDevice.cpp:820)
+        p.skyParams[3] = 0.025f;    // display sun disc angular radius, rad (VulkanDevice.cpp:821)
+
+        // Cloud params are packed into the otherwise-unused skyCubemapRotationTransform field:
+        // [0..2] cloud colour, [3] coverage, [4] density, [5] drift speed, [6] enabled.
+        p.cloudColor[3] = globalUniform->time;
+        if (drawInfo.pSkyParams)
+        {
+            const float *c = &drawInfo.pSkyParams->skyCubemapRotationTransform.matrix[0][0];
+            p.cloudColor[0] = c[0];
+            p.cloudColor[1] = c[1];
+            p.cloudColor[2] = c[2];
+            p.cloudParams[0] = c[3];
+            p.cloudParams[1] = c[4];
+            p.cloudParams[2] = c[5];
+            p.cloudParams[3] = c[6];
+        }
+
+        // Per-face camera bases, matching Matrix::GetCubemapViewProjMat.
+        constexpr float PI = 3.14159265358979323846f;
+        const float faceAngles[6][2] = {
+            { 0.0f,        PI / 2.0f }, // POSITIVE_X
+            { 0.0f,       -PI / 2.0f }, // NEGATIVE_X
+            { -PI / 2.0f, 0.0f       }, // POSITIVE_Y
+            {  PI / 2.0f, 0.0f       }, // NEGATIVE_Y
+            { 0.0f,        0.0f      }, // POSITIVE_Z
+            { 0.0f,        PI        }, // NEGATIVE_Z
+        };
+
+        float view[16];
+        const float origin[3] = { 0.0f, 0.0f, 0.0f };
+        for (uint32_t face = 0; face < 6; face++)
+        {
+            Matrix::GetViewMatrix(view, origin, faceAngles[face][0], faceAngles[face][1], 0.0f);
+
+            // Column-major columns of the view rotation: right, up, forward.
+            p.faceBasis[face * 3 + 0][0] = view[0];  p.faceBasis[face * 3 + 0][1] = view[4];  p.faceBasis[face * 3 + 0][2] = view[8];
+            p.faceBasis[face * 3 + 1][0] = view[1];  p.faceBasis[face * 3 + 1][1] = view[5];  p.faceBasis[face * 3 + 1][2] = view[9];
+            p.faceBasis[face * 3 + 2][0] = view[2];  p.faceBasis[face * 3 + 2][1] = view[6];  p.faceBasis[face * 3 + 2][2] = view[10];
+        }
+
+        sky.proceduralSkyParams = p;
+    }
+
     // The RHI pass waits on the acquire semaphore itself, so the semaphore is
     // taken away from the renderer: it may be waited on only once per signal.
     VkPipelineStageFlags semaphoreWaitStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;

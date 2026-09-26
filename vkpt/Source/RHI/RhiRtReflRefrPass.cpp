@@ -169,6 +169,38 @@ constexpr uint32_t MAX_ATTRIBUTE_SIZE = 2 * sizeof(float);
 // the descriptor array.
 constexpr uint32_t CUBEMAP_TABLE_CAPACITY = 32;
 
+// The engine render cubemap's level count and the shader's SKY_MIP_COUNT (RenderCubemap.cpp:34-37
+// creates both cubes with cubemapMipLevels = 11; RaygenCommon.hlsli:390 defines SKY_MIP_COUNT
+// 11.0): `getSkyFiltered` scales its lod by the mip count, so a shorter chain would clamp the
+// ambient/roughness lookups to its last mip. Set 8's real cubes have to carry the full chain.
+constexpr uint32_t RENDER_CUBEMAP_MIP_COUNT = 11;
+
+// The shape the shader's `renderCubemap`/`renderCubemapEnv` `SampleLevel(..., lod)` reads and the
+// engine render cubemap has (RenderCubemap.cpp:34-37, :489-503): a six-layer R16G16B16A16_SFLOAT
+// cube of square faces with the eleven-mip chain above. A desc outside it is a host-side mistake,
+// not a per-frame condition: SetRenderCubemaps refuses it with a one-shot warning and the
+// placeholder pair stays.
+bool IsRenderCubemapDesc(const nvrhi::TextureDesc &desc)
+{
+    return desc.dimension == nvrhi::TextureDimension::TextureCube &&
+           desc.format == nvrhi::Format::RGBA16_FLOAT &&
+           desc.arraySize == 6 &&
+           desc.width > 0 && desc.width == desc.height &&
+           desc.mipLevels >= RENDER_CUBEMAP_MIP_COUNT;
+}
+
+// The engine's set-8 sampler: RG_SAMPLER_FILTER_LINEAR with REPEAT on both axes
+// (RenderCubemap.cpp:696-697; SamplerManager.cpp:142 fills W with REPEAT too). A different sampler
+// changes the sky look silently, so SetRenderCubemaps reports a deviation once and still uses what
+// it got.
+bool IsRenderCubemapSampler(const nvrhi::SamplerDesc &desc)
+{
+    return desc.minFilter && desc.magFilter &&
+           desc.addressU == nvrhi::SamplerAddressMode::Repeat &&
+           desc.addressV == nvrhi::SamplerAddressMode::Repeat &&
+           desc.addressW == nvrhi::SamplerAddressMode::Repeat;
+}
+
 // The engine's portal array (set 9): `PortalList` owns one device-local buffer of
 // PORTAL_MAX_COUNT x sizeof(ShPortalInstance) bytes (PortalList.cpp:40) and the shader declares
 // `ConstantBuffer<PortalInstances_BT> portalInstances` with the same 63 records
@@ -244,6 +276,12 @@ RhiRtReflRefrPass::~RhiRtReflRefrPass()
 
     portalBuffer = nullptr;
     renderCubemapSet = nullptr;
+    renderCubemapSetSampler = nullptr;
+    renderCubemapSampler = nullptr;
+    renderCubemapEnvSetTexture = nullptr;
+    renderCubemapEnvTexture = nullptr;
+    renderCubemapSetTexture = nullptr;
+    renderCubemapTexture = nullptr;
     cubemapTable = nullptr;
     dummyCubemapSampler = nullptr;
     dummyCubemapTexture = nullptr;
@@ -435,7 +473,8 @@ bool RhiRtReflRefrPass::Create(nvrhi::IDevice *pDevice,
     // this one is cleared to black once, on the first list that binds it, so the default
     // `rt_physical_sky 1` path - whose missed reflection rays sample `renderCubemapEnv` - reads
     // defined black radiance instead of undefined contents (the indirect pass's reasoning,
-    // a43_recon.md §8.3). Replacing the dummies with the engine's real cubes is the A5a follow-up.
+    // a43_recon.md §8.3). Set 8 gets the procedural-sky module's real cubes through
+    // SetRenderCubemaps, and the dummy stays the fallback and the set-7 slot (A5.4).
     {
         nvrhi::TextureDesc desc;
         desc.dimension = nvrhi::TextureDimension::TextureCube;
@@ -609,6 +648,50 @@ void RhiRtReflRefrPass::SetPortalBuffer(nvrhi::IBuffer *pPortalBuffer)
     }
 
     portalBuffer = pPortalBuffer;
+}
+
+void RhiRtReflRefrPass::SetRenderCubemaps(nvrhi::ITexture *pCubemap, nvrhi::ITexture *pEnvCubemap,
+                                          nvrhi::ISampler *pSampler)
+{
+    if (pCubemap == nullptr || pEnvCubemap == nullptr || pSampler == nullptr)
+    {
+        // The placeholder fallback: the module keeps its black-cleared 1x1 dummy pair in set 8
+        // until a valid trio arrives (or again after a null call).
+        renderCubemapTexture = nullptr;
+        renderCubemapEnvTexture = nullptr;
+        renderCubemapSampler = nullptr;
+        return;
+    }
+
+    // The shape of the procedural-sky module's cubes, which is the engine render cubemap's: see
+    // IsRenderCubemapDesc. A desc outside it - or a partial pair, which the four-item set cannot
+    // express - is a host-side mistake, not a per-frame condition: it is refused with a one-shot
+    // warning and the placeholder pair stays in place.
+    if (!IsRenderCubemapDesc(pCubemap->getDesc()) || !IsRenderCubemapDesc(pEnvCubemap->getDesc()))
+    {
+        if (!warnedBadRenderCubemap)
+        {
+            warnedBadRenderCubemap = true;
+            LogMessage(print, "Warning: RHI: the reflect/refract RT pass render cubemaps (set 8) have "
+                              "to be six-layer RGBA16F TextureCubes with square faces and at least "
+                              "eleven mips");
+        }
+        renderCubemapTexture = nullptr;
+        renderCubemapEnvTexture = nullptr;
+        renderCubemapSampler = nullptr;
+        return;
+    }
+
+    if (!IsRenderCubemapSampler(pSampler->getDesc()) && !warnedRenderCubemapSampler)
+    {
+        warnedRenderCubemapSampler = true;
+        LogMessage(print, "Warning: RHI: the reflect/refract RT pass render-cubemap sampler is not the "
+                          "engine's linear/repeat one; the sky lookups may shift");
+    }
+
+    renderCubemapTexture = pCubemap;
+    renderCubemapEnvTexture = pEnvCubemap;
+    renderCubemapSampler = pSampler;
 }
 
 void RhiRtReflRefrPass::Render(nvrhi::ICommandList *pCommandList,
@@ -810,14 +893,24 @@ void RhiRtReflRefrPass::Render(nvrhi::ICommandList *pCommandList,
     // call is a no-op.
     textureTable->TrackPendingTextures(pCommandList);
 
-    // The set-8 placeholder is cleared to black once, on the first list that binds it: with the
-    // default `rt_physical_sky 1` the reflrefr's missed reflection rays sample `renderCubemapEnv`
-    // (RaygenCommon.hlsli:397-407) and would otherwise read the undefined contents a never-cleared
-    // dummy has (a43_recon.md §8.3). NVRHI's clear is a vkCmdClearColorImage behind the automatic
+    // Set 8 over the coordinator's render-cubemap pair, or over the placeholder pair until
+    // SetRenderCubemaps delivered the real cubes; a changed key rebuilds the set through the retire
+    // queue. It runs before the clear below, which reads the current set's keys.
+    if (!PrepareRenderCubemapSet())
+    {
+        return;
+    }
+
+    // The set-8 placeholder is cleared to black once, on the first list that binds the placeholder:
+    // with the default `rt_physical_sky 1` the reflrefr's missed reflection rays sample
+    // `renderCubemapEnv` (RaygenCommon.hlsli:397-407) and would otherwise read the undefined
+    // contents a never-cleared dummy has (a43_recon.md §8.3). The real cubes need no clear, so the
+    // recorded clear follows the placeholder set: while the placeholder is current and still
+    // uncleared, this list clears it. NVRHI's clear is a vkCmdClearColorImage behind the automatic
     // barrier pair (CopyDest in, the SRV requirement of the binding out), and the texture is
     // NVRHI-created, so it carries TRANSFER_DST; this is one 1x1x6 write on one list of the pass's
     // lifetime. The A5b gate forces `r_fastsky 1` (SKY_TYPE_COLOR), where nothing samples it.
-    if (!dummyCubemapCleared)
+    if (!dummyCubemapCleared && renderCubemapSetTexture == nullptr)
     {
         pCommandList->clearTextureFloat(dummyCubemapTexture, nvrhi::AllSubresources,
                                         nvrhi::Color(0.f, 0.f, 0.f, 1.f));
@@ -1127,6 +1220,58 @@ bool RhiRtReflRefrPass::PreparePortalSet(Target &target)
     }
 
     target.portalBuffer = portalBuffer;
+    return true;
+}
+
+bool RhiRtReflRefrPass::PrepareRenderCubemapSet()
+{
+    // The set follows the coordinator's keys: the two real cubes with their sampler, or the
+    // module's placeholder pair while the handles are null. A pointer change (SetRenderCubemaps, or
+    // a null call restoring the placeholder) rebuilds it; the module starts with the null keys,
+    // which is exactly the placeholder state of the set Create built, so the first Render is a
+    // no-op until the setter changes something. The replaced set goes through the retire queue, so
+    // a list that is still executing keeps its descriptors alive.
+    const bool usePlaceholder = renderCubemapTexture == nullptr;
+    nvrhi::ITexture *const texture =
+        usePlaceholder ? dummyCubemapTexture.Get() : renderCubemapTexture.Get();
+    nvrhi::ITexture *const envTexture =
+        usePlaceholder ? dummyCubemapTexture.Get() : renderCubemapEnvTexture.Get();
+    nvrhi::ISampler *const sampler =
+        usePlaceholder ? dummyCubemapSampler.Get() : renderCubemapSampler.Get();
+
+    if (renderCubemapSet != nullptr &&
+        renderCubemapSetTexture == renderCubemapTexture.Get() &&
+        renderCubemapEnvSetTexture == renderCubemapEnvTexture.Get() &&
+        renderCubemapSetSampler == renderCubemapSampler.Get())
+    {
+        return true;
+    }
+
+    if (renderCubemapSet != nullptr)
+    {
+        frameContext->Retire(renderCubemapSet);
+    }
+    renderCubemapSet = nullptr;
+
+    // One sampler fills both sampler items, exactly as the placeholder and the engine's set do
+    // (both engine SAMPLER bindings name the same LINEAR/REPEAT sampler, RenderCubemap.cpp:696-697).
+    nvrhi::BindingSetDesc setDesc;
+    setDesc.addItem(nvrhi::BindingSetItem::Texture_SRV(BINDING_RENDER_CUBEMAP, texture));
+    setDesc.addItem(nvrhi::BindingSetItem::Texture_SRV(BINDING_RENDER_CUBEMAP_ENV, envTexture));
+    setDesc.addItem(nvrhi::BindingSetItem::Sampler(BINDING_RENDER_CUBEMAP_SAMPLER, sampler));
+    setDesc.addItem(nvrhi::BindingSetItem::Sampler(BINDING_RENDER_CUBEMAP_ENV_SAMPLER, sampler));
+
+    renderCubemapSet = device->createBindingSet(setDesc, renderCubemapLayout);
+
+    if (renderCubemapSet == nullptr)
+    {
+        LogMessage(print, "Warning: RHI: failed to create the reflect/refract RT pass render-cubemap binding set");
+        return false;
+    }
+
+    renderCubemapSetTexture = renderCubemapTexture.Get();
+    renderCubemapEnvSetTexture = renderCubemapEnvTexture.Get();
+    renderCubemapSetSampler = renderCubemapSampler.Get();
     return true;
 }
 

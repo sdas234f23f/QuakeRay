@@ -72,6 +72,8 @@ namespace vkpt
 class NvrhiContext;
 class NvrhiFrameSkeleton;
 class RhiDebugTracePass;
+class RhiProceduralSkyPass;
+class RhiRasterOverlayPass;
 class RhiRtComposePass;
 class RhiRtDirectPass;
 class RhiRtGodRaysPass;
@@ -323,6 +325,17 @@ private:
     // skeleton drives it on the traced frame's list and the engine's portal buffers feed its set 9.
     // Null when the creation failed; the frame is then drawn without reflections.
     std::shared_ptr<RhiRtReflRefrPass>      rhiRtReflRefrPass;
+
+    // The RHI procedural sky pass of A5.4 (RHI/RhiProceduralSkyPass.h): the default sky's cube
+    // content, the `RenderCubemap::DrawProcedural` path of the legacy frame. It owns its two cube
+    // images and the sampler; the primary, indirect and reflect/refract passes bind them in set 8.
+    // Null when the creation failed; the passes then keep their 1x1 placeholders.
+    std::shared_ptr<RhiProceduralSkyPass>   rhiProceduralSkyPass;
+
+    // The RHI raster overlay pass of A5.5 (RHI/RhiRasterOverlayPass.h): the ported RsWorld pass over
+    // the collector's DEFAULT list into FINAL/SCREEN_EMISSION, recorded inside the compose chain's
+    // window. Null when the creation failed; the frame is then drawn without the overlay.
+    std::shared_ptr<RhiRasterOverlayPass>   rhiRasterOverlayPass;
 
     // The RHI 2D-UI pass (RHI/RhiUiPass.h): the game's SWAPCHAIN overlay (the HUD, the console, the
     // menus, the screen effects) drawn into the compose's upscaled image after the TAAU, created

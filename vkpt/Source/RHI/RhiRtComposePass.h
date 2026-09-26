@@ -173,7 +173,11 @@ class RhiFrameContext;
 //  - FSR2/FSR3/DLSS and the `BlitForEffects` tail: the TAAU writes UPSCALED_PING directly and the
 //    present samples it, without the effect/sharpen chain (`rt_bloom` 0, `rt_sharpen` 0 and the
 //    `rt_upscale_*` 0 default configuration make that equivalent, VulkanDevice.cpp:1100-1136);
-//  - the raster world/emissive overlay (`Rasterizer::DrawToFinalImage`, VulkanDevice.cpp:1071);
+//  - the raster world/emissive overlay (`Rasterizer::DrawToFinalImage`, VulkanDevice.cpp:1071):
+//    the module records no overlay of its own, but `Render` opens the pass's exact legacy window
+//    for the host through its trailing `pfnRasterOverlay` callback, between the checkerboard and
+//    the prepare-final dispatch; with an empty callback the chain is what it was in A4.5 (the
+//    `Render` contract below);
 //  - god rays: the shadow map, the two `GodRays` dispatches and their host block are
 //    `RhiShadowMapPass`'s and `RhiRtGodRaysPass`'s; the host records them before this module on the
 //    same list. This module consumes only their output image 64 as a plain union SRV in the final
@@ -187,7 +191,8 @@ class RhiFrameContext;
 //  - the host order per traced frame, all on the frame context's open list of the same slot and
 //    between the ray-tracing passes and the present:
 //      shadow map -> primary -> god rays -> (filterEnabled: RenderGradientReproject) -> direct ->
-//      indirect -> Render -> RenderTaaU -> present;
+//      indirect -> Render (the raster-overlay callback, if any, runs inside it between the
+//      checkerboard and the prepare-final) -> RenderTaaU -> present;
 //  - `filterEnabled` is `uniform->GetData()->fltEnable[0] >= 0.5f`, computed after the host wrote
 //    the frame's uniform bytes: the adapter and the gradient chain it selects must match the
 //    value the primary/direct/indirect raygens were dispatched with (`q2GetIsGradient` reads image
@@ -266,6 +271,42 @@ public:
     // (the legacy `fltEnable[0] < 0.5` short-circuit). The exposure params of the two luminance
     // dispatches are the host's: it has to write them into the engine tonemapping object before
     // this call (see the class comment); RenderTaaU follows after it.
+    //
+    // 'pfnRasterOverlay' is the host's raster-overlay window: when it is non-empty it is invoked
+    // exactly once per recorded call, on this same open list, between the checkerboard dispatch
+    // that writes FINAL (28) and SCREEN_EMISSION (62) and the prepare-final dispatch that reads
+    // them - the legacy `Rasterizer::DrawToFinalImage` position (VulkanDevice.cpp:1071, between
+    // ProcessCheckerboard at :1066 and Finalize at :1085). The callback records the raster overlay
+    // into FINAL + SCREEN_EMISSION and, for the authored emissive blends, into
+    // PRIMARY_TO_REFL_REFR (25), which the final composition then reads in checkerboard space
+    // (the `RsWorld.frag.hlsl:149-157` write). The compose guarantees for the callback: the
+    // checkerboard has just resolved the HDR colour into FINAL, the emission into SCREEN_EMISSION
+    // and the fog into ACID_FOG (the pre-tonemap values the prepare-final consumes,
+    // CmCheckerboard.comp.hlsl:86-98), the exposure pair has already written the slot's
+    // tonemapping buffer, and everything the callback records is ordered on this list before the
+    // prepare-final dispatches. The callback has to carry the state discipline of the images it
+    // touches itself: it must leave FINAL, SCREEN_EMISSION and - when it writes it -
+    // PRIMARY_TO_REFL_REFR in the engine's GENERAL state by announcing UnorderedAccess before it
+    // binds them and setting them back to UnorderedAccess after the overlay's last use of each,
+    // exactly the present's pattern (NvrhiFrameSkeleton.cpp:626-648) - no matter whether the
+    // callback carries the transitions on its own wraps of 28/62/25 or on the compose's
+    // `GetFinalTexture` wrap for 28. The callback's render-target -> UnorderedAccess transition is
+    // the barrier that makes its attachment writes visible to the compute reads; the compose
+    // guarantees that barrier is committed on this list before the prepare-final dispatch,
+    // because that dispatch's state set commits the queued barriers (vulkan-compute.cpp:145). The
+    // compose's own announcement (the top of every entry point) and its restore lists keep naming
+    // UnorderedAccess for its wraps; the callback's restore is what keeps that claim true
+    // physically, and the prepare-final then reads FINAL through its storage image and samples
+    // SCREEN_EMISSION as before. A callback that ends with the images still bound as render
+    // targets leaves their physical layouts outside the announced General state: through the
+    // callback's own wraps the compose cannot see the change (its wrap tracked UnorderedAccess all
+    // along), and the prepare-final read is undefined. An empty callback records nothing and
+    // changes nothing about the chain.
+    // A callback and not two public entry points, because the overlay's only contract with this
+    // module is that one window: splitting the pre-TAAU chain in two would hand the host the
+    // module's intermediate wrap and set state to sequence around, while one `Render` per frame
+    // stays atomic (a5c_overlay_recon.md §2.3). Like the chain, the call is skipped when an input
+    // is missing and the callback is not invoked.
     void Render(nvrhi::ICommandList *pCommandList,
                 uint32_t frameIndex,
                 const Framebuffers *pFramebuffers,
@@ -274,7 +315,8 @@ public:
                 uint32_t upscaledWidth,
                 uint32_t upscaledHeight,
                 bool filterEnabled,
-                nvrhi::IBuffer *pUniformBuffer);
+                nvrhi::IBuffer *pUniformBuffer,
+                const std::function<void(nvrhi::ICommandList *)> &pfnRasterOverlay = {});
 
     // The upscaler step: the host calls it after `Render` of the same frame slot and before the
     // present. It records `CmQ2TAAU` over its 6-item set - 2 storage images (29 UPSCALED_PING,

@@ -32,6 +32,7 @@
 #include "../Common.h"
 #include "../ISwapchainDependency.h"
 #include "../RasterizedDataCollector.h"
+#include "RhiProceduralSkyPass.h"
 
 namespace vkpt
 {
@@ -39,6 +40,7 @@ namespace vkpt
 class Framebuffers;
 class GlobalUniform;
 class RhiDebugTracePass;
+class RhiRasterOverlayPass;
 class RhiRtComposePass;
 class RhiRtDirectPass;
 class RhiRtGodRaysPass;
@@ -173,6 +175,13 @@ public:
         uint64_t portalStaging = 0;
         uint64_t portalDevice = 0;
         uint64_t portalSize = 0;
+
+        // -- the procedural sky (A5.4) --
+        // The `RenderCubemap::DrawProcedural` params of the legacy host block
+        // (VulkanDevice.cpp:755-863), precomputed by the host every frame. The skeleton records the
+        // compute before the trace only when the uniform selects SKY_TYPE_PROCEDURAL; the module
+        // early-outs by these bytes, so an unchanged frame (clouds off) costs one memcmp.
+        RhiProceduralSkyPass::Params proceduralSkyParams = {};
         // The engine's global uniform: the world shader's set 1, the source of the bytes the
         // skeleton writes into the uniform wrap every frame, and the CPU copy the host-only exposure
         // parameters read. The host owns it, so the field keeps the shared_ptr (the traced mode's
@@ -253,6 +262,16 @@ public:
     // reproject, Render records it when the uniform's reflect-refract depth is positive, from the
     // engine's portal buffers the frame inputs carry. Optional: a null one draws the frame without
     // reflections.
+    // 'pProceduralSkyPass' is the host's procedural sky pass (RhiProceduralSkyPass,
+    // RHI/RhiProceduralSkyPass.h): when it is non-null, the traced chain records its compute before
+    // the primary whenever the uniform selects SKY_TYPE_PROCEDURAL, from the params the frame inputs
+    // carry, so the RT passes' set 8 samples a written cube. Optional: a null one leaves the passes'
+    // placeholders in place.
+    // 'pRasterOverlayPass' is the host's raster overlay pass (RhiRasterOverlayPass,
+    // RHI/RhiRasterOverlayPass.h): when it is non-null, the compose call's window invokes it over
+    // the frame's DEFAULT draw list into FINAL and SCREEN_EMISSION, exactly where the legacy frame
+    // records `Rasterizer::DrawToFinalImage`; the skeleton installs its geometry and tonemapping
+    // wraps. Optional: a null one draws the frame without the raster overlay.
     // 'pShadowMapPass' and 'pGodRaysPass' are the host's A5.2 passes (RhiShadowMapPass,
     // RhiRtGodRaysPass): in the traced chain, once the primary ran, Render records the shadow map,
     // and when it drew something the god-rays trace and filter whose output CmPrepareFinal adds.
@@ -274,6 +293,8 @@ public:
                                 RhiRtIndirectPass *pRtIndirectPass,
                                 RhiRtComposePass *pRtComposePass,
                                 RhiRtReflRefrPass *pReflRefrPass,
+                                RhiProceduralSkyPass *pProceduralSkyPass,
+                                RhiRasterOverlayPass *pRasterOverlayPass,
                                 RhiShadowMapPass *pShadowMapPass,
                                 RhiRtGodRaysPass *pGodRaysPass,
                                 RhiUiPass *pUiPass,
@@ -407,6 +428,18 @@ private:
     // reflect-refract depth is positive. Not owned; null when the host's creation failed, in which
     // case the frame is drawn without reflections.
     RhiRtReflRefrPass *reflRefrPass = nullptr;
+
+    // The host's procedural sky pass (RhiProceduralSkyPass, RHI/RhiProceduralSkyPass.h), driven in
+    // the traced chain before the primary whenever the uniform selects SKY_TYPE_PROCEDURAL: it
+    // writes the cube the RT passes' set 8 samples. Not owned; null when the host's creation failed,
+    // in which case the passes sample their placeholders.
+    RhiProceduralSkyPass *proceduralSkyPass = nullptr;
+
+    // The host's raster overlay pass (RhiRasterOverlayPass, RHI/RhiRasterOverlayPass.h), invoked by
+    // the compose call's window over the frame's DEFAULT draw list: it writes FINAL and
+    // SCREEN_EMISSION exactly where the legacy frame records `Rasterizer::DrawToFinalImage`. Not
+    // owned; null when the host's creation failed, in which case the frame is drawn without it.
+    RhiRasterOverlayPass *rasterOverlayPass = nullptr;
 
     // The wraps of the engine PortalList buffers (A5.3): the per-slot staging as a copy source and
     // the device-local array once as a static constant buffer (the set 9 handle the pass keeps).

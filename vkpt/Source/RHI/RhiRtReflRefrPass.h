@@ -115,7 +115,9 @@ class RhiTextureTable;
 //                                RhiRtIndirectPass.cpp:431-495);
 //   set 8  render cubemap      - FOUR items, unlike the primary's two: `renderCubemap` at raw 0,
 //                                `renderCubemapEnv` at raw 1 and their samplers at raw 2/3
-//                                (BINDING_RENDER_CUBEMAP*), the same shape the indirect module owns;
+//                                (BINDING_RENDER_CUBEMAP*), the same shape the indirect module owns.
+//                                SetRenderCubemaps replaces the placeholder pair with the
+//                                procedural-sky module's real cubes;
 //   set 9  portal instances    - `ConstantBuffer<PortalInstances_BT> portalInstances` at raw
 //                                binding 0 (RaygenCommon.hlsli:149-160): one module-owned one-item
 //                                layout and a per-slot set over it. The buffer is the engine's
@@ -202,6 +204,11 @@ class RhiTextureTable;
 //    queue, and a null pointer (or a buffer outside the shape above) is refused with a one-shot
 //    warning and makes Render skip until a valid buffer arrives. The module does not record the
 //    copy itself.
+//  - SetRenderCubemaps once after the procedural-sky module (stream S1, RhiProceduralSkyPass) was
+//    created and before the first Render (and only again if the cubes are replaced): the real
+//    `renderCubemap`/`renderCubemapEnv` pair and the module's LINEAR/REPEAT sampler. Set 8 keeps
+//    the black-cleared placeholder pair until then, a null call restores it, and the module's
+//    textures have to outlive this pass's use.
 //  - Render on the slot's open command list (RhiFrameContext::BeginSlot first), after
 //    `RhiRtPrimaryPass::Render` and the input side of the god rays, before the reflected-segment
 //    god-rays dispatch (see the ordering paragraph above) and the compose chain's gradient
@@ -212,8 +219,9 @@ class RhiTextureTable;
 //    the uniform's contents.
 //  - Call ReleaseTargets() before Framebuffers::PrepareForSize destroys the framebuffer images.
 //
-// Must not pull in: the god rays and their shadow map (A5.2), the real cubemap content (A5a), the
-// volumetric path (dead in this tree), the legacy `RtRaygenReflRefr`, the raster overlay, the
+// Must not pull in: the god rays and their shadow map (A5.2), the engine's real cubemaps of set 7
+// (A5a - only set 8's procedural-sky content is this module's), the volumetric path (dead in this
+// tree), the legacy `RtRaygenReflRefr`, the raster overlay, the
 // upscalers, and the portals' *content* - only the set-9 binding of the PortalList buffer is this
 // module's, the upload and the copy stay the coordinator's.
 //
@@ -267,6 +275,35 @@ public:
     // through the retire queue, and passing null clears the key (Render then warns once and skips).
     void SetPortalBuffer(nvrhi::IBuffer *pPortalBuffer);
 
+    // Set 8's real content: the coordinator's `renderCubemap`/`renderCubemapEnv` pair and their
+    // sampler - stream S1's RhiProceduralSkyPass objects, handed over as bare pointers (its
+    // `GetCubemapTexture()`, `GetEnvironmentTexture()` and `GetCubemapSampler()`). The blob
+    // declares all four items (measured over RtQ2ReflectRefract.rgen), so both cubes are required;
+    // one sampler fills both sampler positions, exactly as the placeholder pair and the engine's
+    // set do (both engine SAMPLER bindings name the same LINEAR/REPEAT sampler,
+    // RenderCubemap.cpp:696-697).
+    //
+    // The coordinator calls it once after RhiProceduralSkyPass was created and after this pass's
+    // Create, before the first Render; the module owns the objects and they have to outlive this
+    // pass's use (the pass keeps references but does not own the images), and the module's cubes
+    // keep NonPixelShaderResource as their initial state (RhiProceduralSkyPass), which is the
+    // state this set's Texture_SRV bindings require, so they issue no texture transition. Both
+    // cubes have to satisfy the shader's `renderCubemap`/`renderCubemapEnv` `SampleLevel(..., lod)`
+    // contracts and the engine render cubemap's shape (RenderCubemap.cpp:34-37, :489-503), so the
+    // setter enforces, for each,
+    //   dimension TextureCube, format RGBA16_FLOAT (R16G16B16A16_SFLOAT), arraySize 6,
+    //   width == height > 0,
+    //   mipLevels >= 11 (the SKY_MIP_COUNT chain `getSkyFiltered` scales its lod against;
+    //   RaygenCommon.hlsli:390-417)
+    // and refuses a cube outside it with a one-shot warning - the black-cleared 1x1 placeholder
+    // pair then stays in place. The sampler is expected to be the module's LINEAR/REPEAT one; a
+    // deviation is reported once and the sampler is used as given. A null cube (either one) or a
+    // null sampler restores the placeholder pair.
+    // The set-8 set over the pair is rebuilt on the next Render and the replaced set goes through
+    // the frame context's retire queue; the real cubes are not framebuffer images, so they and the
+    // set survive ReleaseTargets exactly like the placeholder's.
+    void SetRenderCubemaps(nvrhi::ITexture *pCubemap, nvrhi::ITexture *pEnvCubemap, nvrhi::ISampler *pSampler);
+
     // One call per frame, on the frame context's open command list of 'frameIndex', after
     // RhiRtPrimaryPass::Render and the input side of the god rays, before the reflected-segment
     // god-rays dispatch and the compose chain's gradient reproject. The caller applies the legacy
@@ -280,9 +317,9 @@ public:
     //
     // What is recorded: the wraps of the 24 set-1 images (created on first use, re-created when the
     // engine re-created an image or the size changed; the replaced wraps and the sets over them go
-    // through the frame context's retire queue), the per-slot sets 0-3 and 9, the clear of the
-    // render-cubemap placeholder on the first list that binds it, then one
-    // `dispatchRays(width, height, 1)`.
+    // through the frame context's retire queue), the per-slot sets 0-3 and 9, the set-8 set if the
+    // render-cubemap pair changed, the clear of the placeholder cube on the first list that binds
+    // the placeholder (the real cubes skip it), then one `dispatchRays(width, height, 1)`.
     //
     // The image state contract, spelled out on the class: UnorderedAccess is announced for all 24
     // images before the first binding, and after the dispatch exactly image 25 - the only SRV-only
@@ -306,7 +343,8 @@ public:
     // Framebuffers::PrepareForSize path) - otherwise the wraps reference destroyed VkImages. The
     // next Render re-reads the handles and re-wraps, so the pass survives a resize without a second
     // Create; the set-9 sets are rebuilt over the same buffer pointer. The module-owned placeholder
-    // cubes and the render-cubemap set do not reference framebuffer images and survive.
+    // cubes and the set-8 set (over the real render cubemaps after SetRenderCubemaps) do not
+    // reference framebuffer images and survive.
     void ReleaseTargets();
 
 private:
@@ -365,6 +403,11 @@ private:
     // portal layout. Returns false when no valid buffer was set (a one-shot warning).
     bool PreparePortalSet(Target &target);
 
+    // Set 8: builds (or rebuilds, when a key changed) the four-item set over the coordinator's
+    // render-cubemap pair, or over the placeholder pair when none was set. Returns false when the
+    // set cannot be created.
+    bool PrepareRenderCubemapSet();
+
     nvrhi::IDevice *device = nullptr;
     PrintFunction print;
     std::string shaderFolderPath;
@@ -403,10 +446,23 @@ private:
     // the 32-slot bindless table and the four-item render-cubemap set, all module-owned (until the
     // real cubemaps get RHI accessors, A5a). 'dummyCubemapCleared' makes the black clear of the
     // set-8 dummy a one-off; the default `rt_physical_sky 1` path samples `renderCubemapEnv` and
-    // must not read undefined contents.
+    // must not read undefined contents. The clear is recorded only while the placeholder pair is
+    // the current set (the real cubes need no clear).
     nvrhi::TextureHandle dummyCubemapTexture;
     nvrhi::SamplerHandle dummyCubemapSampler;
     nvrhi::DescriptorTableHandle cubemapTable;
+
+    // Set 8's coordinator keys: the raw handles keep the real cubes and their sampler alive (the
+    // coordinator's SetRenderCubemaps stores them), the raw pointers are the coordinator keys the
+    // current set was built over, so a replaced key rebuilds it in PrepareRenderCubemapSet. Both
+    // texture pointers null mean the placeholder pair is the current set (what the module starts
+    // with).
+    nvrhi::TextureHandle renderCubemapTexture;
+    nvrhi::ITexture *renderCubemapSetTexture = nullptr;
+    nvrhi::TextureHandle renderCubemapEnvTexture;
+    nvrhi::ITexture *renderCubemapEnvSetTexture = nullptr;
+    nvrhi::SamplerHandle renderCubemapSampler;
+    nvrhi::ISampler *renderCubemapSetSampler = nullptr;
     nvrhi::BindingSetHandle renderCubemapSet;
     bool dummyCubemapCleared = false;
 
@@ -428,6 +484,8 @@ private:
     bool warnedMissingVertexData = false;
     bool warnedBadVertexData = false;
     bool warnedUnexpectedSize = false;
+    bool warnedBadRenderCubemap = false;
+    bool warnedRenderCubemapSampler = false;
 
     bool created = false;
 };
