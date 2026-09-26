@@ -12,6 +12,31 @@ $shaderOut = Join-Path $PSScriptRoot "vkpt\Build"
 if (-not $DestDir) { $DestDir = Join-Path $PSScriptRoot "build\Debug\id1\shaders" }
 $destDir   = $DestDir
 
+# The generator rebuilds a shader when a file it depends on is newer than the .spv
+# it produced, and the headers the shaders include (CloudLayer.h and the rest, which
+# sit next to the sources) have been outside that check: a change in one of them has
+# shipped stale .spv files more than once, with a build that reported success. When
+# any header in the source folder is newer than the oldest built shader, throw them
+# all away and let the generator build them again. The same is done for every build
+# that asks for a rebuild.
+$headers = @(Get-ChildItem -Path (Join-Path $shaderSrc "*.h") -ErrorAction SilentlyContinue)
+$built   = @(Get-ChildItem -Path (Join-Path $shaderOut "*.spv") -ErrorAction SilentlyContinue)
+if ($headers.Count -gt 0 -and $built.Count -gt 0)
+{
+    $newestHeader = ($headers | Sort-Object LastWriteTime -Descending)[0]
+    $oldestBuild  = ($built   | Sort-Object LastWriteTime)[0]
+
+    if ($newestHeader.LastWriteTime -gt $oldestBuild.LastWriteTime)
+    {
+        Write-Host "Shader header $($newestHeader.Name) is newer than the built shaders: rebuilding all of them." -ForegroundColor Yellow
+        Remove-Item (Join-Path $shaderOut "*.spv") -Force
+    }
+}
+if ($Rebuild -and $built.Count -gt 0)
+{
+    Remove-Item (Join-Path $shaderOut "*.spv") -Force
+}
+
 if ($env:VULKAN_SDK) {
     $sdkBin = Join-Path $env:VULKAN_SDK "Bin"
     if (Test-Path (Join-Path $sdkBin "glslc.exe")) {
