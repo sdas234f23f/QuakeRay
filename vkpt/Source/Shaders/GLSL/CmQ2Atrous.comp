@@ -49,20 +49,47 @@ Q2SH q2LoadSH(texture2D img_shY, texture2D img_CoCg, ivec2 p)
     return r;
 }
 
+// GLSL cannot pass image variables with a format qualifier through a function parameter, so the
+// three inputs of filter_image are read as generated globals here, selected by the two flags.
+// The HLSL half passes the same storage images as RWTexture2D parameters instead.
+vec3 q2LoadAtrousHF(bool read_pong, bool read_hist_hf, ivec2 p)
+{
+    if(read_hist_hf)
+    {
+        return q2UnpackRGBE(imageLoad(framebufQ2HistColorHF, p).r);
+    }
+    return read_pong
+        ? q2UnpackRGBE(imageLoad(framebufQ2AtrousPongHF, p).r)
+        : q2UnpackRGBE(imageLoad(framebufQ2AtrousPingHF, p).r);
+}
+
+vec3 q2LoadAtrousSpec(bool read_pong, ivec2 p)
+{
+    return read_pong
+        ? q2UnpackRGBE(imageLoad(framebufQ2AtrousPongSpec, p).r)
+        : q2UnpackRGBE(imageLoad(framebufQ2AtrousPingSpec, p).r);
+}
+
+vec2 q2LoadAtrousMoments(bool read_pong, ivec2 p)
+{
+    return read_pong
+        ? imageLoad(framebufQ2AtrousPongMoments, p).xy
+        : imageLoad(framebufQ2AtrousPingMoments, p).xy;
+}
+
 void
 filter_image(
-    utexture2D img_hf,
-    utexture2D img_spec,
-    texture2D img_moments,
+    bool read_pong,
+    bool read_hist_hf,
     out vec3 filtered_hf,
     out vec3 filtered_spec,
     out vec2 filtered_moments)
 {
     ivec2 ipos = ivec2(gl_GlobalInvocationID);
 
-    vec3 color_center_hf = q2UnpackRGBE(texelFetch(img_hf, ipos, 0).r);
-    vec3 color_center_spec = q2UnpackRGBE(texelFetch(img_spec, ipos, 0).r);
-    vec2 moments_center = texelFetch(img_moments, ipos, 0).xy;
+    vec3 color_center_hf = q2LoadAtrousHF(read_pong, read_hist_hf, ipos);
+    vec3 color_center_spec = q2LoadAtrousSpec(read_pong, ipos);
+    vec2 moments_center = q2LoadAtrousMoments(read_pong, ipos);
 
     if(Q2_ATROUS_ITERATIONS_HF <= q2AtrousIteration && Q2_ATROUS_ITERATIONS_SPEC <= q2AtrousIteration)
     {
@@ -151,9 +178,9 @@ filter_image(
 
             float w_hf = w;
 
-            vec3 c_hf = q2UnpackRGBE(texelFetch(img_hf, p, 0).r);
-            vec3 c_spec = q2UnpackRGBE(texelFetch(img_spec, p, 0).r);
-            vec2 c_mom = texelFetch(img_moments, p, 0).xy;
+            vec3 c_hf = q2LoadAtrousHF(read_pong, read_hist_hf, p);
+            vec3 c_spec = q2LoadAtrousSpec(read_pong, p);
+            vec2 c_mom = q2LoadAtrousMoments(read_pong, p);
             float l_hf = getLuminance(c_hf.rgb);
             float dist_l_hf = abs(lum_mean_hf - l_hf);
 
@@ -272,12 +299,19 @@ main()
     vec3 filtered_spec;
     vec2 filtered_moments;
 
+    // Read the HF/SPEC/moments inputs through their storage images, not the sampled views:
+    // this pass also writes them (each iteration reads the field the previous one wrote),
+    // and binding both views of one image in one set makes the SRV and the UAV disagree
+    // about the image layout (A4.5). The packed RGBE words travel unchanged: the sampled
+    // view was a typed r32ui view too, so q2UnpackRGBE decodes the same bits. The two
+    // flags select the arm's images inside the q2LoadAtrous* helpers above; the HLSL half
+    // passes the same images as RWTexture2D parameters instead.
     switch(q2AtrousIteration)
     {
-    case 0: filter_image(framebufQ2AtrousPingHF_Sampled, framebufQ2AtrousPingSpec_Sampled, framebufQ2AtrousPingMoments_Sampled, filtered_hf, filtered_spec, filtered_moments); break;
-    case 1: filter_image(framebufQ2HistColorHF_Sampled,  framebufQ2AtrousPongSpec_Sampled, framebufQ2AtrousPongMoments_Sampled, filtered_hf, filtered_spec, filtered_moments); break;
-    case 2: filter_image(framebufQ2AtrousPingHF_Sampled, framebufQ2AtrousPingSpec_Sampled, framebufQ2AtrousPingMoments_Sampled, filtered_hf, filtered_spec, filtered_moments); break;
-    case 3: filter_image(framebufQ2AtrousPongHF_Sampled, framebufQ2AtrousPongSpec_Sampled, framebufQ2AtrousPongMoments_Sampled, filtered_hf, filtered_spec, filtered_moments); break;
+    case 0: filter_image(false, false, filtered_hf, filtered_spec, filtered_moments); break;
+    case 1: filter_image(true,  true,  filtered_hf, filtered_spec, filtered_moments); break;
+    case 2: filter_image(false, false, filtered_hf, filtered_spec, filtered_moments); break;
+    case 3: filter_image(true,  false, filtered_hf, filtered_spec, filtered_moments); break;
     }
 
     switch(q2AtrousIteration)

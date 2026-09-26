@@ -40,25 +40,35 @@ layout(push_constant, std140) uniform IterationInfo
     uint iteration;
 } push;
 
-Q2SH q2LoadSH(texture2D img_shY, texture2D img_CoCg, ivec2 p)
+// GLSL cannot pass image variables with a format qualifier through a function parameter, so the
+// ping/pong pair is read as generated globals here, selected by read_ping. The HLSL half passes
+// the same two storage images as RWTexture2D parameters instead.
+Q2SH q2LoadSH(bool read_ping, ivec2 p)
 {
     Q2SH r;
-    r.shY = texelFetch(img_shY, p, 0);
-    r.CoCg = texelFetch(img_CoCg, p, 0).xy;
+    if(read_ping)
+    {
+        r.shY = imageLoad(framebufQ2AtrousPingLF_SH, p);
+        r.CoCg = imageLoad(framebufQ2AtrousPingLF_COCG, p).xy;
+    }
+    else
+    {
+        r.shY = imageLoad(framebufQ2AtrousPongLF_SH, p);
+        r.CoCg = imageLoad(framebufQ2AtrousPongLF_COCG, p).xy;
+    }
     return r;
 }
 
 void
 filter_image(
-    texture2D img_lf_shY,
-    texture2D img_lf_CoCg,
+    bool read_ping,
     out Q2SH filtered_lf)
 {
     ivec2 ipos_lowres = ivec2(gl_GlobalInvocationID);
     ivec2 ipos_hires = ipos_lowres * Q2_GRAD_DWN + ivec2(1);
 
     // Load the color of the target low-res pixel
-    Q2SH color_center_lf = q2LoadSH(img_lf_shY, img_lf_CoCg, ipos_lowres);
+    Q2SH color_center_lf = q2LoadSH(read_ping, ipos_lowres);
 
     if(Q2_ATROUS_ITERATIONS_LF <= push.iteration)
     {
@@ -127,7 +137,7 @@ filter_image(
                 w_lf *= pow(GNdotGN, Q2_FLT_ATROUS_NORMAL_LF);
             }
 
-            Q2SH c_lf = q2LoadSH(img_lf_shY, img_lf_CoCg, p_lowres);
+            Q2SH c_lf = q2LoadSH(read_ping, p_lowres);
 
             // The last iteration has a filter footprint big enough to step over obstacles
             // and produce noticeable light leaking. Prevent that by throwing away samples
@@ -159,14 +169,13 @@ filter_image(
 // The fireflies this pass was re-enabled for turned out to come from the sun's contribution
 // to an indirect bounce (rt_sun_bounce_scale / rt_sun_bounce_range), not from the LF channel.
 void deflicker_image(
-    texture2D img_lf_shY,
-    texture2D img_lf_CoCg,
+    bool read_ping,
     out Q2SH filtered_lf)
 {
     ivec2 ipos_lowres = ivec2(gl_GlobalInvocationID);
     ivec2 ipos_hires = ipos_lowres * Q2_GRAD_DWN + ivec2(1);
 
-    Q2SH color_center_lf = q2LoadSH(img_lf_shY, img_lf_CoCg, ipos_lowres);
+    Q2SH color_center_lf = q2LoadSH(read_ping, ipos_lowres);
 
     const float lum_center = color_center_lf.shY.w;
     if(lum_center <= 0.0)
@@ -220,7 +229,7 @@ void deflicker_image(
             if(dist_depth >= Q2_FLT_DEFLICKER_DEPTH || dot_geo_normals <= Q2_FLT_DEFLICKER_NORMAL)
                 continue;
 
-            sum_lum += q2LoadSH(img_lf_shY, img_lf_CoCg, p_lowres).shY.w;
+            sum_lum += q2LoadSH(read_ping, p_lowres).shY.w;
             num_neighbors++;
         }
     }
@@ -256,22 +265,26 @@ void main()
 
     Q2SH filtered_lf;
 
+    // Read the ping/pong LF pair through the storage images, not the sampled views: this
+    // pass also writes both images of the pair (each iteration reads the field it just
+    // wrote), and binding both views of one image in one set makes the SRV and the UAV
+    // disagree about the image layout (A4.5).
     switch(push.iteration)
     {
     case 0:
-        deflicker_image(framebufQ2AtrousPingLF_SH_Sampled, framebufQ2AtrousPingLF_COCG_Sampled, filtered_lf);
+        deflicker_image(true, filtered_lf);
         Q2_STORE_SH(framebufQ2AtrousPongLF_SH, framebufQ2AtrousPongLF_COCG, ipos, filtered_lf);
         break;
     case 1:
-        filter_image(framebufQ2AtrousPongLF_SH_Sampled, framebufQ2AtrousPongLF_COCG_Sampled, filtered_lf);
+        filter_image(false, filtered_lf);
         Q2_STORE_SH(framebufQ2AtrousPingLF_SH, framebufQ2AtrousPingLF_COCG, ipos, filtered_lf);
         break;
     case 2:
-        filter_image(framebufQ2AtrousPingLF_SH_Sampled, framebufQ2AtrousPingLF_COCG_Sampled, filtered_lf);
+        filter_image(true, filtered_lf);
         Q2_STORE_SH(framebufQ2AtrousPongLF_SH, framebufQ2AtrousPongLF_COCG, ipos, filtered_lf);
         break;
     case 3:
-        filter_image(framebufQ2AtrousPongLF_SH_Sampled, framebufQ2AtrousPongLF_COCG_Sampled, filtered_lf);
+        filter_image(false, filtered_lf);
         Q2_STORE_SH(framebufQ2AtrousPingLF_SH, framebufQ2AtrousPingLF_COCG, ipos, filtered_lf);
         break;
     }

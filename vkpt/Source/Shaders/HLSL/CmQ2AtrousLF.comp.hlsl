@@ -36,10 +36,12 @@
 //     -> struct IterationInfo_BT { uint iteration; }; [[vk::push_constant]]
 //     ConstantBuffer<IterationInfo_BT> push, the same single uint at offset 0 on both halves
 //   * ivec2/vec2/vec3/vec4 -> int2/float2/float3/float4
-//   * texture2D img_shY / texture2D img_CoCg -> Texture2D<float4>, the sampled view of the
-//     rgba16f and the rg16f storage image, and texelFetch(img, p, 0) -> img.Load(int3(p, 0)),
-//     as in every accessor of ShaderCommonHLSLFunc.hlsli. Q2_STORE_SH is the macro of
-//     Q2Asvgf.hlsli and keeps its two stores, shY first
+//   * texture2D img_shY / texture2D img_CoCg -> RWTexture2D<float4>, the storage image of the
+//     rgba16f and the rg16f LF pair, and texelFetch(img, p, 0) -> img.Load(p). The ping/pong
+//     pair is read through its storage images because this pass also writes them (A4.5); the
+//     GLSL half selects the pair with one flag instead of taking the two parameters, because
+//     glslang rejects an image format qualifier on a function parameter.
+//     Q2_STORE_SH is the macro of Q2Asvgf.hlsli and keeps its two stores, shY first
 //   * any(lessThan(a, b)) -> any(a < b) and any(greaterThanEqual(a, b)) -> any(a >= b): the
 //     HLSL comparison operators are already componentwise and hand any() a bool vector, and
 //     glslc lowers both spellings to the same OpSLessThan/OpSGreaterThanEqual plus OpAny
@@ -74,18 +76,18 @@ struct IterationInfo_BT
 
 [[vk::push_constant]] ConstantBuffer<IterationInfo_BT> push;
 
-Q2SH q2LoadSH(Texture2D<float4> img_shY, Texture2D<float4> img_CoCg, int2 p)
+Q2SH q2LoadSH(RWTexture2D<float4> img_shY, RWTexture2D<float4> img_CoCg, int2 p)
 {
     Q2SH r;
-    r.shY = img_shY.Load(int3(p, 0));
-    r.CoCg = img_CoCg.Load(int3(p, 0)).xy;
+    r.shY = img_shY.Load(p);
+    r.CoCg = img_CoCg.Load(p).xy;
     return r;
 }
 
 void filter_image(
     const uint3 dispatchThreadID,
-    Texture2D<float4> img_lf_shY,
-    Texture2D<float4> img_lf_CoCg,
+    RWTexture2D<float4> img_lf_shY,
+    RWTexture2D<float4> img_lf_CoCg,
     out Q2SH filtered_lf)
 {
     int2 ipos_lowres = int2(dispatchThreadID.xy);
@@ -194,8 +196,8 @@ void filter_image(
 // to an indirect bounce (rt_sun_bounce_scale / rt_sun_bounce_range), not from the LF channel.
 void deflicker_image(
     const uint3 dispatchThreadID,
-    Texture2D<float4> img_lf_shY,
-    Texture2D<float4> img_lf_CoCg,
+    RWTexture2D<float4> img_lf_shY,
+    RWTexture2D<float4> img_lf_CoCg,
     out Q2SH filtered_lf)
 {
     int2 ipos_lowres = int2(dispatchThreadID.xy);
@@ -292,22 +294,26 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
 
     Q2SH filtered_lf;
 
+    // Read the ping/pong LF pair through the storage images, not the sampled views: this
+    // pass also writes both images of the pair (each iteration reads the field it just
+    // wrote), and binding both views of one image in one set makes the SRV and the UAV
+    // disagree about the image layout (A4.5).
     switch(push.iteration)
     {
     case 0:
-        deflicker_image(dispatchThreadID, framebufQ2AtrousPingLF_SH_Sampled, framebufQ2AtrousPingLF_COCG_Sampled, filtered_lf);
+        deflicker_image(dispatchThreadID, framebufQ2AtrousPingLF_SH, framebufQ2AtrousPingLF_COCG, filtered_lf);
         Q2_STORE_SH(framebufQ2AtrousPongLF_SH, framebufQ2AtrousPongLF_COCG, ipos, filtered_lf);
         break;
     case 1:
-        filter_image(dispatchThreadID, framebufQ2AtrousPongLF_SH_Sampled, framebufQ2AtrousPongLF_COCG_Sampled, filtered_lf);
+        filter_image(dispatchThreadID, framebufQ2AtrousPongLF_SH, framebufQ2AtrousPongLF_COCG, filtered_lf);
         Q2_STORE_SH(framebufQ2AtrousPingLF_SH, framebufQ2AtrousPingLF_COCG, ipos, filtered_lf);
         break;
     case 2:
-        filter_image(dispatchThreadID, framebufQ2AtrousPingLF_SH_Sampled, framebufQ2AtrousPingLF_COCG_Sampled, filtered_lf);
+        filter_image(dispatchThreadID, framebufQ2AtrousPingLF_SH, framebufQ2AtrousPingLF_COCG, filtered_lf);
         Q2_STORE_SH(framebufQ2AtrousPongLF_SH, framebufQ2AtrousPongLF_COCG, ipos, filtered_lf);
         break;
     case 3:
-        filter_image(dispatchThreadID, framebufQ2AtrousPongLF_SH_Sampled, framebufQ2AtrousPongLF_COCG_Sampled, filtered_lf);
+        filter_image(dispatchThreadID, framebufQ2AtrousPongLF_SH, framebufQ2AtrousPongLF_COCG, filtered_lf);
         Q2_STORE_SH(framebufQ2AtrousPingLF_SH, framebufQ2AtrousPingLF_COCG, ipos, filtered_lf);
         break;
     }

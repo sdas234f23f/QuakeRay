@@ -104,6 +104,11 @@ public:
         uint32_t drawCount = 0;
         uint32_t width = 0;
         uint32_t height = 0;
+        // The upscaled (window) resolution the TAAU pass writes: the engine's
+        // renderResolution.UpscaledWidth()/Height(), which equals the render size in the default
+        // configuration (all rt_upscale_* off) and grows with rt_renderscale.
+        uint32_t upscaledWidth = 0;
+        uint32_t upscaledHeight = 0;
         float view[16] = {};
         float projection[16] = {};
         float jitter[2] = {};

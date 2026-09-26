@@ -136,8 +136,8 @@ class RhiTextureTable;
 // slot `frameId % LIGHT_STATS_SLOT_COUNT` always and the slots the lists have grown past what they
 // were last zeroed to. The fill is recorded on the set-6 statistics wrap with the automatic-barrier
 // pass (CopyDest before it, UnorderedAccess after it), and the pass mirrors the engine's cleared
-// bookkeeping itself, so the legacy path's state is untouched. `fltEnable[0] = 0` remains forced:
-// image 115 is still not written.
+// bookkeeping itself, so the legacy path's state is untouched. The host runs the compose module's
+// gradient reproject before this pass when the engine's `fltEnable[0]` is raised (A4.5).
 //
 // Host contract (the skeleton wires the pass, the pass only records):
 //  - Record after the primary pass on the same list: the raygen reads the G-buffer the primary
@@ -151,11 +151,11 @@ class RhiTextureTable;
 //    A mode of Q2_LIGHT_STATS_DISABLED (0) records no fill and leaves the statistics buffer to the
 //    same untouched path A4.2a had; any other mode makes the pass fill the slots the frame needs
 //    before the dispatch that writes them.
-//  - Force `globalUniform.fltEnable[0] = 0` in the uniform patch for the traced mode: the direct
-//    raygen reads the gradient-sample image 115 only when `fltEnable[0] >= 0.5`
-//    (`Q2LightLists.hlsli:141-154`) and the RHI path never writes image 115 (only the denoiser
-//    produces it). Binding 239 still has to be a valid descriptor, which it is; without the switch
-//    the shader reads undefined memory. Temporary until A4.5 (a42_recon.md §2.7).
+//  - The gradient-sample image 115 follows the engine's switch (A4.5): when
+//    `globalUniform.fltEnable[0] >= 0.5` the direct raygen's gradient path reads image 115
+//    (`Q2LightLists.hlsli:141-154`), which the host's ordering has the compose module's reproject
+//    write before this pass; with the switch below 0.5 no reproject runs and the raygen keeps to
+//    the non-gradient path.
 //  - Call ReleaseTargets() before Framebuffers::PrepareForSize destroys the framebuffer images.
 //
 // The pass is a no-op until Create succeeded and while an input is missing (no TLAS, no

@@ -40,7 +40,10 @@ layout(push_constant, std140) uniform IterationInfo
 
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
-vec2 q2FilterGradientImage(texture2D img)
+// GLSL cannot pass image variables with a format qualifier through a function parameter, so the
+// four gradient images are read as generated globals here, selected by the two flags. The HLSL
+// half passes the same image as an RWTexture2D parameter instead.
+vec2 q2FilterGradientImage(bool hf_spec, bool pong)
 {
     ivec2 ipos = ivec2(gl_GlobalInvocationID);
     ivec2 grad_size = ivec2(int(globalUniform.renderWidth), int(globalUniform.renderHeight)) / Q2_GRAD_DWN;
@@ -57,7 +60,11 @@ vec2 q2FilterGradientImage(texture2D img)
         {
             ivec2 p = ipos + ivec2(xx, yy) * step_size;
 
-            vec2 c = texelFetch(img, p, 0).xy;
+            vec2 c = hf_spec
+                ? (pong ? imageLoad(framebufQ2GradHFSpecPong, p).xy
+                        : imageLoad(framebufQ2GradHFSpecPing, p).xy)
+                : (pong ? imageLoad(framebufQ2GradLFPong, p).xy
+                        : imageLoad(framebufQ2GradLFPing, p).xy);
 
             if (any(greaterThanEqual(p, grad_size)))
             {
@@ -85,25 +92,29 @@ void main()
 
     vec2 filtered_lf = vec2(0);
     vec2 filtered_hf_spec = vec2(0);
+    // Read the four gradient images through their storage views, not the sampled ones: this
+    // pass also writes them (ping on the even iterations, pong on the odd ones), and binding
+    // both views of one image in one set makes the SRV and the UAV disagree about the image
+    // layout (A4.5).
     switch (push.iteration)
     {
         case 0:
-            filtered_lf = q2FilterGradientImage(framebufQ2GradLFPing_Sampled);
-            filtered_hf_spec = q2FilterGradientImage(framebufQ2GradHFSpecPing_Sampled);
+            filtered_lf = q2FilterGradientImage(false, false);
+            filtered_hf_spec = q2FilterGradientImage(true, false);
             break;
         case 1:
-            filtered_lf = q2FilterGradientImage(framebufQ2GradLFPong_Sampled);
-            filtered_hf_spec = q2FilterGradientImage(framebufQ2GradHFSpecPong_Sampled);
+            filtered_lf = q2FilterGradientImage(false, true);
+            filtered_hf_spec = q2FilterGradientImage(true, true);
             break;
         case 2:
-            filtered_lf = q2FilterGradientImage(framebufQ2GradLFPing_Sampled);
-            filtered_hf_spec = q2FilterGradientImage(framebufQ2GradHFSpecPing_Sampled);
+            filtered_lf = q2FilterGradientImage(false, false);
+            filtered_hf_spec = q2FilterGradientImage(true, false);
             break;
-        case 3: filtered_lf = q2FilterGradientImage(framebufQ2GradLFPong_Sampled); break;
-        case 4: filtered_lf = q2FilterGradientImage(framebufQ2GradLFPing_Sampled); break;
-        case 5: filtered_lf = q2FilterGradientImage(framebufQ2GradLFPong_Sampled); break;
+        case 3: filtered_lf = q2FilterGradientImage(false, true); break;
+        case 4: filtered_lf = q2FilterGradientImage(false, false); break;
+        case 5: filtered_lf = q2FilterGradientImage(false, true); break;
         case 6:
-            filtered_lf = q2FilterGradientImage(framebufQ2GradLFPing_Sampled);
+            filtered_lf = q2FilterGradientImage(false, false);
             // LF gradients are not normalized in the img shader - do it now
             filtered_lf.x = q2GetGradient(filtered_lf.x, filtered_lf.y);
             filtered_lf.y = 0;

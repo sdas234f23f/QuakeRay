@@ -36,7 +36,10 @@
 //   * ivec2/vec2/vec3/vec4 -> int2/float2/float3/float4
 //   * texelFetch(t, p, 0) -> t.Load(int3(p, 0)): the motion, the LF color and the stratum
 //     position are sampled views of ShaderCommonHLSL.hlsli, and the two imageStore targets
-//     become storage image writes framebufQ2GradLFPing[ipos] and framebufQ2GradHFSpecPing[ipos]
+//     become storage image writes framebufQ2GradLFPing[ipos] and framebufQ2GradHFSpecPing[ipos].
+//     The previous HF/SPEC luminance is read back through the second of those storage images
+//     instead of its sampled view, because this shader binds that image in both roles (A4.5,
+//     see the read's own comment)
 //   * vec2(0.5) / vec2(0) -> (float2)0.5 / (float2)0: dxc refuses to widen a single scalar
 //     through a constructor, and the same goes for the float(...) of the gradient type
 //   * float2(ipos_flat) and int2(floor(...)) keep the golden's conversion-constructor
@@ -116,7 +119,13 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
 
         int2 grad_sample_pos_curr = ipos * Q2_GRAD_DWN + grad_strata_pos;
 
-        float2 prev_hf_spec_lum = framebufQ2GradHFSpecPing_Sampled.Load(int3(ipos, 0)).xy;
+        // Read the previous HF/SPEC luminance through the storage image, not the sampled
+        // view: this shader also writes framebufQ2GradHFSpecPing, and binding both views of
+        // one image in one set makes the SRV and the UAV disagree about the image layout
+        // (A4.5). The invocation that reads this texel is the one that writes it at the end
+        // of main, so the read-then-write is a same-thread access to the same texel; the
+        // image is rg16f, so .xy are the same raw halfs the sampled view returned.
+        float2 prev_hf_spec_lum = framebufQ2GradHFSpecPing.Load(ipos).xy;
 
         float3 curr_hf = q2UnpackRGBE(framebufQ2ColorHF_Sampled.Load(int3(grad_sample_pos_curr, 0)).r);
         float3 curr_spec = q2UnpackRGBE(framebufQ2ColorSpec_Sampled.Load(int3(grad_sample_pos_curr, 0)).r);

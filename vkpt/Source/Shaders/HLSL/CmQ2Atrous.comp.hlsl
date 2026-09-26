@@ -40,8 +40,12 @@
 //   * the golden's local_size_x/y = 16 become the [numthreads(16, 16, 1)] attribute of the entry
 //     point
 //   * layout(constant_id = 0) const uint q2AtrousIteration -> [[vk::constant_id(0)]] const uint
-//   * texture2D / utexture2D parameters and locals -> Texture2D<float4> / Texture2D<uint4>, with
-//     texelFetch(t, p, 0) -> t.Load(int3(p, 0)) and imageStore(img, p, v) -> img[p] = v
+//   * texture2D / utexture2D parameters and locals -> Texture2D<float4> / Texture2D<uint4>,
+//     with texelFetch(t, p, 0) -> t.Load(int3(p, 0)) and imageStore(img, p, v) -> img[p] = v;
+//     the three inputs of filter_image are RWTexture2D storage images instead, because this
+//     pass also writes the images they read (A4.5). The GLSL half selects the same globals
+//     with two flags, because glslang rejects an image format qualifier on a function
+//     parameter
 //   * mix -> lerp and fract -> frac
 //   * vec2(p), vec2(0.5) and the vec3(0.0) of the two max() calls -> (float2)p, (float2)0.5 and
 //     (float3)0.0, because HLSL has no one-argument vector constructor; the vec4(sh, 0, 0) and
@@ -83,16 +87,16 @@ Q2SH q2LoadSH(Texture2D<float4> img_shY, Texture2D<float4> img_CoCg, int2 p)
 void
 filter_image(
     const int2 ipos,
-    Texture2D<uint4> img_hf,
-    Texture2D<uint4> img_spec,
-    Texture2D<float4> img_moments,
+    RWTexture2D<uint4> img_hf,
+    RWTexture2D<uint4> img_spec,
+    RWTexture2D<float4> img_moments,
     out float3 filtered_hf,
     out float3 filtered_spec,
     out float2 filtered_moments)
 {
-    float3 color_center_hf = q2UnpackRGBE(img_hf.Load(int3( ipos, 0 )).r);
-    float3 color_center_spec = q2UnpackRGBE(img_spec.Load(int3( ipos, 0 )).r);
-    float2 moments_center = img_moments.Load(int3( ipos, 0 )).xy;
+    float3 color_center_hf = q2UnpackRGBE(img_hf.Load( ipos ).r);
+    float3 color_center_spec = q2UnpackRGBE(img_spec.Load( ipos ).r);
+    float2 moments_center = img_moments.Load( ipos ).xy;
 
     if(Q2_ATROUS_ITERATIONS_HF <= q2AtrousIteration && Q2_ATROUS_ITERATIONS_SPEC <= q2AtrousIteration)
     {
@@ -181,9 +185,9 @@ filter_image(
 
             float w_hf = w;
 
-            float3 c_hf = q2UnpackRGBE(img_hf.Load(int3( p, 0 )).r);
-            float3 c_spec = q2UnpackRGBE(img_spec.Load(int3( p, 0 )).r);
-            float2 c_mom = img_moments.Load(int3( p, 0 )).xy;
+            float3 c_hf = q2UnpackRGBE(img_hf.Load( p ).r);
+            float3 c_spec = q2UnpackRGBE(img_spec.Load( p ).r);
+            float2 c_mom = img_moments.Load( p ).xy;
             float l_hf = getLuminance(c_hf.rgb);
             float dist_l_hf = abs(lum_mean_hf - l_hf);
 
@@ -302,12 +306,17 @@ void main(uint3 dispatchThreadID : SV_DispatchThreadID)
     float3 filtered_spec;
     float2 filtered_moments;
 
+    // Read the HF/SPEC/moments inputs through their storage images, not the sampled views:
+    // this pass also writes them (each iteration reads the field the previous one wrote),
+    // and binding both views of one image in one set makes the SRV and the UAV disagree
+    // about the image layout (A4.5). The packed RGBE words travel unchanged: the sampled
+    // view was a typed r32ui view too, so q2UnpackRGBE decodes the same bits.
     switch(q2AtrousIteration)
     {
-    case 0: filter_image(ipos, framebufQ2AtrousPingHF_Sampled, framebufQ2AtrousPingSpec_Sampled, framebufQ2AtrousPingMoments_Sampled, filtered_hf, filtered_spec, filtered_moments); break;
-    case 1: filter_image(ipos, framebufQ2HistColorHF_Sampled,  framebufQ2AtrousPongSpec_Sampled, framebufQ2AtrousPongMoments_Sampled, filtered_hf, filtered_spec, filtered_moments); break;
-    case 2: filter_image(ipos, framebufQ2AtrousPingHF_Sampled, framebufQ2AtrousPingSpec_Sampled, framebufQ2AtrousPingMoments_Sampled, filtered_hf, filtered_spec, filtered_moments); break;
-    case 3: filter_image(ipos, framebufQ2AtrousPongHF_Sampled, framebufQ2AtrousPongSpec_Sampled, framebufQ2AtrousPongMoments_Sampled, filtered_hf, filtered_spec, filtered_moments); break;
+    case 0: filter_image(ipos, framebufQ2AtrousPingHF, framebufQ2AtrousPingSpec, framebufQ2AtrousPingMoments, filtered_hf, filtered_spec, filtered_moments); break;
+    case 1: filter_image(ipos, framebufQ2HistColorHF,  framebufQ2AtrousPongSpec, framebufQ2AtrousPongMoments, filtered_hf, filtered_spec, filtered_moments); break;
+    case 2: filter_image(ipos, framebufQ2AtrousPingHF, framebufQ2AtrousPingSpec, framebufQ2AtrousPingMoments, filtered_hf, filtered_spec, filtered_moments); break;
+    case 3: filter_image(ipos, framebufQ2AtrousPongHF, framebufQ2AtrousPongSpec, framebufQ2AtrousPongMoments, filtered_hf, filtered_spec, filtered_moments); break;
     }
 
     switch(q2AtrousIteration)

@@ -376,15 +376,10 @@ bool NvrhiFrameSkeleton::Render(const Swapchain *pSwapchain, uint32_t frameIndex
             }
         }
 
-        // The A4.2a switch, forced for the traced chain until A4.5 lifts it: fltEnable[0] = 0 makes
-        // q2GetIsGradient return before reading the gradient-sample-position image, which the
-        // traced chain never writes under `rhiframe` (the ASVGF chain is A4.5). q2LightStatsMode is
-        // no longer forced: the direct pass fills the statistics slots itself from the engine's
-        // cvar-driven value (RhiRtDirectPass.h documents the host contract).
-        if (tracedFrame)
-        {
-            sky.uniform->GetData()->fltEnable[0] = 0.0f;
-        }
+        // A4.5: fltEnable is no longer forced - the engine's cvar-driven value selects the
+        // denoiser, and the traced branch below derives `filterEnabled` from the same bytes it
+        // uploads here, so the chain the module records and the gradient the raygens read always
+        // agree.
 
         rhi::writeBuffer(commandList, worldUniformBuffer, sky.uniform->GetData(), sizeof(ShGlobalUniform));
     }
@@ -471,6 +466,20 @@ bool NvrhiFrameSkeleton::Render(const Swapchain *pSwapchain, uint32_t frameIndex
         // from the same CPU copy the write above uploaded.
         const ShGlobalUniform *uniform = sky.uniform != nullptr ? sky.uniform->GetData() : nullptr;
 
+        // A4.5's gradient reproject runs before the direct pass: with the denoiser enabled the two
+        // raygens read the gradient-sample-position image 115 it writes, so the host orders
+        // primary -> reproject -> direct -> indirect -> compose -> TAAU (RhiRtComposePass.h
+        // documents the entry point). `filterEnabled` is the same fltEnable the raygens are
+        // dispatched with, i.e. the value of the uniform bytes just uploaded.
+        const bool filterEnabled = uniform != nullptr && uniform->fltEnable[0] >= 0.5f;
+
+        if (rtComposePass != nullptr && filterEnabled)
+        {
+            rtComposePass->RenderGradientReproject(
+                commandList, frameIndex, sky.framebuffers, sky.width, sky.height,
+                sky.upscaledWidth, sky.upscaledHeight, worldUniformBuffer.Get());
+        }
+
         // The direct-lighting pass reads what the primary just wrote (the G-buffer, the Q2 cluster
         // and the seed) and the frame's light buffers; it records on the same list right after the
         // primary, the order the legacy frame uses (VulkanDevice.cpp:901 then :1039) and the order
@@ -516,14 +525,19 @@ bool NvrhiFrameSkeleton::Render(const Swapchain *pSwapchain, uint32_t frameIndex
         }
 
         // The compose pass: the real chain over the G-buffer and the direct and indirect buffers,
-        // ending in the display-referred FINAL, which the present samples when the pass exists. Its
-        // internal order is the engine's (adapter -> interleave -> the exposure's histogram and
-        // average -> checkerboard -> prepare-final); it records after the indirect pass for the same
-        // reason it does.
+        // ending in the display-referred FINAL. With `filterEnabled` its internal order is the
+        // engine's denoiser chain (the reproject recorded earlier, then adapter -> GradientImg -> 7x
+        // GradientAtrous -> Temporal -> 4x AtrousLF -> 4x Atrous -> interleave), otherwise the A4.4
+        // unfiltered shape; the exposure's histogram and average, the checkerboard and the
+        // prepare-final follow unchanged. The TAAU pass then writes the upscaled output the present
+        // samples (RhiRtComposePass.h documents both entry points and the sizes they take).
         if (rtComposePass != nullptr)
         {
             rtComposePass->Render(commandList, frameIndex, sky.framebuffers, sky.width, sky.height,
+                                  sky.upscaledWidth, sky.upscaledHeight, filterEnabled,
                                   worldUniformBuffer.Get());
+            rtComposePass->RenderTaaU(commandList, frameIndex, sky.framebuffers, sky.width, sky.height,
+                                      sky.upscaledWidth, sky.upscaledHeight, worldUniformBuffer.Get());
         }
     }
     else if (debugTracePass != nullptr && sky.framebuffers != nullptr)
@@ -548,15 +562,17 @@ bool NvrhiFrameSkeleton::Render(const Swapchain *pSwapchain, uint32_t frameIndex
     }
 
     // The present samples the source of this slot: the ALBEDO wrap of the raster and diagnostic
-    // modes (the sky pass is the only owner of that wrap), or the compose pass's FINAL image when
-    // it ran - both are borrowed and only valid until their pass re-wraps the slot.
+    // modes (the sky pass is the only owner of that wrap), or the compose pass's TAAU output when
+    // it ran - both are borrowed and only valid until their pass re-wraps the slot. The TAAU
+    // output is display-referred and rests in GENERAL, so the flags below keep the raw sample and
+    // the UnorderedAccess announcement.
     // The direct term's image is the skeleton's own wrap (ResolvePresentDirectTexture): every mode
     // resolves it, because the layout's unordered-access item is always filled, but the shader
     // reads it only in the diagnostic mode (the params flag below).
     nvrhi::ITexture *albedo = nullptr;
     if (rtComposePass != nullptr)
     {
-        albedo = rtComposePass->GetFinalTexture(frameIndex);
+        albedo = rtComposePass->GetUpscaledTexture(frameIndex);
     }
     else if (skyPass != nullptr)
     {

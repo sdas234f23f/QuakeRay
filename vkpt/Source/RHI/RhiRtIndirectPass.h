@@ -175,10 +175,11 @@ class RhiRtDirectPass;
 //    adapter reads the 16-18 this pass writes. Pass the same `frameIndex`, the slot's TLAS, the
 //    uniform wrap, the vertex-data buffers and the framebuffers the direct pass got, the render
 //    resolution, and the `giBounceRays[0]` of the uniform this frame's raygen reads.
-//  - Force `globalUniform.fltEnable[0] = 0` in the uniform patch: the raygen reads the 1/3-size
-//    gradient-sample image 115 only when `fltEnable[0] >= 0.5` (`q2GetIsGradient`,
-//    Q2LightLists.hlsli:141-154) and the RHI path never writes image 115. The skeleton already
-//    forces the switch for the traced mode; it has to stay (a43_recon.md §8.7).
+//  - The gradient-sample image 115 follows the engine's switch (A4.5): when
+//    `globalUniform.fltEnable[0] >= 0.5` the raygen's gradient path (`q2GetIsGradient`,
+//    Q2LightLists.hlsli:141-154) reads image 115, which the host's ordering has the compose module's
+//    reproject write before the direct pass; with the switch below 0.5 no reproject runs and the
+//    raygen keeps to the non-gradient path.
 //  - Call ReleaseTargets() before Framebuffers::PrepareForSize destroys the framebuffer images.
 //
 // The pass is a no-op until Create succeeded and while an input is missing (no blue-noise texture,

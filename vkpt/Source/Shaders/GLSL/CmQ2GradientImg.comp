@@ -92,7 +92,13 @@ void main()
 
         ivec2 grad_sample_pos_curr = ipos * Q2_GRAD_DWN + grad_strata_pos;
 
-        vec2 prev_hf_spec_lum = texelFetch(framebufQ2GradHFSpecPing_Sampled, ipos, 0).xy;
+        // Read the previous HF/SPEC luminance through the storage image, not the sampled
+        // view: this shader also writes framebufQ2GradHFSpecPing, and binding both views of
+        // one image in one set makes the SRV and the UAV disagree about the image layout
+        // (A4.5). The invocation that reads this texel is the one that writes it at the end
+        // of main, so the read-then-write is a same-thread access to the same texel; the
+        // image is rg16f, so .xy are the same raw halfs the sampled view returned.
+        vec2 prev_hf_spec_lum = imageLoad(framebufQ2GradHFSpecPing, ipos).xy;
 
         vec3 curr_hf = q2UnpackRGBE(texelFetch(framebufQ2ColorHF_Sampled, grad_sample_pos_curr, 0).r);
         vec3 curr_spec = q2UnpackRGBE(texelFetch(framebufQ2ColorSpec_Sampled, grad_sample_pos_curr, 0).r);

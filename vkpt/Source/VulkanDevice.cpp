@@ -1302,6 +1302,8 @@ bool VulkanDevice::RenderThroughRhi(const RgDrawFrameInfo &drawInfo)
     sky.drawCount = static_cast<uint32_t>(skyDraws.size());
     sky.width = renderResolution.Width();
     sky.height = renderResolution.Height();
+    sky.upscaledWidth = renderResolution.UpscaledWidth();
+    sky.upscaledHeight = renderResolution.UpscaledHeight();
     memcpy(sky.view, globalUniform->view, sizeof(sky.view));
     memcpy(sky.projection, globalUniform->projection, sizeof(sky.projection));
     sky.jitter[0] = globalUniform->jitterX;
