@@ -365,6 +365,11 @@ void RT_Bench_Interrupt (void)
 		rt_bench_interrupted = true;
 }
 
+qboolean RT_Bench_Interrupted (void)
+{
+	return rt_bench_interrupted;
+}
+
 static void RT_Bench_Slot (int slot, double ms)
 {
 	if (!rt_bench_active)
@@ -527,7 +532,7 @@ static void RT_Bench_Setting (FILE *f, const char *name)
 	fprintf (f, " %s=%s", name, var ? var->string : "?");
 }
 
-void RT_Bench_Report (const char *demo)
+qboolean RT_Bench_Report (const char *demo)
 {
 	char        path[MAX_OSPATH];
 	char        stamp[32];
@@ -538,7 +543,16 @@ void RT_Bench_Report (const char *demo)
 	const double seconds = rt_bench_frames > 0 ? (Sys_DoubleTime () - rt_bench_start_time) : 0.0;
 
 	if (!rt_bench_active)
-		return;
+		return false;
+
+	/* A run that ended before a single frame was finished has nothing to report and no result
+	   to show; it is not a measurement of zero frames. */
+	if (rt_bench_frames == 0)
+	{
+		rt_bench_active = false;
+		rt_bench_result.valid = false;
+		return false;
+	}
 
 	rt_bench_active = false;
 
@@ -571,7 +585,7 @@ void RT_Bench_Report (const char *demo)
 	if (!f)
 	{
 		Con_Printf ("rt_bench: could not write %s\n", path);
-		return;
+		return true; // the result itself is there, only the log file is not
 	}
 
 	fprintf (f, "# rt_bench %s demo=%s frames=%d seconds=%.2f fps=%.1f interrupted=%d\n", stamp,
@@ -626,6 +640,8 @@ void RT_Bench_Report (const char *demo)
 	for (int i = 0; i < RT_PROF_COUNT; i++)
 		Con_Printf ("  %-17s avg %.2f ms, max %.2f ms\n", RT_ProfSlotName (i),
 		            rt_bench_sum[i] / frames, rt_bench_max[i]);
+
+	return true;
 }
 
 

@@ -756,9 +756,12 @@ extern rt_bench_result_t rt_bench_result;
 qboolean RT_Bench_Active (void);
 void     RT_Bench_Start (void);
 void     RT_Bench_Stop (void);
-// Marks a run that ended before its demo did (a map change, a disconnect): the report says so.
+// Marks a run that ended before its demo did (a map change, a pause, a disconnect).
 void     RT_Bench_Interrupt (void);
-void     RT_Bench_Report (const char *demo);
+qboolean RT_Bench_Interrupted (void);
+// Writes the report and returns whether there is a result to show; a run that finished no
+// screen update at all has none.
+qboolean RT_Bench_Report (const char *demo);
 
 
 #endif /* GLQUAKE_H */

@@ -359,7 +359,8 @@ void M_SinglePlayer_Draw (cb_context_t *cbx)
 	p = Draw_CachePic ("gfx/ttl_sgl.lmp");
 	M_DrawPic (cbx, (320 - p->width) / 2, 4, p);
 	M_DrawTransPic (cbx, 72, 32, Draw_CachePic ("gfx/sp_menu.lmp"));
-	M_PrintWhite (cbx, 72, 32 + 3 * 20, "Benchmark");
+	// the fourth item: below the panel, in the same size as the items the panel draws
+	Draw_StringScaled (cbx, 72, 92, "Benchmark", 2.0f, NULL);
 
 	f = (int)(realtime * 10) % 6;
 

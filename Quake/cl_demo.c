@@ -25,18 +25,33 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 extern cvar_t scr_showfps;
 
 static void CL_FinishTimeDemo (void);
+static void CL_FinishBench (void);
 
-/* rt_bench: a demo played with the frame profiler summed over the run. The accumulation starts
-   when the timedemo clock starts (see CL_GetDemoMessage) and is reported when the demo ends. A
-   run started from the benchmark menu asks for the results screen; the console command only
-   reports to the log and can quit after it. The on-screen FPS counter is switched on for the
-   run and put back the way it was in cl_bench_showfps, -1 when no run owns it. */
+/* rt_bench: a demo played at its own speed with the frame profiler summed over the run. The
+   accumulation starts once the demo has finished its signon (see CL_GetDemoMessage) and is
+   reported when the demo ends. A run started from the benchmark menu asks for the results
+   screen; the console command only reports to the log and can quit after it. The on-screen FPS
+   counter is switched on for the run and put back the way it was in cl_bench_showfps, -1 when
+   no run owns it. The results screen is asked for a frame later, because the demo can end inside
+   the disconnect that moves the client state again. */
 static qboolean cl_bench_pending;
 static qboolean cl_bench_quit;
 static qboolean cl_bench_menu;
+static qboolean cl_bench_show_results;
+static qboolean cl_bench_demonum_saved;
+static int      cl_bench_demonum;
 static int      cl_bench_showfps = -1;
 static char     cl_bench_demo[MAX_QPATH];
 static qboolean cl_demo_natural_end;
+
+static void CL_BenchRestoreDemonum (void)
+{
+	if (!cl_bench_demonum_saved)
+		return;
+
+	cls.demonum = cl_bench_demonum;
+	cl_bench_demonum_saved = false;
+}
 
 /*
 ====================
@@ -84,12 +99,14 @@ void CL_StopPlayback (void)
 	cls.state = ca_disconnected;
 
 	if (cls.timedemo)
+		CL_FinishTimeDemo ();
+	else if (cl_bench_pending || RT_Bench_Active ())
 	{
 		/* A run that stops for anything but the demo's own end is a partial one. */
 		if (!cl_demo_natural_end)
 			RT_Bench_Interrupt ();
 
-		CL_FinishTimeDemo ();
+		CL_FinishBench ();
 	}
 }
 
@@ -123,11 +140,23 @@ static int CL_GetDemoMessage (void)
 	float f;
 
 	if (cls.demopaused)
+	{
+		/* A frozen demo is not the run that was asked for; the report says so. */
+		RT_Bench_Interrupt ();
 		return 0;
+	}
 
 	// decide if it is time to grab the next message
 	if (cls.signon == SIGNONS) // always grab until fully connected
 	{
+		/* The demo has finished its signon: the benchmark starts measuring from here, so the
+		   map load does not land in the frame times. */
+		if (cl_bench_pending)
+		{
+			RT_Bench_Start ();
+			cl_bench_pending = false;
+		}
+
 		if (cls.timedemo)
 		{
 			if (host_framecount == cls.td_lastframe)
@@ -136,15 +165,7 @@ static int CL_GetDemoMessage (void)
 			// if this is the second frame, grab the real td_starttime
 			// so the bogus time on the first frame doesn't count
 			if (host_framecount == cls.td_startframe + 1)
-			{
 				cls.td_starttime = realtime;
-
-				if (cl_bench_pending)
-				{
-					RT_Bench_Start ();
-					cl_bench_pending = false;
-				}
-			}
 		}
 		else if (/* cl.time > 0 && */ cl.time <= cl.mtime[0])
 		{
@@ -596,7 +617,9 @@ static void CL_BenchCancel (void)
 	cl_bench_pending = false;
 	cl_bench_quit = false;
 	cl_bench_menu = false;
+	cl_bench_show_results = false;
 	RT_Bench_Stop ();
+	CL_BenchRestoreDemonum ();
 
 	if (cl_bench_showfps >= 0)
 	{
@@ -665,10 +688,10 @@ static qboolean CL_StartDemoPlayback (const char *filename)
 ====================
 CL_BenchStart
 
-Starts a benchmark run of a demo: the profiler sums every frame from the moment the timedemo
-clock starts, and the report is written when the demo ends. from_menu asks for the results
-screen of the benchmark menu; the console command uses the log and its own quit instead. The
-on-screen FPS counter is switched on for the run.
+Starts a benchmark run of a demo: the demo plays at its own speed and the profiler sums every
+frame from the moment its signon is done, and the report is written when the demo ends. from_menu
+asks for the results screen of the benchmark menu; the console command uses the log and its own
+quit instead. The on-screen FPS counter is switched on for the run.
 ====================
 */
 qboolean CL_BenchStart (const char *demo, qboolean from_menu)
@@ -676,9 +699,11 @@ qboolean CL_BenchStart (const char *demo, qboolean from_menu)
 	if (!CL_StartDemoPlayback (demo))
 		return false;
 
-	cls.timedemo = true;
-	cls.td_startframe = host_framecount;
-	cls.td_lastframe = -1; // get a new message this frame
+	/* The run needs Host_EndGame to disconnect on the demo's own svc_disconnect instead of
+	   starting the next loop demo, and the loop position goes back when the run is over. */
+	cl_bench_demonum = cls.demonum;
+	cl_bench_demonum_saved = true;
+	cls.demonum = -1;
 
 	cl_bench_pending = true;
 	cl_bench_quit = false;
@@ -721,7 +746,7 @@ CL_Bench_f
 
 rt_bench <demoname> [quit]
 
-Plays a demo like timedemo, with the frame profiler summed over the run: every slot is
+Plays a demo at its own speed, with the frame profiler summed over the run: every slot is
 reported as an average and a longest time in benchmark.log when the demo ends. The "quit"
 argument closes the game after the report, so a run can be scripted.
 ====================
@@ -745,6 +770,75 @@ void CL_Bench_f (void)
 
 /*
 ====================
+CL_FinishBench
+
+Reports a benchmark run that is not a timedemo: a demo played at its own speed. The results
+screen, if the run came from the benchmark menu, is asked for a frame later rather than opened
+here, because a demo can end inside a disconnect that moves the client state again after this.
+====================
+*/
+static void CL_FinishBench (void)
+{
+	const qboolean measured = RT_Bench_Active () ? RT_Bench_Report (cl_bench_demo) : false;
+
+	if (!measured && cl_bench_pending)
+		Con_Printf ("rt_bench: the demo ended before the benchmark could start\n");
+
+	if (cl_bench_menu)
+	{
+		if (RT_Bench_Interrupted ())
+		{
+			// a partial run keeps its report in the log but does not present itself as a result
+			Con_Printf ("rt_bench: the run was interrupted, its result is in benchmark.log\n");
+		}
+		else
+		{
+			// the screen says "no result" when nothing was measured
+			if (!measured)
+				rt_bench_result.valid = false;
+
+			cl_bench_show_results = true;
+		}
+	}
+
+	if (cl_bench_quit)
+	{
+		// Host_Quit_f opens the confirmation menu unless the console has focus, and a
+		// scripted run wants the process gone: ask the way the console asks.
+		key_dest = key_console;
+		Cmd_ExecuteString ("quit", src_command);
+	}
+
+	cl_bench_pending = false;
+	cl_bench_quit = false;
+	cl_bench_menu = false;
+	CL_BenchRestoreDemonum ();
+
+	if (cl_bench_showfps >= 0)
+	{
+		Cvar_SetValueQuick (&scr_showfps, (float) cl_bench_showfps);
+		cl_bench_showfps = -1;
+	}
+}
+
+/*
+====================
+CL_BenchShowPendingResults
+
+Opens the results screen a benchmark run asked for, once the frame that ended it is over.
+====================
+*/
+void CL_BenchShowPendingResults (void)
+{
+	if (!cl_bench_show_results)
+		return;
+
+	cl_bench_show_results = false;
+	M_Menu_BenchmarkResults_f ();
+}
+
+/*
+====================
 CL_FinishTimeDemo
 
 ====================
@@ -761,44 +855,7 @@ static void CL_FinishTimeDemo (void)
 	time = realtime - cls.td_starttime;
 	if (!time)
 		time = 1;
-
-	// a run whose clock never started has no honest timedemo line to print
-	if (!cl_bench_pending)
-		Con_Printf ("%i frames %5.1f seconds %5.1f fps\n", frames, time, frames / time);
-
-	const qboolean measured = RT_Bench_Active ();
-
-	if (measured)
-		RT_Bench_Report (cl_bench_demo);
-	else if (cl_bench_pending)
-		Con_Printf ("rt_bench: the demo ended before the benchmark could start\n");
-
-	if (cl_bench_menu)
-	{
-		// feedback for a menu run: the screen says "no result" when nothing was measured
-		if (!measured)
-			rt_bench_result.valid = false;
-
-		M_Menu_BenchmarkResults_f ();
-	}
-
-	if (cl_bench_quit)
-	{
-		// Host_Quit_f opens the confirmation menu unless the console has focus, and a
-		// scripted run wants the process gone: ask the way the console asks.
-		key_dest = key_console;
-		Cmd_ExecuteString ("quit", src_command);
-	}
-
-	cl_bench_pending = false;
-	cl_bench_quit = false;
-	cl_bench_menu = false;
-
-	if (cl_bench_showfps >= 0)
-	{
-		Cvar_SetValueQuick (&scr_showfps, (float) cl_bench_showfps);
-		cl_bench_showfps = -1;
-	}
+	Con_Printf ("%i frames %5.1f seconds %5.1f fps\n", frames, time, frames / time);
 }
 
 /*
