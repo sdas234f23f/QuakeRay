@@ -250,11 +250,6 @@ private:
     uint32_t   cloudsSize = 0;
     VkPipeline cloudsPipeline = VK_NULL_HANDLE;
     VkSampler  cloudsSampler  = VK_NULL_HANDLE; // names the layer in the sky's descriptor set
-    // What a copy is read through: the history at the nearest texel. A reader of
-    // the layer in the sky averages the map over a texel (CmProceduralSky.comp);
-    // the copy itself must not, or every copy a texel takes before it is marched
-    // again pays the blur once more (see DispatchClouds).
-    VkSampler  cloudsHistorySampler = VK_NULL_HANDLE;
 
     // The layer is marched in a quarter of its map a frame (see DispatchClouds):
     // which quarter this frame marches, and how many of the frames still to come
@@ -262,31 +257,13 @@ private:
     // that is new, or a frame the look of the layer changed in, needs two of them:
     // the cubemap the second frame would read as its history is the one no frame has
     // written yet.
-    //
-    // The quarter is taken from CLOUD_QUARTER_ORDER rather than counted up, and the
-    // counter below is one for both maps. Both are load-bearing:
-    //
-    // - One counter, advanced a frame, is what keeps a texel marched once in four
-    //   frames. A counter per map advances on that map's own writes, which come
-    //   every other frame, so a value would live eight frames and up to seven copies
-    //   deep -- and a copy carries the whole-texel rounding of its read (the history
-    //   is read at the nearest texel) onward, so the error of a value piles up with
-    //   the depth of its chain: at `rt_sky_clouds_speed 4` the wind moves the layer
-    //   about 0.6 of a texel a frame, the nearest read rounds that to a whole one,
-    //   and the standing zigzag that leaves on a cloud's edge was measured at up to
-    //   `2.8` texels of the map with a counter per map against `0.96` with the one
-    //   below.
-    // - The order 0, 2, 1, 3 rather than 0, 1, 2, 3 is what keeps that shorter chain
-    //   from resonating with the copies. A copy moves the cloud by a whole texel --
-    //   the spacing of the parity classes the quarters are made of -- so it carries
-    //   a value into the class of another parity, and the quarter marched has to
-    //   walk the classes out of step with that: with 0, 1, 2, 3 (the quarter
-    //   advancing by one every frame while the chain flips the class by one every
-    //   copy) a texel's copies never land on a marched texel again, and the field
-    //   drifts without bound -- measured on the same model as an error of `47`
-    //   texels. The low bit of this order flips every other frame, and every value
-    //   meets a march within the four.
-    uint32_t cloudsCycle = 0;
+    // The quarter of the map each of the two cubemaps marches next. A frame writes
+    // one of them and the next frame the other, and each has to walk its own way
+    // through the four quarters of the cycle: a counter they shared would let each
+    // map see only every other quarter -- the parities it never saw would then be
+    // copied again and again and never marched at all, which is a standing pattern
+    // of its own over the sky.
+    uint32_t cloudsCycle[MAX_FRAMES_IN_FLIGHT] = {};
     uint32_t cloudsWhole = 2;
 
     // The eye's place in the world's horizontal plane the frame before, and the time

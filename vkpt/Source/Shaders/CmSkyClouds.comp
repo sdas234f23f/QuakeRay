@@ -101,9 +101,7 @@ const float CLOUD_MAX_MARCH_SPAN = 12.0;
 // How many quarters of its map the layer is marched in, a side: a frame marches one
 // quarter of the map it writes (RenderCubemap::DispatchClouds, which keeps the same
 // number), and reads the other three from the frame before. Four frames march every
-// texel of the map. Which of the four a frame marches is the host's
-// (CLOUD_QUARTER_ORDER, RenderCubemap.cpp), in an order that keeps the copies from
-// walking the parity classes in step with the marches.
+// texel of the map.
 const int CLOUD_UPDATE_QUARTERS = 2;
 const int CLOUD_UPDATE_FRAMES = CLOUD_UPDATE_QUARTERS * CLOUD_UPDATE_QUARTERS;
 
@@ -201,12 +199,7 @@ void main()
     // of the frame that marched it, and the drift of that anchor is a weave over the
     // sky while the eye moves. A texel here is marched once in four frames and copied
     // in between -- each copy standing for the column of its own march, one to three
-    // frames back -- and nothing is ever averaged. What a copy is wrong by, having
-    // read the map of the frame before at the nearest texel, is the whole-texel step
-    // of that read against the fraction of one the wind really took; every copy after
-    // it adds that again, so the depth of the chain is what bounds the error, and the
-    // chain is four frames deep (CLOUD_QUARTER_ORDER, RenderCubemap.cpp).
-    // CLOUD_UPDATE_FRAMES in cloudAnchor.w
+    // frames back -- and nothing is ever averaged. CLOUD_UPDATE_FRAMES in cloudAnchor.w
     // means the whole map is marched rather than a quarter, which is what a new map and
     // a frame the look of the layer changed in get -- and the frame after them, whose
     // history nothing has written yet.
@@ -327,13 +320,12 @@ void main()
         //
         // It is drawn from the world, and it changes only over a distance far larger
         // than a texel of the map -- and that is the point of it: a texel here is
-        // marched once in four frames and reads the map of the frame before in
-        // between (see the top of the file), and that read carries the error of the
-        // texel it reads as it is, nothing being averaged. A seed of the texel's own
-        // would make the error of each texel its own, a grain of the map that the next
-        // march of that texel puts back -- and the eye would see it shiver at the
-        // cadence of the quarters. A seed the texels around a column share leaves a
-        // smooth error instead: the copies carry it as it is, and a cloud
+        // marched once in four frames and reads its neighbours' march in between (see
+        // the top of the file), and a read is a bilinear one, so a seed of the texel's
+        // own (a per-texel jitter) is smoothed away by the reads and then put back by
+        // the next march of that texel, which the eye sees as the grain of the clouds
+        // flickering at the cadence of the quarters. A seed the texels around a column
+        // share leaves a smooth error instead: a read carries it as it is, and a cloud
         // may stand a little soft where a step is coarse, but it does not shiver.
         vec2 seedPos = params.cloudAnchor.xy + dir.xy * historySpan;
         float jitter = valueNoise3(vec3(seedPos, 0.0) / CLOUD_SEED_SCALE);
