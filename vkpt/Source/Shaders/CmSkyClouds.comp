@@ -389,10 +389,16 @@ void main()
                 float rim = mix(1.0, powder, clamp(-mu, 0.0, 1.0));
 
                 // The sky lights the cloud from above, so it is shielded by
-                // however much cloud sits on top of the sample -- which is what
-                // gives the base of a thick cloud its shadow.
+                // however much cloud stands on top of the sample -- which is what
+                // gives the base of a thick cloud its shadow. What stands on top is
+                // the shape of the cloud, not the density at the sample: a thin skirt
+                // at the floor of a thick cloud is under the whole of the thick one,
+                // and reading the shield off its own low density lit that floor as
+                // brightly as open sky -- the half-transparent sheet the underside of
+                // the layer used to look like.
                 float h = (p.z - layer.altitude) / layer.thickness;
-                float skyShield = exp(-density * layer.density * CLOUD_EXTINCTION * (1.0 - h));
+                float solid = density / max(cloudHeightProfile(h), 1.0e-3);
+                float skyShield = exp(-solid * layer.density * CLOUD_EXTINCTION * (1.0 - h));
 
                 vec3 light = sunColor * (sunVisibility * cloudPhase(mu, phaseG) * rim +
                                          cloudMultiScatter(mu, sunTau, phaseG)) +

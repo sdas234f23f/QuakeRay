@@ -68,6 +68,11 @@ const float CLOUD_NOISE_SIGMA = 0.12;
 // part of it.
 const float CLOUD_SHAPE_POWER = 1.6;
 
+// How far over the depth of the layer the shape of a cloud lifts the bottom of it:
+// the profile is read at the height plus this much of the shape, so that the floor
+// of the layer is not one plane for every cloud in it (cloudDensity).
+const float CLOUD_BASE_RAKE = 0.15;
+
 // Extinction of a cloud of density 1, in layer thicknesses: a cloud that fills a
 // tenth of the layer then has an optical depth of 0.8.
 const float CLOUD_EXTINCTION = 8.0;
@@ -230,17 +235,26 @@ float cloudDensity(CloudLayer layer, vec3 p, bool detail)
         return 0.0;
     }
 
-    float profile = cloudHeightProfile(h);
-    if (profile <= 0.0)
-    {
-        return 0.0;
-    }
-
     // the layer drifts as a whole; the fine noise rides a little faster on it
     vec2 wind = vec2(layer.time * layer.speed * 30.0, layer.time * layer.speed * 12.0);
     float frequency = CLOUD_FREQUENCY / layer.thickness;
 
     float shape = cloudShape(vec3(p.xy + wind, p.z / CLOUD_VERTICAL_STRETCH) * frequency, CLOUD_OCTAVES);
+
+    // The ends of the slab: the top of the layer tapers off, and so does its base --
+    // but the base, unlike the top, would be the same height for every cloud, because
+    // the profile is read at the height alone. That is what the underside of a layer
+    // looks like when it is read that way: a sheet of thin, half-transparent cloud
+    // spread over a plane, with the noise showing through it as a mask. The shape of
+    // the cloud is already known here -- the density is cut from it -- so it is what
+    // lifts the bottom of each cloud off that plane: a cloud whose shape is thick
+    // starts lower than one whose shape is thin, and the sheet is gone, while a thick
+    // cloud keeps the flat base it would really have.
+    float profile = cloudHeightProfile(h + shape * CLOUD_BASE_RAKE);
+    if (profile <= 0.0)
+    {
+        return 0.0;
+    }
 
     float d = (shape - layer.coverage) / max(1.0 - layer.coverage, 1.0e-3);
     d = pow(clamp(d, 0.0, 1.0), CLOUD_SHAPE_POWER);
