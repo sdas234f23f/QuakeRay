@@ -1267,6 +1267,11 @@ bool VulkanDevice::RenderThroughRhi(const RgDrawFrameInfo &drawInfo)
     const std::vector<RasterizedDataCollector::DrawInfo> &worldDraws =
         rasterizer->GetDataCollector().GetRasterDrawInfos();
 
+    // The 2D UI's draw list (A5.1): the same collector stream the legacy Rasterizer::DrawToSwapchain
+    // consumes, read here for the RHI UI pass.
+    const std::vector<RasterizedDataCollector::DrawInfo> &swapchainDraws =
+        rasterizer->GetDataCollector().GetSwapchainDrawInfos();
+
     // The engine's TLAS preparation and build, the two calls Scene::SubmitForFrame makes on this
     // frame's legacy command buffer (Scene.cpp:108-118), with exactly the values of the legacy call
     // site (VulkanDevice.cpp:732-735): the uniform's world-ray cull mask, the instance-wide sky
@@ -1312,6 +1317,19 @@ bool VulkanDevice::RenderThroughRhi(const RgDrawFrameInfo &drawInfo)
     sky.applyVertexColorGamma = rasterizedVertexColorGamma;
     sky.worldDraws = worldDraws.data();
     sky.worldDrawCount = static_cast<uint32_t>(worldDraws.size());
+
+    // The 2D UI (A5.1): the draw list and the collector's per-slot staging geometry. The staging
+    // handles are the frame's own - the device copy the engine records on the legacy command buffer
+    // is submitted after this list, so the UI must read the staging.
+    sky.swapchainDraws = swapchainDraws.data();
+    sky.swapchainDrawCount = static_cast<uint32_t>(swapchainDraws.size());
+    sky.swapchainVertexStaging = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(
+        rasterizer->GetDataCollector().GetVertexStagingBuffer(frameIndex)));
+    sky.swapchainIndexStaging = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(
+        rasterizer->GetDataCollector().GetIndexStagingBuffer(frameIndex)));
+    sky.swapchainVertexStagingSize = rasterizer->GetDataCollector().GetVertexBufferSize();
+    sky.swapchainIndexStagingSize = rasterizer->GetDataCollector().GetIndexBufferSize();
+    sky.disableRasterization = drawInfo.disableRasterization;
     sky.uniform = uniform;
     sky.tonemapping = tonemapping.get();
     // The exposure controls with the legacy Render's own defaults and clamping

@@ -81,6 +81,21 @@ namespace vkpt
         VkBuffer GetVertexBuffer() const;
         VkBuffer GetIndexBuffer() const;
 
+        // The per-slot staging buffers the engine's own CopyFromStaging reads: the RHI 2D-UI pass
+        // binds them directly through a native wrap, because it draws inside the same frame's RHI
+        // list - before the legacy command buffer's device copy is submitted - and the UI's vertex
+        // ranges are rewritten every frame (RhiUiPass.h documents the contract). Non-const because
+        // AutoBuffer's staging accessor is.
+        VkBuffer GetVertexStagingBuffer(uint32_t frameIndex);
+        VkBuffer GetIndexStagingBuffer(uint32_t frameIndex);
+
+        // The byte sizes of the collector's vertex and index buffers; the staging and the
+        // device-local share them (AutoBuffer::Create gives both the same size). The RHI UI pass
+        // needs them for the native wraps' bookkeeping descs, which the validation checks a draw
+        // against.
+        VkDeviceSize GetVertexBufferSize() const;
+        VkDeviceSize GetIndexBufferSize() const;
+
         static uint32_t GetVertexStride();
         static void     GetVertexLayout( VkVertexInputAttributeDescription* outAttrs,
                                          uint32_t*                          outAttrsCount );

@@ -99,6 +99,7 @@ set(vkpt_SOURCES
     Source/RHI/RhiResources.cpp
     Source/RHI/RhiTextureSource.cpp
     Source/RHI/RhiTextureTable.cpp
+    Source/RHI/RhiUiPass.cpp
     Source/WorldLights.cpp
 )
 

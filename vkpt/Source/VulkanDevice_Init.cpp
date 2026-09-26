@@ -43,6 +43,7 @@
 #include "RHI/RhiSkyPass.h"
 #include "RHI/RhiTextureSource.h"
 #include "RHI/RhiTextureTable.h"
+#include "RHI/RhiUiPass.h"
 
 using namespace vkpt;
 
@@ -506,6 +507,20 @@ VulkanDevice::VulkanDevice( const RgInstanceCreateInfo* info )
                         Print("Warning: RHI: the compose pass is unavailable, the diagnostic present is kept");
                     }
                 }
+
+                // The 2D UI pass of A5.1 (RHI/RhiUiPass.h): the game's SWAPCHAIN overlay drawn into
+                // the compose's upscaled image after the TAAU. It needs the shared texture table and
+                // the frame context only; the per-slot staging geometry wraps are the skeleton's (it
+                // is handed the collector's handles every frame). A failure leaves the pointer null:
+                // the frame is still drawn, just without the UI.
+                rhiUiPass = std::make_shared<RhiUiPass>();
+                if (!rhiUiPass->Create(nvrhi->GetDevice(), rhiTextureTable.get(),
+                                       rhiFrameContext.get(), info->pShaderFolderPath,
+                                       [this](const char *pMessage) { Print(pMessage); }))
+                {
+                    rhiUiPass.reset();
+                    Print("Warning: RHI: the 2D UI pass is unavailable, the frame is drawn without the UI");
+                }
             }
 
             // The pass binds the shared RHI texture table (its slot 0 holds the engine's empty
@@ -544,6 +559,7 @@ VulkanDevice::VulkanDevice( const RgInstanceCreateInfo* info )
                 rhiRtDirectPass.get(),
                 rhiRtIndirectPass.get(),
                 rhiRtComposePass.get(),
+                rhiUiPass.get(),
                 frameMode,
                 [this](const char *pMessage) { Print(pMessage); });
 
@@ -621,12 +637,14 @@ VulkanDevice::~VulkanDevice()
     // be released before both of them
     nvrhiFrameSkeleton.reset();
 
-    // The skeleton references all of them, so they follow it immediately; all six wrap engine
+    // The skeleton references all of them, so they follow it immediately; all seven wrap engine
     // buffers/images and quote the RHI device, so they precede the table/context and the device
     // below. The direct pass borrows the primary's layout handles and the indirect pass borrows
-    // both, so the indirect goes before the direct, and the direct before the primary.
+    // both, so the indirect goes before the direct, and the direct before the primary; the UI pass
+    // borrows the table and the frame context only.
     rhiDebugTracePass.reset();
     rhiRtComposePass.reset();
+    rhiUiPass.reset();
     rhiRtIndirectPass.reset();
     rhiRtDirectPass.reset();
     rhiRtPrimaryPass.reset();

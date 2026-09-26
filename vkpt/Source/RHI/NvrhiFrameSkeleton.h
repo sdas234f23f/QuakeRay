@@ -44,6 +44,7 @@ class RhiRtDirectPass;
 class RhiRtIndirectPass;
 class RhiRtPrimaryPass;
 class RhiSkyPass;
+class RhiUiPass;
 class Swapchain;
 class Tonemapping;
 
@@ -118,6 +119,20 @@ public:
         // -- the rasterized world sub-pass --
         const RasterizedDataCollector::DrawInfo *worldDraws = nullptr;
         uint32_t worldDrawCount = 0;
+
+        // -- the 2D UI pass (A5.1) --
+        // The frame's SWAPCHAIN draw list and the collector's per-slot staging vertex and index
+        // buffers: the UI is rewritten every frame, so the pass reads the staging - the device copy
+        // of the collector is recorded on the legacy command buffer, which is submitted after the
+        // RHI list. 'disableRasterization' is the host's per-frame gate (VulkanDevice.cpp:1199); a
+        // zero staging handle or an empty list simply skips the UI.
+        const RasterizedDataCollector::DrawInfo *swapchainDraws = nullptr;
+        uint32_t swapchainDrawCount = 0;
+        uint64_t swapchainVertexStaging = 0;
+        uint64_t swapchainIndexStaging = 0;
+        uint64_t swapchainVertexStagingSize = 0;
+        uint64_t swapchainIndexStagingSize = 0;
+        bool disableRasterization = false;
         // The engine's global uniform: the world shader's set 1, the source of the bytes the
         // skeleton writes into the uniform wrap every frame, and the CPU copy the host-only exposure
         // parameters read. The host owns it, so the field keeps the shared_ptr (the traced mode's
@@ -193,6 +208,10 @@ public:
     // it is non-null, the traced chain runs it after the indirect pass and the present samples its
     // display-referred FINAL image directly, instead of ALBEDO plus the direct term. Optional: a
     // null one keeps the A4.2a present, and the host creates it only under 'rhicompose'.
+    // 'pUiPass' is the host's 2D-UI pass (RhiUiPass, RHI/RhiUiPass.h): when it is non-null and the
+    // compose ran, Render draws the frame's SWAPCHAIN overlay (the HUD, the console, the menus) into
+    // the compose's upscaled image after the TAAU, from the per-slot staging geometry the frame
+    // inputs carry. Optional: a null one draws the frame without the UI.
     explicit NvrhiFrameSkeleton(nvrhi::IDevice *pDevice,
                                 const Swapchain *pSwapchain,
                                 const char *pShaderFolderPath,
@@ -204,6 +223,7 @@ public:
                                 RhiRtDirectPass *pRtDirectPass,
                                 RhiRtIndirectPass *pRtIndirectPass,
                                 RhiRtComposePass *pRtComposePass,
+                                RhiUiPass *pUiPass,
                                 FrameMode mode,
                                 PrintFunction pfnPrint);
     ~NvrhiFrameSkeleton() override;
@@ -328,6 +348,20 @@ private:
     // pass when it is non-null; the present then samples its display-referred FINAL image. Not
     // owned; null when the host's 'rhicompose' flag is off or the creation failed.
     RhiRtComposePass *rtComposePass = nullptr;
+
+    // The 2D-UI pass (RhiUiPass, RHI/RhiUiPass.h), driven in the traced chain once the compose ran:
+    // it draws the frame's SWAPCHAIN overlay into the compose's upscaled image. Not owned; null
+    // when the host's creation failed, in which case the frame is drawn without the UI.
+    RhiUiPass *uiPass = nullptr;
+
+    // The per-slot wraps of the collector's UI staging geometry: the pass binds the frame's own
+    // staging buffers (the UI is rewritten every frame, and the engine's device copy is recorded on
+    // the legacy command buffer, submitted after this list), wrapped once per slot and re-wrapped
+    // through the frame context if a handle ever changes. The handle arrays are the wrap keys.
+    nvrhi::BufferHandle uiVertexStagingWraps[MAX_FRAMES_IN_FLIGHT];
+    nvrhi::BufferHandle uiIndexStagingWraps[MAX_FRAMES_IN_FLIGHT];
+    uint64_t uiVertexStagingHandles[MAX_FRAMES_IN_FLIGHT] = {};
+    uint64_t uiIndexStagingHandles[MAX_FRAMES_IN_FLIGHT] = {};
 
     // The frame mode of the whole run: which chain Render records into ALBEDO. The host picks it
     // once from 'rhirt'/'rhitrace' (VulkanDevice_Init.cpp) and it does not change while the

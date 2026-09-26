@@ -29,6 +29,7 @@
 #include "RhiRtIndirectPass.h"
 #include "RhiRtPrimaryPass.h"
 #include "RhiTextureSource.h"
+#include "RhiUiPass.h"
 #include "RhiDescriptors.h"
 #include "RhiFrameContext.h"
 #include "RhiPipeline.h"
@@ -91,6 +92,7 @@ NvrhiFrameSkeleton::NvrhiFrameSkeleton(nvrhi::IDevice *pDevice,
                                        RhiRtDirectPass *pRtDirectPass,
                                        RhiRtIndirectPass *pRtIndirectPass,
                                        RhiRtComposePass *pRtComposePass,
+                                       RhiUiPass *pUiPass,
                                        FrameMode mode,
                                        PrintFunction pfnPrint)
     : device(dynamic_cast<nvrhi::vulkan::IDevice *>(pDevice))
@@ -102,6 +104,7 @@ NvrhiFrameSkeleton::NvrhiFrameSkeleton(nvrhi::IDevice *pDevice,
     , rtDirectPass(pRtDirectPass)
     , rtIndirectPass(pRtIndirectPass)
     , rtComposePass(pRtComposePass)
+    , uiPass(pUiPass)
     , frameMode(mode)
     , textureTable(pTextureTable)
     , frameContext(pFrameContext)
@@ -538,6 +541,73 @@ bool NvrhiFrameSkeleton::Render(const Swapchain *pSwapchain, uint32_t frameIndex
                                   worldUniformBuffer.Get());
             rtComposePass->RenderTaaU(commandList, frameIndex, sky.framebuffers, sky.width, sky.height,
                                       sky.upscaledWidth, sky.upscaledHeight, worldUniformBuffer.Get());
+
+            // The 2D UI (A5.1): the frame's SWAPCHAIN overlay into the same upscaled image the
+            // present samples, right after the TAAU. The pass binds the collector's per-slot staging
+            // geometry - wrapped here once, because the UI is rewritten every frame while the
+            // engine's device copy is recorded on the legacy command buffer, submitted after this
+            // list - and it restores the image to UnorderedAccess for the present.
+            if (uiPass != nullptr && uiPass->IsCreated() && uniform != nullptr &&
+                !sky.disableRasterization && sky.swapchainDrawCount > 0 &&
+                sky.swapchainVertexStaging != 0 && sky.swapchainIndexStaging != 0)
+            {
+                if (uiVertexStagingWraps[frameIndex] == nullptr ||
+                    uiVertexStagingHandles[frameIndex] != sky.swapchainVertexStaging)
+                {
+                    if (uiVertexStagingWraps[frameIndex] != nullptr && frameContext != nullptr)
+                    {
+                        frameContext->Retire(uiVertexStagingWraps[frameIndex]);
+                    }
+
+                    nvrhi::BufferDesc desc;
+                    desc.byteSize = sky.swapchainVertexStagingSize;
+                    desc.isVertexBuffer = true;
+                    desc.initialState = nvrhi::ResourceStates::VertexBuffer;
+                    desc.keepInitialState = true;
+                    desc.debugName = "RHI UI vertex staging";
+
+                    uiVertexStagingWraps[frameIndex] = device->createHandleForNativeBuffer(
+                        nvrhi::ObjectTypes::VK_Buffer,
+                        nvrhi::Object(static_cast<uint64_t>(sky.swapchainVertexStaging)),
+                        desc);
+                    uiVertexStagingHandles[frameIndex] =
+                        uiVertexStagingWraps[frameIndex] != nullptr ? sky.swapchainVertexStaging : 0;
+                }
+
+                if (uiIndexStagingWraps[frameIndex] == nullptr ||
+                    uiIndexStagingHandles[frameIndex] != sky.swapchainIndexStaging)
+                {
+                    if (uiIndexStagingWraps[frameIndex] != nullptr && frameContext != nullptr)
+                    {
+                        frameContext->Retire(uiIndexStagingWraps[frameIndex]);
+                    }
+
+                    nvrhi::BufferDesc desc;
+                    desc.byteSize = sky.swapchainIndexStagingSize;
+                    desc.isIndexBuffer = true;
+                    desc.initialState = nvrhi::ResourceStates::IndexBuffer;
+                    desc.keepInitialState = true;
+                    desc.debugName = "RHI UI index staging";
+
+                    uiIndexStagingWraps[frameIndex] = device->createHandleForNativeBuffer(
+                        nvrhi::ObjectTypes::VK_Buffer,
+                        nvrhi::Object(static_cast<uint64_t>(sky.swapchainIndexStaging)),
+                        desc);
+                    uiIndexStagingHandles[frameIndex] =
+                        uiIndexStagingWraps[frameIndex] != nullptr ? sky.swapchainIndexStaging : 0;
+                }
+
+                if (uiVertexStagingWraps[frameIndex] != nullptr && uiIndexStagingWraps[frameIndex] != nullptr)
+                {
+                    uiPass->SetGeometryBuffers(uiVertexStagingWraps[frameIndex],
+                                               uiIndexStagingWraps[frameIndex]);
+                    uiPass->Render(commandList, frameIndex,
+                                   rtComposePass->GetUpscaledTexture(frameIndex),
+                                   sky.upscaledWidth, sky.upscaledHeight,
+                                   sky.swapchainDraws, sky.swapchainDrawCount,
+                                   uniform->view, uniform->projection, sky.applyVertexColorGamma);
+                }
+            }
         }
     }
     else if (debugTracePass != nullptr && sky.framebuffers != nullptr)
@@ -1067,6 +1137,13 @@ void NvrhiFrameSkeleton::DestroySwapchainResources()
     if (rtComposePass != nullptr)
     {
         rtComposePass->ReleaseTargets();
+    }
+
+    // The UI pass keeps per-slot framebuffers over the compose's upscaled wraps, so it drops them
+    // at the same edge.
+    if (uiPass != nullptr)
+    {
+        uiPass->ReleaseTargets();
     }
 
     // The indirect pass wraps its fourteen set-1 images - the indirect SH images among them - so it

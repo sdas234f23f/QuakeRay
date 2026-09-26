@@ -299,6 +299,28 @@ VkBuffer RasterizedDataCollector::GetIndexBuffer() const
     return indexBuffer->GetDeviceLocal();
 }
 
+VkBuffer RasterizedDataCollector::GetVertexStagingBuffer(uint32_t frameIndex)
+{
+    assert(frameIndex < MAX_FRAMES_IN_FLIGHT);
+    return vertexBuffer->GetStaging(frameIndex);
+}
+
+VkBuffer RasterizedDataCollector::GetIndexStagingBuffer(uint32_t frameIndex)
+{
+    assert(frameIndex < MAX_FRAMES_IN_FLIGHT);
+    return indexBuffer->GetStaging(frameIndex);
+}
+
+VkDeviceSize RasterizedDataCollector::GetVertexBufferSize() const
+{
+    return vertexBuffer->GetSize();
+}
+
+VkDeviceSize RasterizedDataCollector::GetIndexBufferSize() const
+{
+    return indexBuffer->GetSize();
+}
+
 const std::vector< RasterizedDataCollector::DrawInfo >& RasterizedDataCollector::
     GetRasterDrawInfos() const
 {

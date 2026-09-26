@@ -76,6 +76,7 @@ class RhiRtComposePass;
 class RhiRtDirectPass;
 class RhiRtIndirectPass;
 class RhiRtPrimaryPass;
+class RhiUiPass;
 struct NvrhiRequirements;
 
 namespace rhi
@@ -304,6 +305,11 @@ private:
     // which then presents its FINAL image. Null when the flag is off or the creation failed; the
     // traced chain then keeps the A4.2a diagnostic present.
     std::shared_ptr<RhiRtComposePass>       rhiRtComposePass;
+    // The RHI 2D-UI pass (RHI/RhiUiPass.h): the game's SWAPCHAIN overlay (the HUD, the console, the
+    // menus, the screen effects) drawn into the compose's upscaled image after the TAAU, created
+    // with the other RHI passes and referenced by the skeleton. Null when the creation failed; the
+    // frame is then drawn without the UI.
+    std::shared_ptr<RhiUiPass>              rhiUiPass;
     // The RHI frame skeleton: the first frame pass that is recorded through the
     // RHI layer. Null unless 'rhiframe' is set in vkpt.txt.
     std::shared_ptr<NvrhiFrameSkeleton>     nvrhiFrameSkeleton;
