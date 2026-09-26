@@ -29,6 +29,7 @@
 #include "RhiRtGodRaysPass.h"
 #include "RhiRtIndirectPass.h"
 #include "RhiRtPrimaryPass.h"
+#include "RhiRtReflRefrPass.h"
 #include "RhiShadowMapPass.h"
 #include "RhiTextureSource.h"
 #include "RhiUiPass.h"
@@ -94,6 +95,7 @@ NvrhiFrameSkeleton::NvrhiFrameSkeleton(nvrhi::IDevice *pDevice,
                                        RhiRtDirectPass *pRtDirectPass,
                                        RhiRtIndirectPass *pRtIndirectPass,
                                        RhiRtComposePass *pRtComposePass,
+                                       RhiRtReflRefrPass *pReflRefrPass,
                                        RhiShadowMapPass *pShadowMapPass,
                                        RhiRtGodRaysPass *pGodRaysPass,
                                        RhiUiPass *pUiPass,
@@ -108,6 +110,7 @@ NvrhiFrameSkeleton::NvrhiFrameSkeleton(nvrhi::IDevice *pDevice,
     , rtDirectPass(pRtDirectPass)
     , rtIndirectPass(pRtIndirectPass)
     , rtComposePass(pRtComposePass)
+    , reflRefrPass(pReflRefrPass)
     , shadowMapPass(pShadowMapPass)
     , godRaysPass(pGodRaysPass)
     , uiPass(pUiPass)
@@ -533,6 +536,76 @@ bool NvrhiFrameSkeleton::Render(const Swapchain *pSwapchain, uint32_t frameIndex
                                         worldUniformBuffer.Get(), params,
                                         uniform != nullptr && uniform->reflectRefractMaxDepth > 0);
                 }
+            }
+        }
+
+        // The Q2 reflect/refract pass (A5.3), on the same list after the primary and the god-rays
+        // input trace and before the reproject - the legacy order (VulkanDevice.cpp:901 -> :909-1028
+        // -> :1011-1014 -> :1022-1028 -> :1032). The portal buffers are wrapped here once (the
+        // staging per slot as a copy source, the device-local array as a static constant buffer the
+        // pass's set 9 binds) and the engine's per-frame teleport copy is recorded unconditionally,
+        // the job PortalList::SubmitForFrame does in the legacy frame; the dispatch itself runs only
+        // while the uniform's reflect-refract depth is positive.
+        if (reflRefrPass != nullptr && reflRefrPass->IsCreated())
+        {
+            if (sky.portalStaging != 0 && sky.portalDevice != 0 && sky.portalSize != 0)
+            {
+                if (portalStagingWraps[frameIndex] == nullptr ||
+                    portalStagingHandles[frameIndex] != sky.portalStaging)
+                {
+                    if (portalStagingWraps[frameIndex] != nullptr && frameContext != nullptr)
+                    {
+                        frameContext->Retire(portalStagingWraps[frameIndex]);
+                    }
+
+                    nvrhi::BufferDesc desc;
+                    desc.byteSize = sky.portalSize;
+                    desc.initialState = nvrhi::ResourceStates::CopySource;
+                    desc.keepInitialState = true;
+                    desc.debugName = "RHI portal staging (copy source)";
+
+                    portalStagingWraps[frameIndex] = device->createHandleForNativeBuffer(
+                        nvrhi::ObjectTypes::VK_Buffer,
+                        nvrhi::Object(static_cast<uint64_t>(sky.portalStaging)), desc);
+                    portalStagingHandles[frameIndex] =
+                        portalStagingWraps[frameIndex] != nullptr ? sky.portalStaging : 0;
+                }
+
+                if (portalDeviceWrap == nullptr || portalDeviceHandle != sky.portalDevice)
+                {
+                    if (portalDeviceWrap != nullptr && frameContext != nullptr)
+                    {
+                        frameContext->Retire(portalDeviceWrap);
+                    }
+
+                    nvrhi::BufferDesc desc;
+                    desc.byteSize = sky.portalSize;
+                    desc.isConstantBuffer = true;
+                    desc.initialState = nvrhi::ResourceStates::ConstantBuffer;
+                    desc.keepInitialState = true;
+                    desc.debugName = "RHI portal device-local (set 9)";
+
+                    portalDeviceWrap = device->createHandleForNativeBuffer(
+                        nvrhi::ObjectTypes::VK_Buffer,
+                        nvrhi::Object(static_cast<uint64_t>(sky.portalDevice)), desc);
+                    portalDeviceHandle = portalDeviceWrap != nullptr ? sky.portalDevice : 0;
+
+                    reflRefrPass->SetPortalBuffer(portalDeviceWrap.Get());
+                }
+
+                if (portalStagingWraps[frameIndex] != nullptr && portalDeviceWrap != nullptr)
+                {
+                    commandList->copyBuffer(portalDeviceWrap.Get(), 0,
+                                            portalStagingWraps[frameIndex].Get(), 0, sky.portalSize);
+                }
+            }
+
+            if (uniform != nullptr && uniform->reflectRefractMaxDepth > 0)
+            {
+                reflRefrPass->Render(commandList, frameIndex,
+                                     accelStructs != nullptr ? accelStructs->GetTopLevel(frameIndex) : nullptr,
+                                     worldUniformBuffer.Get(), passVertexData, sky.framebuffers,
+                                     sky.width, sky.height);
             }
         }
 
@@ -1219,6 +1292,13 @@ void NvrhiFrameSkeleton::DestroySwapchainResources()
     if (rtIndirectPass != nullptr)
     {
         rtIndirectPass->ReleaseTargets();
+    }
+
+    // The reflect/refract pass wraps its 24 set-1 images, so it drops them here as well; the portal
+    // buffer wrap is the host's and outlives the pass.
+    if (reflRefrPass != nullptr)
+    {
+        reflRefrPass->ReleaseTargets();
     }
 
     // A present binding set references the ALBEDO wrap and the direct-term image of one slot, so it

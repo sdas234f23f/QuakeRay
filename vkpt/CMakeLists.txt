@@ -96,6 +96,7 @@ set(vkpt_SOURCES
     Source/RHI/RhiRtGodRaysPass.cpp
     Source/RHI/RhiRtIndirectPass.cpp
     Source/RHI/RhiRtPrimaryPass.cpp
+    Source/RHI/RhiRtReflRefrPass.cpp
     Source/RHI/RhiShadowMapPass.cpp
     Source/RHI/RhiSkyPass.cpp
     Source/RHI/RhiResources.cpp

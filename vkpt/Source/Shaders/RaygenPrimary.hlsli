@@ -817,13 +817,21 @@ void main()
     const float2 inUV = getPixelUVWithJitter(regularPix);
     const float3 cameraRayDir = getRayDir(inUV);
 
-    if (isSkyPix(pix))
+    // Read is-sky through the storage image, not the sampled view: this raygen also writes
+    // framebufIsSky, and binding both views of one image in one set makes the SRV and the UAV
+    // disagree about the image layout (A5.3). This is the read isSkyPix() performs.
+    if (framebufIsSky.Load(pix).r != 0)
     {
         return;
     }
 
     // restore state from primary shader
     const uint3 primaryToReflRefrBuf = framebufPrimaryToReflRefr_Sampled.Load(int3(pix, 0)).rgb;
+
+    // The G-buffer reads below go through the storage images, not the sampled views: this
+    // raygen also writes every image it reads, and binding both views of one image in one set
+    // makes the SRV and the UAV disagree about the image layout (A5.3).
+    // framebufPrimaryToReflRefr is read-only here, so it keeps its sampled view.
 
     // The loop below can only write anything if the primary surface is one of the
     // five kinds it handles, and at i == 0 that is decided by exactly the two
@@ -839,7 +847,7 @@ void main()
             (isPortalFromFlags(primaryFlags) && primaryToReflRefrBuf.b != PORTAL_INDEX_NONE);
         if (!primaryNeedsReflRefr && (primaryFlags & GEOM_INST_FLAG_REFLECT) != 0)
         {
-            primaryNeedsReflRefr = framebufMetallicRoughness_Sampled.Load(int3(pix, 0)).g < globalUniform.minRoughness;
+            primaryNeedsReflRefr = framebufMetallicRoughness.Load(pix).g < globalUniform.minRoughness;
         }
         if (!primaryNeedsReflRefr)
         {
@@ -848,29 +856,31 @@ void main()
     }
 
     ShHitInfo h;
-    h.albedo                            = framebufAlbedo_Sampled.Load(int3(getRegularPixFromCheckerboardPix(pix), 0)).rgb;
-    h.hitPosition                       = framebufSurfacePosition_Sampled.Load(int3(pix, 0)).xyz;
+    h.albedo                            = framebufAlbedo.Load(getRegularPixFromCheckerboardPix(pix)).rgb;
+    h.hitPosition                       = framebufSurfacePosition.Load(pix).xyz;
     h.geometryInstanceFlags             = primaryToReflRefrBuf.r;
     h.portalIndex                       = primaryToReflRefrBuf.b;
-    h.normalGeom                        = texelFetchNormalGeometry(pix);
-    h.normal                            = texelFetchNormal(pix);
-    h.metallic                          = framebufMetallicRoughness_Sampled.Load(int3(pix, 0)).r;
-    h.roughness                         = framebufMetallicRoughness_Sampled.Load(int3(pix, 0)).g;
-    const float3  motionBuf             = framebufMotion_Sampled.Load(int3(pix, 0)).rgb;
+    // spelled out instead of texelFetchNormalGeometry/texelFetchNormal, whose bodies read
+    // the sampled views (A5.3)
+    h.normalGeom                        = decodeNormal(framebufNormalGeometry.Load(pix).r);
+    h.normal                            = decodeNormal(framebufNormal.Load(pix).r);
+    h.metallic                          = framebufMetallicRoughness.Load(pix).r;
+    h.roughness                         = framebufMetallicRoughness.Load(pix).g;
+    const float3  motionBuf             = framebufMotion.Load(pix).rgb;
     float2        motionCurToPrev         = motionBuf.rg;
     float         motionDepthLinearCurToPrev = motionBuf.b;
-    const float   firstHitDepthLinear     = framebufDepthWorld_Sampled.Load(int3(pix, 0)).r;
-    float3        screenEmission          = framebufScreenEmisRT_Sampled.Load(int3(getRegularPixFromCheckerboardPix(pix), 0)).rgb;
-    float3        acidFog                 = framebufAcidFogRT_Sampled.Load(int3(getRegularPixFromCheckerboardPix(pix), 0)).rgb;
-    float3        throughput              = framebufThroughput_Sampled.Load(int3(pix, 0)).rgb;
+    const float   firstHitDepthLinear     = framebufDepthWorld.Load(pix).r;
+    float3        screenEmission          = framebufScreenEmisRT.Load(getRegularPixFromCheckerboardPix(pix)).rgb;
+    float3        acidFog                 = framebufAcidFogRT.Load(getRegularPixFromCheckerboardPix(pix)).rgb;
+    float3        throughput              = framebufThroughput.Load(pix).rgb;
     ShPayload currentPayload;
     currentPayload.instIdAndIndex       = primaryToReflRefrBuf.g;
 
     // Q2RTX-style G-buffer from the primary pass
-    const float4 q2BaseColor              = framebufQ2BaseColor_Sampled.Load(int3(pix, 0));
-    const float q2HalfConeAngle         = framebufQ2BounceThroughput_Sampled.Load(int3(pix, 0)).w;
-    float4 q2Transparent                  = framebufQ2Transparent_Sampled.Load(int3(pix, 0));
-    float4 q2FogAccum                     = framebufQ2FogAccum_Sampled.Load(int3(pix, 0));
+    const float4 q2BaseColor              = framebufQ2BaseColor.Load(pix);
+    const float q2HalfConeAngle         = framebufQ2BounceThroughput.Load(pix).w;
+    float4 q2Transparent                  = framebufQ2Transparent.Load(pix);
+    float4 q2FogAccum                     = framebufQ2FogAccum.Load(pix);
 
     RayCone rayCone;
     rayCone.width = 0;

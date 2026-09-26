@@ -1419,6 +1419,18 @@ bool VulkanDevice::RenderThroughRhi(const RgDrawFrameInfo &drawInfo)
         }
     }
 
+    // The portals (A5.3): the engine's staging and device-local buffers for this slot, which the
+    // skeleton wraps and copies on the RHI list before the reflect/refract dispatch. The engine's
+    // own SubmitForFrame (the copy plus the uploaded-index reset) runs only in the legacy render,
+    // which `rhiframe` skips, so the RHI frame resets the bookkeeping here, after the game's
+    // uploads of this frame and independently of the reflect/refract gate - the game uploads a
+    // teleport every frame while `rt_teleport_portals` is 1, and a leaked index would throw on the
+    // next frame's Upload (PortalList.cpp:58-61).
+    sky.portalStaging = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(portalList->GetStagingBuffer(frameIndex)));
+    sky.portalDevice = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(portalList->GetDeviceLocalBuffer()));
+    sky.portalSize = static_cast<uint64_t>(portalList->GetBufferSize());
+    portalList->ResetUploads();
+
     // The RHI pass waits on the acquire semaphore itself, so the semaphore is
     // taken away from the renderer: it may be waited on only once per signal.
     VkPipelineStageFlags semaphoreWaitStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;

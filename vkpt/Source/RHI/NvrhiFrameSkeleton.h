@@ -44,6 +44,7 @@ class RhiRtDirectPass;
 class RhiRtGodRaysPass;
 class RhiRtIndirectPass;
 class RhiRtPrimaryPass;
+class RhiRtReflRefrPass;
 class RhiShadowMapPass;
 class RhiSkyPass;
 class RhiUiPass;
@@ -161,6 +162,17 @@ public:
             const VertexCollector *staticCollector = nullptr;
             const VertexCollector *dynamicCollector = nullptr;
         } godRays;
+
+        // -- the portals (A5.3) --
+        // The engine PortalList buffers for this slot: the staging the game's teleport uploads go to
+        // and the device-local 4032-byte array the reflrefr's set 9 binds. The skeleton wraps them
+        // (the staging per slot as a copy source, the device-local once as a static constant
+        // buffer), records the staging -> device copy before the reflect/refract dispatch and hands
+        // the device wrap to the pass; the host resets the engine's uploaded-index bookkeeping after
+        // the frame's uploads. Zero handles skip the copy.
+        uint64_t portalStaging = 0;
+        uint64_t portalDevice = 0;
+        uint64_t portalSize = 0;
         // The engine's global uniform: the world shader's set 1, the source of the bytes the
         // skeleton writes into the uniform wrap every frame, and the CPU copy the host-only exposure
         // parameters read. The host owns it, so the field keeps the shared_ptr (the traced mode's
@@ -236,6 +248,11 @@ public:
     // it is non-null, the traced chain runs it after the indirect pass and the present samples its
     // display-referred FINAL image directly, instead of ALBEDO plus the direct term. Optional: a
     // null one keeps the A4.2a present, and the host creates it only under 'rhicompose'.
+    // 'pReflRefrPass' is the host's Q2 reflect/refract pass (RhiRtReflRefrPass,
+    // RHI/RhiRtReflRefrPass.h): in the traced chain, after the god-rays input trace and before the
+    // reproject, Render records it when the uniform's reflect-refract depth is positive, from the
+    // engine's portal buffers the frame inputs carry. Optional: a null one draws the frame without
+    // reflections.
     // 'pShadowMapPass' and 'pGodRaysPass' are the host's A5.2 passes (RhiShadowMapPass,
     // RhiRtGodRaysPass): in the traced chain, once the primary ran, Render records the shadow map,
     // and when it drew something the god-rays trace and filter whose output CmPrepareFinal adds.
@@ -256,6 +273,7 @@ public:
                                 RhiRtDirectPass *pRtDirectPass,
                                 RhiRtIndirectPass *pRtIndirectPass,
                                 RhiRtComposePass *pRtComposePass,
+                                RhiRtReflRefrPass *pReflRefrPass,
                                 RhiShadowMapPass *pShadowMapPass,
                                 RhiRtGodRaysPass *pGodRaysPass,
                                 RhiUiPass *pUiPass,
@@ -383,6 +401,21 @@ private:
     // pass when it is non-null; the present then samples its display-referred FINAL image. Not
     // owned; null when the host's 'rhicompose' flag is off or the creation failed.
     RhiRtComposePass *rtComposePass = nullptr;
+
+    // The host's reflect/refract pass (RhiRtReflRefrPass, RHI/RhiRtReflRefrPass.h), driven in the
+    // traced chain after the god-rays input trace and before the reproject when the uniform's
+    // reflect-refract depth is positive. Not owned; null when the host's creation failed, in which
+    // case the frame is drawn without reflections.
+    RhiRtReflRefrPass *reflRefrPass = nullptr;
+
+    // The wraps of the engine PortalList buffers (A5.3): the per-slot staging as a copy source and
+    // the device-local array once as a static constant buffer (the set 9 handle the pass keeps).
+    // Created on the first frame with non-zero frame inputs, re-created if a handle ever changes;
+    // the replaced ones go through the frame context's retire queue.
+    nvrhi::BufferHandle portalStagingWraps[MAX_FRAMES_IN_FLIGHT];
+    nvrhi::BufferHandle portalDeviceWrap;
+    uint64_t portalStagingHandles[MAX_FRAMES_IN_FLIGHT] = {};
+    uint64_t portalDeviceHandle = 0;
 
     // The host's shadow-map and god-rays passes (RHI/RhiShadowMapPass.h, RHI/RhiRtGodRaysPass.h),
     // driven in the traced chain on the same list: the shadow map renders after the primary and,

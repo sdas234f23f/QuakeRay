@@ -700,13 +700,21 @@ void main()
     const vec2 inUV = getPixelUVWithJitter(regularPix);
     const vec3 cameraRayDir = getRayDir(inUV);
 
-    if (isSkyPix(pix))
+    // Read is-sky through the storage image, not the sampled view: this raygen also writes
+    // framebufIsSky, and binding both views of one image in one set makes the SRV and the UAV
+    // disagree about the image layout (A5.3). This is the read isSkyPix() performs.
+    if (imageLoad(framebufIsSky, pix).r != 0)
     {
         return;
     }
 
     // restore state from primary shader
     const uvec3 primaryToReflRefrBuf = texelFetch(framebufPrimaryToReflRefr_Sampled, pix, 0).rgb;
+
+    // The G-buffer reads below go through the storage images, not the sampled views: this
+    // raygen also writes every image it reads, and binding both views of one image in one set
+    // makes the SRV and the UAV disagree about the image layout (A5.3).
+    // framebufPrimaryToReflRefr is read-only here, so it keeps its sampled view.
 
     // The loop below can only write anything if the primary surface is one of the
     // five kinds it handles, and at i == 0 that is decided by exactly the two
@@ -722,7 +730,7 @@ void main()
             (isPortalFromFlags(primaryFlags) && primaryToReflRefrBuf.b != PORTAL_INDEX_NONE);
         if (!primaryNeedsReflRefr && (primaryFlags & GEOM_INST_FLAG_REFLECT) != 0)
         {
-            primaryNeedsReflRefr = texelFetch(framebufMetallicRoughness_Sampled, pix, 0).g < globalUniform.minRoughness;
+            primaryNeedsReflRefr = imageLoad(framebufMetallicRoughness, pix).g < globalUniform.minRoughness;
         }
         if (!primaryNeedsReflRefr)
         {
@@ -731,29 +739,31 @@ void main()
     }
 
     ShHitInfo h;
-    h.albedo                            = texelFetch(framebufAlbedo_Sampled, getRegularPixFromCheckerboardPix(pix), 0).rgb;
-    h.hitPosition                       = texelFetch(framebufSurfacePosition_Sampled, pix, 0).xyz;
+    h.albedo                            = imageLoad(framebufAlbedo, getRegularPixFromCheckerboardPix(pix)).rgb;
+    h.hitPosition                       = imageLoad(framebufSurfacePosition, pix).xyz;
     h.geometryInstanceFlags             = primaryToReflRefrBuf.r;
     h.portalIndex                       = primaryToReflRefrBuf.b;
-    h.normalGeom                        = texelFetchNormalGeometry(pix);
-    h.normal                            = texelFetchNormal(pix);
-    h.metallic                          = texelFetch(framebufMetallicRoughness_Sampled, pix, 0).r;
-    h.roughness                         = texelFetch(framebufMetallicRoughness_Sampled, pix, 0).g;
-    const vec3  motionBuf               = texelFetch(framebufMotion_Sampled, pix, 0).rgb;
+    // spelled out instead of texelFetchNormalGeometry/texelFetchNormal, whose bodies read
+    // the sampled views (A5.3)
+    h.normalGeom                        = decodeNormal(imageLoad(framebufNormalGeometry, pix).r);
+    h.normal                            = decodeNormal(imageLoad(framebufNormal, pix).r);
+    h.metallic                          = imageLoad(framebufMetallicRoughness, pix).r;
+    h.roughness                         = imageLoad(framebufMetallicRoughness, pix).g;
+    const vec3  motionBuf               = imageLoad(framebufMotion, pix).rgb;
     vec2        motionCurToPrev         = motionBuf.rg;
     float       motionDepthLinearCurToPrev = motionBuf.b;
-    const float firstHitDepthLinear     = texelFetch(framebufDepthWorld_Sampled, pix, 0).r;
-    vec3        screenEmission          = texelFetch(framebufScreenEmisRT_Sampled, getRegularPixFromCheckerboardPix(pix), 0).rgb;
-    vec3        acidFog                 = texelFetch(framebufAcidFogRT_Sampled, getRegularPixFromCheckerboardPix(pix), 0).rgb;
-    vec3        throughput              = texelFetch(framebufThroughput_Sampled, pix, 0).rgb;
+    const float firstHitDepthLinear     = imageLoad(framebufDepthWorld, pix).r;
+    vec3        screenEmission          = imageLoad(framebufScreenEmisRT, getRegularPixFromCheckerboardPix(pix)).rgb;
+    vec3        acidFog                 = imageLoad(framebufAcidFogRT, getRegularPixFromCheckerboardPix(pix)).rgb;
+    vec3        throughput              = imageLoad(framebufThroughput, pix).rgb;
     ShPayload currentPayload;
     currentPayload.instIdAndIndex       = primaryToReflRefrBuf.g;
 
     // Q2RTX-style G-buffer from the primary pass
-    const vec4 q2BaseColor              = texelFetch(framebufQ2BaseColor_Sampled, pix, 0);
-    const float q2HalfConeAngle         = texelFetch(framebufQ2BounceThroughput_Sampled, pix, 0).w;
-    vec4 q2Transparent                  = texelFetch(framebufQ2Transparent_Sampled, pix, 0);
-    vec4 q2FogAccum                     = texelFetch(framebufQ2FogAccum_Sampled, pix, 0);
+    const vec4 q2BaseColor              = imageLoad(framebufQ2BaseColor, pix);
+    const float q2HalfConeAngle         = imageLoad(framebufQ2BounceThroughput, pix).w;
+    vec4 q2Transparent                  = imageLoad(framebufQ2Transparent, pix);
+    vec4 q2FogAccum                     = imageLoad(framebufQ2FogAccum, pix);
 
     RayCone rayCone;
     rayCone.width = 0;

@@ -40,6 +40,7 @@
 #include "RHI/RhiRtGodRaysPass.h"
 #include "RHI/RhiRtIndirectPass.h"
 #include "RHI/RhiRtPrimaryPass.h"
+#include "RHI/RhiRtReflRefrPass.h"
 #include "RHI/RhiShadowMapPass.h"
 #include "RHI/RhiFrameContext.h"
 #include "RHI/RhiSkyPass.h"
@@ -528,6 +529,24 @@ VulkanDevice::VulkanDevice( const RgInstanceCreateInfo* info )
                     }
                 }
 
+                // The Q2 reflect/refract pass of A5.3 (RHI/RhiRtReflRefrPass.h), created only with
+                // the primary - it borrows the primary's layout handles, so it is destroyed before
+                // it, like the direct and indirect passes. The portal buffer wrap and the per-frame
+                // copy are the skeleton's (SkyFrameInputs carries the engine's buffers); a failure
+                // leaves the pointer null and the frame is drawn without reflections.
+                if (rhiRtPrimaryPass != nullptr)
+                {
+                    rhiRtReflRefrPass = std::make_shared<RhiRtReflRefrPass>();
+                    if (!rhiRtReflRefrPass->Create(nvrhi->GetDevice(), rhiFrameContext.get(),
+                                                   rhiTextureTable.get(), rhiRtPrimaryPass.get(),
+                                                   info->pShaderFolderPath,
+                                                   [this](const char *pMessage) { Print(pMessage); }))
+                    {
+                        rhiRtReflRefrPass.reset();
+                        Print("Warning: RHI: the reflect/refract pass is unavailable, the frame is drawn without reflections");
+                    }
+                }
+
                 // The compose pass of A4.4 (RHI/RhiRtComposePass.h), created only under
                 // 'rhicompose': the real adapter -> interleave -> exposure histogram/average ->
                 // checkerboard -> prepare-final chain ending in the display-referred FINAL, which
@@ -598,6 +617,7 @@ VulkanDevice::VulkanDevice( const RgInstanceCreateInfo* info )
                 rhiRtDirectPass.get(),
                 rhiRtIndirectPass.get(),
                 rhiRtComposePass.get(),
+                rhiRtReflRefrPass.get(),
                 rhiShadowMapPass.get(),
                 rhiRtGodRaysPass.get(),
                 rhiUiPass.get(),
@@ -678,12 +698,12 @@ VulkanDevice::~VulkanDevice()
     // be released before both of them
     nvrhiFrameSkeleton.reset();
 
-    // The skeleton references all of them, so they follow it immediately; all nine wrap engine
+    // The skeleton references all of them, so they follow it immediately; all ten wrap engine
     // buffers/images and quote the RHI device, so they precede the table/context and the device
-    // below. The direct pass borrows the primary's layout handles and the indirect pass borrows
-    // both, so the indirect goes before the direct, and the direct before the primary; the UI pass
-    // borrows the table and the frame context only, and the god-rays pass borrows the shadow map's
-    // texture and sampler, so it goes before the shadow-map pass.
+    // below. The direct pass, the indirect pass and the reflect/refract pass borrow the primary's
+    // layout handles, so they go before the primary; the UI pass borrows the table and the frame
+    // context only, and the god-rays pass borrows the shadow map's texture and sampler, so it goes
+    // before the shadow-map pass.
     rhiDebugTracePass.reset();
     rhiRtComposePass.reset();
     rhiRtGodRaysPass.reset();
@@ -691,6 +711,7 @@ VulkanDevice::~VulkanDevice()
     rhiUiPass.reset();
     rhiRtIndirectPass.reset();
     rhiRtDirectPass.reset();
+    rhiRtReflRefrPass.reset();
     rhiRtPrimaryPass.reset();
     rhiAccelStructs.reset();
 

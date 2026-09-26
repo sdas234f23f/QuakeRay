@@ -47,6 +47,39 @@ namespace vkpt
         void Upload(uint32_t frameIndex, const RgPortalUploadInfo &info);
         void SubmitForFrame(VkCommandBuffer cmd, uint32_t frameIndex);
 
+        // Read-only views for the RHI layer's portal-buffer copy: the engine's own
+        // PortalList::SubmitForFrame runs only from the legacy VulkanDevice::Render
+        // (VulkanDevice.cpp:882) and is bypassed under `rhiframe`, so the RHI pass that dispatches
+        // the reflrefr raygen - the only reader of the portal buffer (set 9,
+        // BINDING_PORTAL_INSTANCES) - records the copy itself: all GetBufferSize() bytes
+        // (= PORTAL_MAX_COUNT * sizeof(ShPortalInstance), 4032 B) from the frame slot's
+        // GetStagingBuffer(frameIndex) into GetDeviceLocalBuffer(), before its dispatch. The game
+        // stages portals through VulkanDevice::UploadPortal -> PortalList::Upload every frame while
+        // `rt_teleport_portals` is 1 (r_world.c:3319-3354), independently of the reflrefr gate.
+        // Both buffers stay valid while this object lives.
+        // (Non-const for the staging buffer only: AutoBuffer's accessor is not const.)
+        VkBuffer GetStagingBuffer(uint32_t frameIndex);
+        VkBuffer GetDeviceLocalBuffer() const;
+        // Byte size of the two buffers above; the size the RHI copy must use.
+        VkDeviceSize GetBufferSize() const;
+
+        // Clears the per-frame "already uploaded" bookkeeping Upload throws on (PortalList.cpp:58-61),
+        // exactly the way SubmitForFrame clears it after recording its copy. It must be called once
+        // per rendered frame on the path that stages the uploads - under `rhiframe` that is the RHI
+        // frame - after the frame's Upload calls and not between them; the legacy path keeps its own
+        // call inside SubmitForFrame, and the two paths are per-frame exclusive:
+        //  - a frame that leaves the bits set makes the next frame's Upload of the same portal index
+        //    throw, and with `rt_teleport_portals 1` the game re-uploads every teleport every frame
+        //    (r_world.c:3319-3354);
+        //  - a frame whose reflrefr pass was gated off and recorded no copy must still clear them:
+        //    its uploads are dropped, which is safe because nothing read the device buffer that
+        //    frame, but the bits must not survive into the next frame.
+        // Clearing before the recorded copy is submitted is safe: it touches no buffer memory, only
+        // the bits that detect a second upload in the same frame; the copy reads the staging bytes
+        // later, and the next Upload that could overwrite them for this slot runs after the slot's
+        // submission has completed (the property AutoBuffer's per-slot staging exists for).
+        void ResetUploads();
+
         VkDescriptorSet GetDescSet(uint32_t frameIndex) const;
         VkDescriptorSetLayout GetDescSetLayout() const;
 

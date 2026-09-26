@@ -37,7 +37,14 @@ vkpt::PortalList::PortalList(VkDevice _device, std::shared_ptr<MemoryAllocator> 
     , descSet{}
 {
     buffer = std::make_shared<AutoBuffer>(std::move(_allocator));
-    buffer->Create(PORTAL_MAX_COUNT * sizeof(ShPortalInstance), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, "Portals buffer");
+    // The RHI layer wraps this buffer (and its staging slots) through NVRHI, and NVRHI's
+    // native-wrap path queries the device address unconditionally when the device has
+    // bufferDeviceAddress enabled (vulkan-buffer.cpp:215-220); without the usage bit that query
+    // trips VUID-VkBufferDeviceAddressInfo-buffer-02601, the same class the A4.1 fix removed for
+    // the collector and staging buffers. AutoBuffer propagates the bit to the staging buffer.
+    buffer->Create(PORTAL_MAX_COUNT * sizeof(ShPortalInstance),
+                   VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                   "Portals buffer");
 
     CreateDescriptors();
 }
@@ -78,6 +85,26 @@ void vkpt::PortalList::SubmitForFrame(VkCommandBuffer cmd, uint32_t frameIndex)
     CmdLabel label(cmd, "Copying portal infos");
 
     buffer->CopyFromStaging(cmd, frameIndex);
+    uploadedIndices.reset();
+}
+
+VkBuffer vkpt::PortalList::GetStagingBuffer(uint32_t frameIndex)
+{
+    return buffer->GetStaging(frameIndex);
+}
+
+VkBuffer vkpt::PortalList::GetDeviceLocalBuffer() const
+{
+    return buffer->GetDeviceLocal();
+}
+
+VkDeviceSize vkpt::PortalList::GetBufferSize() const
+{
+    return buffer->GetSize();
+}
+
+void vkpt::PortalList::ResetUploads()
+{
     uploadedIndices.reset();
 }
 

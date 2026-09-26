@@ -77,6 +77,7 @@ class RhiRtDirectPass;
 class RhiRtGodRaysPass;
 class RhiRtIndirectPass;
 class RhiRtPrimaryPass;
+class RhiRtReflRefrPass;
 class RhiShadowMapPass;
 class RhiUiPass;
 struct NvrhiRequirements;
@@ -315,6 +316,13 @@ private:
     // without shafts.
     std::shared_ptr<RhiShadowMapPass>       rhiShadowMapPass;
     std::shared_ptr<RhiRtGodRaysPass>       rhiRtGodRaysPass;
+
+    // The RHI reflect/refract pass of A5.3 (RHI/RhiRtReflRefrPass.h): the Q2 raygen that overwrites
+    // the G-buffer for reflective/refractive pixels and feeds the reflected god rays; it borrows the
+    // primary's layout handles, so it is destroyed before it. Created with the other RT passes; the
+    // skeleton drives it on the traced frame's list and the engine's portal buffers feed its set 9.
+    // Null when the creation failed; the frame is then drawn without reflections.
+    std::shared_ptr<RhiRtReflRefrPass>      rhiRtReflRefrPass;
 
     // The RHI 2D-UI pass (RHI/RhiUiPass.h): the game's SWAPCHAIN overlay (the HUD, the console, the
     // menus, the screen effects) drawn into the compose's upscaled image after the TAAU, created
