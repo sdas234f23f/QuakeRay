@@ -62,6 +62,13 @@ layout(rgba16f, set = 0, binding = 2) uniform imageCube envCubemapOut;
 // of what is behind the layer gets through it. Filled by CmSkyClouds.comp.
 layout(set = 0, binding = 4) uniform samplerCube cloudCubemap;
 
+// How far over a texel of the layer's map the sky reads it, as a fraction of a
+// texel a side: the four reads the layer is averaged from stand this far from the
+// direction asked for. It is what softens the structure the copies of the map leave
+// on a cloud's edge (see main), and it is a knob to be turned if that is still hard
+// to look at: larger spreads are softer clouds.
+const float CLOUD_READ_SPREAD = 0.5;
+
 layout(std140, set = 0, binding = 1) uniform Params
 {
     vec4 faceBasis[18]; // 6 faces * (right, up, forward)
@@ -105,7 +112,21 @@ void main()
     vec4 cloud = vec4(0.0, 0.0, 0.0, 1.0);
     if (params.cloudParams.w > 0.5 && cloudOpacity > 0.0)
     {
-        cloud = texture(cloudCubemap, dir);
+        // The layer is read a little wider than one texel. The texels of the map hold
+        // the marches of their own columns, and the quarters a frame does not march
+        // are copies read at the nearest texel (CmSkyClouds.comp), so the light of the
+        // layer carries a structure the size of a texel that a march itself does not
+        // have -- the pixelation of a cloud's edge. Four reads spread over a texel and
+        // averaged are what takes it out, and this is where a filter belongs rather
+        // than at the copies: whatever a copy blurs is paid again by every copy the
+        // texel takes before it is marched, while this is paid once, over the whole
+        // sky, for four texture reads.
+        vec2 texel = 1.0 / vec2(textureSize(cloudCubemap, 0));
+        vec2 spread = texel * CLOUD_READ_SPREAD;
+        cloud = (texture(cloudCubemap, dir + right * spread.x + up * spread.y) +
+                 texture(cloudCubemap, dir + right * spread.x - up * spread.y) +
+                 texture(cloudCubemap, dir - right * spread.x + up * spread.y) +
+                 texture(cloudCubemap, dir - right * spread.x - up * spread.y)) * 0.25;
     }
 
     float cosAng = cos(sunAngRad);
