@@ -350,6 +350,9 @@ void M_Menu_SinglePlayer_f (void)
 	m_entersound = true;
 }
 
+static qboolean  sp_benchmark_label_tried;
+static qpic_t   *sp_benchmark_label;
+
 void M_SinglePlayer_Draw (cb_context_t *cbx)
 {
 	int     f;
@@ -359,8 +362,19 @@ void M_SinglePlayer_Draw (cb_context_t *cbx)
 	p = Draw_CachePic ("gfx/ttl_sgl.lmp");
 	M_DrawPic (cbx, (320 - p->width) / 2, 4, p);
 	M_DrawTransPic (cbx, 72, 32, Draw_CachePic ("gfx/sp_menu.lmp"));
-	// the fourth item: below the panel, in the same size as the items the panel draws
-	Draw_StringScaled (cbx, 72, 92, "Benchmark", 2.0f, NULL);
+
+	// the fourth item sits below the panel, drawn in the same font the panel
+	// uses (see Misc/vq_pak/gfx/sp_benchmark.lmp); a miss is remembered, so an
+	// install without the picture does not search for it every frame
+	if (!sp_benchmark_label_tried)
+	{
+		sp_benchmark_label_tried = true;
+		sp_benchmark_label = Draw_TryCachePic ("gfx/sp_benchmark.lmp", TEXPREF_ALPHA | TEXPREF_PAD | TEXPREF_NOPICMIP);
+	}
+	if (sp_benchmark_label)
+		M_DrawTransPic (cbx, 72, 92, sp_benchmark_label);
+	else
+		Draw_StringScaled (cbx, 72, 92, "Benchmark", 2.0f, NULL);
 
 	f = (int)(realtime * 10) % 6;
 
@@ -1863,10 +1877,48 @@ void M_Mods_Key (int key)
 /* BENCHMARK MENU */
 
 #define MAX_DEMOS_ON_SCREEN 12
+#define MAX_BENCH_DEMOS     64
+static char demo_names[MAX_BENCH_DEMOS][MAX_QPATH];
 static int  num_demos = 0;
 static int  first_demo = 0;
 static int  demo_cursor = 0;
 static char bench_error[64];
+
+static qboolean M_Benchmark_DemoExists (const char *name)
+{
+	char  path[MAX_QPATH];
+	FILE *file = NULL;
+
+	q_strlcpy (path, name, sizeof (path));
+	COM_AddExtension (path, ".dem", sizeof (path));
+	COM_FOpenFile (path, &file, NULL);
+	if (!file)
+		return false;
+
+	fclose (file);
+	return true;
+}
+
+static void M_Benchmark_AddDemo (const char *name)
+{
+	char base[MAX_QPATH];
+
+	if (!name || !name[0])
+		return;
+
+	// the playback appends the extension itself, so keep the bare name
+	q_strlcpy (base, name, sizeof (base));
+	COM_StripExtension (base, base, sizeof (base));
+	if (!base[0])
+		return;
+
+	for (int i = 0; i < num_demos; i++)
+		if (!q_strcasecmp (demo_names[i], base))
+			return;
+
+	if (num_demos < MAX_BENCH_DEMOS)
+		q_strlcpy (demo_names[num_demos++], base, sizeof (demo_names[0]));
+}
 
 void M_Menu_Benchmark_f (void)
 {
@@ -1875,12 +1927,28 @@ void M_Menu_Benchmark_f (void)
 	m_state = m_benchmark;
 	m_entersound = true;
 
+	num_demos = 0;
+
+	// the demo list below skips the files inside the paks on purpose, so the
+	// standard demos and the intro loop are probed for and listed first: a
+	// long list of loose demos must not push them out
+	for (int i = 1; i <= 3; i++)
+	{
+		char name[MAX_QPATH];
+
+		q_snprintf (name, sizeof (name), "demo%i", i);
+		if (M_Benchmark_DemoExists (name))
+			M_Benchmark_AddDemo (name);
+	}
+
+	for (int i = 0; i < MAX_DEMOS; i++)
+		if (cls.demos[i][0] && M_Benchmark_DemoExists (cls.demos[i]))
+			M_Benchmark_AddDemo (cls.demos[i]);
+
 	// a demo recorded in this session is in the list too
 	DemoList_Rebuild ();
-
-	num_demos = 0;
 	for (filelist_item_t *item = demolist; item; item = item->next)
-		++num_demos;
+		M_Benchmark_AddDemo (item->name);
 
 	first_demo = 0;
 	demo_cursor = 0;
@@ -1900,12 +1968,12 @@ void M_Benchmark_Draw (cb_context_t *cbx)
 
 	int demo_index = -first_demo;
 
-	for (filelist_item_t *item = demolist; item; item = item->next)
+	for (int i = 0; i < num_demos; i++)
 	{
 		if (demo_index >= MAX_DEMOS_ON_SCREEN)
 			break;
 		if (demo_index >= 0)
-			M_Print (cbx, 105, 32 + demo_index * 8, item->name);
+			M_Print (cbx, 105, 32 + demo_index * 8, demo_names[i]);
 		++demo_index;
 	}
 
@@ -1920,7 +1988,6 @@ void M_Benchmark_Draw (cb_context_t *cbx)
 void M_Benchmark_Key (int key)
 {
 	int prev_demo_cursor = demo_cursor;
-	int demo_index = 0;
 
 	switch (key)
 	{
@@ -1932,18 +1999,17 @@ void M_Benchmark_Key (int key)
 	case K_ENTER:
 	case K_KP_ENTER:
 	case K_ABUTTON:
-		for (filelist_item_t *item = demolist; item; item = item->next)
+		if (demo_cursor < 0 || demo_cursor >= num_demos)
+			return;
+
 		{
 			char     name[MAX_OSPATH];
 			FILE    *file = NULL;
 			int      forcetrack;
 			qboolean ok = false;
 
-			if (demo_index++ != demo_cursor)
-				continue;
-
 			/* Check the demo before the playback tears the running game down. */
-			q_strlcpy (name, item->name, sizeof (name));
+			q_strlcpy (name, demo_names[demo_cursor], sizeof (name));
 			COM_AddExtension (name, ".dem", sizeof (name));
 
 			COM_FOpenFile (name, &file, NULL);
@@ -1955,14 +2021,13 @@ void M_Benchmark_Key (int key)
 
 			if (!ok || !CL_BenchStart (name, true))
 			{
-				q_snprintf (bench_error, sizeof (bench_error), "could not open %s", item->name);
+				q_snprintf (bench_error, sizeof (bench_error), "could not open %s", demo_names[demo_cursor]);
 				return;
 			}
 
 			m_state = m_none;
 			IN_Activate ();
 			key_dest = key_game;
-			return;
 		}
 		return;
 
