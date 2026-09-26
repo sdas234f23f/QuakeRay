@@ -4,7 +4,7 @@
 
 .DESCRIPTION
     Packages quakeray.exe, the runtime DLLs, and the id1 runtime assets
-    (gfx, materials, mdl_skins, progs, shaders, textures, and the BlueNoise /
+    (materials, mdl_skins, progs, shaders, textures, and the BlueNoise /
     WaterNormal KTX2 files) plus documentation into a single ZIP ready for
     distribution.
 
@@ -94,7 +94,7 @@ Write-Host "Added $($dlls.Count) DLL(s)"
 $stageId1 = Join-Path $stage "id1"
 New-Item -ItemType Directory -Path $stageId1 -Force | Out-Null
 
-foreach ($sub in @("gfx", "materials", "mdl_skins", "progs", "shaders", "textures")) {
+foreach ($sub in @("materials", "mdl_skins", "progs", "shaders", "textures")) {
     $src = Join-Path $gameDir $sub
     if (Test-Path $src) {
         Copy-Item $src (Join-Path $stageId1 $sub) -Recurse -Force

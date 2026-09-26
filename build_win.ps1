@@ -74,17 +74,6 @@ foreach ($f in @("BlueNoise_LDR_RGBA_128.ktx2", "WaterNormal_n.ktx2")) {
     }
 }
 
-# the benchmark menu label is composed from id's own menu artwork (see Quake/menu.c)
-$labelSrc = Join-Path $PSScriptRoot "Misc\vq_pak\gfx\sp_benchmark.lmp"
-if (Test-Path $labelSrc) {
-    $gfxDir = Join-Path $gameDir "gfx"
-    if (-not (Test-Path $gfxDir)) { New-Item -ItemType Directory -Path $gfxDir -Force | Out-Null }
-    Copy-Item $labelSrc (Join-Path $gfxDir "sp_benchmark.lmp") -Force
-}
-else {
-    Write-Warning "Benchmark label not found: $labelSrc - the menu item will fall back to the console font"
-}
-
 & (Join-Path $PSScriptRoot "build_shaders.ps1") -DestDir (Join-Path $gameDir "shaders")
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 

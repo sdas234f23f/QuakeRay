@@ -340,7 +340,7 @@ void M_Main_Key (int key)
 /* SINGLE PLAYER MENU */
 
 int m_singleplayer_cursor;
-#define SINGLEPLAYER_ITEMS 4
+#define SINGLEPLAYER_ITEMS 3
 
 void M_Menu_SinglePlayer_f (void)
 {
@@ -349,9 +349,6 @@ void M_Menu_SinglePlayer_f (void)
 	m_state = m_singleplayer;
 	m_entersound = true;
 }
-
-static qboolean  sp_benchmark_label_tried;
-static qpic_t   *sp_benchmark_label;
 
 void M_SinglePlayer_Draw (cb_context_t *cbx)
 {
@@ -362,19 +359,6 @@ void M_SinglePlayer_Draw (cb_context_t *cbx)
 	p = Draw_CachePic ("gfx/ttl_sgl.lmp");
 	M_DrawPic (cbx, (320 - p->width) / 2, 4, p);
 	M_DrawTransPic (cbx, 72, 32, Draw_CachePic ("gfx/sp_menu.lmp"));
-
-	// the fourth item sits below the panel, drawn in the same font the panel
-	// uses (see Misc/vq_pak/gfx/sp_benchmark.lmp); a miss is remembered, so an
-	// install without the picture does not search for it every frame
-	if (!sp_benchmark_label_tried)
-	{
-		sp_benchmark_label_tried = true;
-		sp_benchmark_label = Draw_TryCachePic ("gfx/sp_benchmark.lmp", TEXPREF_ALPHA | TEXPREF_PAD | TEXPREF_NOPICMIP);
-	}
-	if (sp_benchmark_label)
-		M_DrawTransPic (cbx, 72, 92, sp_benchmark_label);
-	else
-		Draw_StringScaled (cbx, 72, 92, "Benchmark", 2.0f, NULL);
 
 	f = (int)(realtime * 10) % 6;
 
@@ -429,10 +413,6 @@ void M_SinglePlayer_Key (int key)
 
 		case 2:
 			M_Menu_Save_f ();
-			break;
-
-		case 3:
-			M_Menu_Benchmark_f ();
 			break;
 		}
 	}
@@ -983,6 +963,8 @@ enum
 
 	OPT_VIDEO, // RT: OPT_VIDEO must've been at the end, let's hope nothing breaks
 
+	OPT_BENCHMARK,
+
 	OPT_SNDVOL,
 	OPT_MUSICVOL,
 
@@ -1027,6 +1009,7 @@ static int GapOffset (int opt)
 		return gapsize * 0;
 
 	case OPT_VIDEO:
+	case OPT_BENCHMARK:
 		return gapsize * 1;
 
 	case OPT_SNDVOL:
@@ -1417,6 +1400,9 @@ void M_Options_Draw (cb_context_t *cbx)
 	if (vid_menudrawfn)
 		M_Print (cbx, 16, GetY(OPT_VIDEO), "         Video Options");
 
+	// OPT_BENCHMARK:
+	M_Print (cbx, 16, GetY(OPT_BENCHMARK), "             Benchmark");
+
 	// cursor
 	M_DrawCharacter (cbx, 200, GetY(options_cursor), 12 + ((int)(realtime * 4) & 1));
 }
@@ -1455,6 +1441,9 @@ void M_Options_Key (int k)
 			break;
 		case OPT_VIDEO:
 			M_Menu_Video_f ();
+			break;
+		case OPT_BENCHMARK:
+			M_Menu_Benchmark_f ();
 			break;
 		default:
 			M_AdjustSliders (1);
@@ -1993,7 +1982,7 @@ void M_Benchmark_Key (int key)
 	{
 	case K_ESCAPE:
 	case K_BBUTTON:
-		M_Menu_SinglePlayer_f ();
+		M_Menu_Options_f ();
 		return;
 
 	case K_ENTER:
@@ -2119,7 +2108,7 @@ void M_BenchmarkResults_Key (int key)
 	case K_KP_ENTER:
 	case K_ABUTTON:
 		S_LocalSound ("misc/menu2.wav");
-		M_Menu_SinglePlayer_f ();
+		M_Menu_Options_f ();
 		break;
 	}
 }
