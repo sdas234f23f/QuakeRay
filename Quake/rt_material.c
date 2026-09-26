@@ -32,8 +32,8 @@
 #endif
 
 #define RT_MAT_MAX_MATERIALS 2048
-#define RT_MAT_MAX_GLOBAL   RT_MAT_CAP_GLOBAL
-#define RT_MAT_MAX_MAP      RT_MAT_CAP_MAP
+#define RT_MAT_MAX_GLOBAL   4096
+#define RT_MAT_MAX_MAP      1024
 
 static rt_material_t rt_global_materials[RT_MAT_MAX_GLOBAL];
 static int rt_global_count = 0;
@@ -422,10 +422,14 @@ static void rt_mat_yaml_scalar(const yaml_node_t *node, char *out, size_t outsiz
     out[n] = 0;
 }
 
-static int rt_mat_parse_yaml(const char *filebuf, int len, const char *file_name, rt_material_t *dest, int max_items)
+static int rt_mat_load_yaml_file(const char *file_name, rt_material_t *dest, int max_items)
 {
+    int len = 0;
+    char *filebuf = (char *)rt_load_file(file_name, &len);
     if (!filebuf || len == 0)
     {
+        if (filebuf)
+            rt_load_file_free((byte *)filebuf);
         return 0;
     }
 
@@ -435,6 +439,7 @@ static int rt_mat_parse_yaml(const char *filebuf, int len, const char *file_name
 
     if (!yaml_parser_initialize(&parser))
     {
+        rt_load_file_free((byte *)filebuf);
         return 0;
     }
 
@@ -496,7 +501,6 @@ static int rt_mat_parse_yaml(const char *filebuf, int len, const char *file_name
 
                     if (have_name)
                     {
-                        q_strlcpy(dest->source_file, file_name, sizeof(dest->source_file));
                         dest++;
                         count++;
                     }
@@ -512,107 +516,33 @@ static int rt_mat_parse_yaml(const char *filebuf, int len, const char *file_name
     }
 
     yaml_parser_delete(&parser);
-    return count;
-}
-
-static int rt_mat_load_yaml_file(const char *file_name, rt_material_t *dest, int max_items)
-{
-    int   len = 0;
-    char *filebuf = (char *)rt_load_file(file_name, &len);
-    int   count;
-
-    if (!filebuf)
-        return 0;
-
-    count = rt_mat_parse_yaml(filebuf, len, file_name, dest, max_items);
     rt_load_file_free((byte *)filebuf);
     return count;
 }
 
-// A file addressed by an absolute path: the search path cannot reach it. This
-// is how the base id1 directory is read while a mod is running.
-static int rt_mat_load_abs_file(const char *path, rt_material_t *dest, int max_items)
-{
-    FILE  *f = fopen(path, "rb");
-    long   len;
-    char  *buf;
-    size_t got;
-    int    count;
-
-    if (!f)
-        return 0;
-
-    fseek(f, 0, SEEK_END);
-    len = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    if (len <= 0 || len > 64 * 1024 * 1024)
-    {
-        fclose(f);
-        return 0;
-    }
-
-    buf = (char *)Mem_Alloc((size_t)len + 1);
-    got = fread(buf, 1, (size_t)len, f);
-    fclose(f);
-    buf[got] = 0;
-
-    count = rt_mat_parse_yaml(buf, (int)got, path, dest, max_items);
-    Mem_Free(buf);
-    return count;
-}
-
-static int rt_mat_load_any(const char *name, rt_material_t *dest, int max_items)
-{
-    // the directory scan passes an absolute path; the pkz listing and the map
-    // file pass a name the search path resolves
-    if (name[0] && (name[1] == ':' || name[0] == '/' || name[0] == '\\'))
-        return rt_mat_load_abs_file(name, dest, max_items);
-    return rt_mat_load_yaml_file(name, dest, max_items);
-}
-
-// Every materials/*.yaml of one directory, then its materials.yaml at the root.
-// Paths are absolute: the loader reads them itself, so a lower-priority
-// directory is reached even when a higher-priority one carries a file of the
-// same name (files loaded later override entries by name).
-static void rt_mat_load_dir(const char *dir, int (*cb)(const char *name, void *ctx), void *ctx)
+static void rt_mat_find_dir_mats(int (*cb)(const char *name, void *ctx), void *ctx)
 {
     char pattern[MAX_OSPATH];
-    WIN32_FIND_DATAA fd;
-    HANDLE h;
+    q_snprintf(pattern, sizeof(pattern), "%s/materials/*.yaml", com_gamedir);
 
-    q_snprintf(pattern, sizeof(pattern), "%s/materials/*.yaml", dir);
-    h = FindFirstFileA(pattern, &fd);
+    WIN32_FIND_DATAA fd;
+    HANDLE h = FindFirstFileA(pattern, &fd);
     if (h != INVALID_HANDLE_VALUE)
     {
         do
         {
-            char path[MAX_OSPATH];
-
             if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
             {
                 continue;
             }
-            // the editor's own files: the session file is not a materials file
-            // until it is saved, and the backup never is
-            if (!q_strcasecmp(fd.cFileName, "materials.editor.yaml") ||
-                !q_strcasecmp(fd.cFileName, "backup_materials.yaml"))
-            {
-                continue;
-            }
-            q_snprintf(path, sizeof(path), "%s/materials/%s", dir, fd.cFileName);
-            if (cb(path, ctx))
+            char name[MAX_QPATH];
+            q_snprintf(name, sizeof(name), "materials/%s", fd.cFileName);
+            if (cb(name, ctx))
             {
                 break;
             }
         } while (FindNextFileA(h, &fd));
         FindClose(h);
-    }
-
-    // the mod's override file lives at the gamedir root
-    q_snprintf(pattern, sizeof(pattern), "%s/materials.yaml", dir);
-    if (Sys_FileTime(pattern) != -1)
-    {
-        cb(pattern, ctx);
     }
 }
 
@@ -625,45 +555,12 @@ typedef struct {
 static int rt_mat_load_cb(const char *name, void *vctx)
 {
     rt_mat_load_ctx_t *ctx = (rt_mat_load_ctx_t *)vctx;
-    const int before = *ctx->count;
-    int loaded, n, kept = 0;
-
-    if (before >= ctx->max)
+    if (*ctx->count >= ctx->max)
     {
         return 1;
     }
-
-    loaded = rt_mat_load_any(name, ctx->dest + before, ctx->max - before);
-
-    /* A later file overrides the entries of an earlier one with the same name.
-       The load order is the packaged base, then id1, then the running gamedir;
-       this loop is what makes a mod's materials.yaml replace the id1 values it
-       names while id1 still supplies everything the mod does not name. */
-    for (n = 0; n < loaded; n++)
-    {
-        rt_material_t *loaded_mat = ctx->dest + before + n;
-        int            old = -1, i;
-
-        for (i = 0; i < before; i++)
-        {
-            if (!q_strcasecmp(ctx->dest[i].name, loaded_mat->name))
-            {
-                old = i;
-                break;
-            }
-        }
-
-        if (old >= 0)
-        {
-            ctx->dest[old] = *loaded_mat;
-        }
-        else
-        {
-            ctx->dest[before + kept++] = *loaded_mat;
-        }
-    }
-    *ctx->count = before + kept;
-
+    int loaded = rt_mat_load_yaml_file(name, ctx->dest + *ctx->count, ctx->max - *ctx->count);
+    *ctx->count += loaded;
     if (loaded > 0)
     {
         Con_Printf("RT: loaded %d materials from %s\n", loaded, name);
@@ -688,19 +585,8 @@ void RT_MAT_Init(void)
     RT_PKZ_Init();
 
     rt_mat_load_ctx_t ctx = { rt_global_materials, &rt_global_count, RT_MAT_MAX_GLOBAL };
-
-    // packaged materials first, then id1, then the running gamedir (a mod), so
-    // a mod's materials.yaml overrides the id1 entries it names
     RT_PKZ_ListFiles("materials/", ".yaml", rt_mat_load_cb, &ctx);
-    {
-        char base[MAX_OSPATH];
-        q_snprintf(base, sizeof(base), "%s/id1", com_basedir);
-        if (q_strcasecmp(base, com_gamedir))
-        {
-            rt_mat_load_dir(base, rt_mat_load_cb, &ctx);
-        }
-    }
-    rt_mat_load_dir(com_gamedir, rt_mat_load_cb, &ctx);
+    rt_mat_find_dir_mats(rt_mat_load_cb, &ctx);
 
     rt_mat_cmd = Cmd_AddCommand2("rt_mat", RT_MAT_Cmd, src_command);
 }
@@ -739,18 +625,6 @@ void RT_MAT_ChangeMap(const char *mapname)
 
     rt_mat_load_ctx_t ctx = { rt_map_materials, &rt_map_count, RT_MAT_MAX_MAP };
     rt_mat_load_cb(name, &ctx);
-
-    // The gamedir's own materials.yaml is the editor's target: it has to beat
-    // the map file it was saved from, or a saved edit would be shadowed by that
-    // file on the next load of the same map.
-    {
-        char own[MAX_OSPATH];
-        q_snprintf(own, sizeof(own), "%s/materials.yaml", com_gamedir);
-        if (Sys_FileTime(own) != -1)
-        {
-            rt_mat_load_cb(own, &ctx);
-        }
-    }
 }
 
 void RT_MAT_Reload(void)
@@ -765,15 +639,7 @@ void RT_MAT_Reload(void)
 
     rt_mat_load_ctx_t ctx = { rt_global_materials, &rt_global_count, RT_MAT_MAX_GLOBAL };
     RT_PKZ_ListFiles("materials/", ".yaml", rt_mat_load_cb, &ctx);
-    {
-        char base[MAX_OSPATH];
-        q_snprintf(base, sizeof(base), "%s/id1", com_basedir);
-        if (q_strcasecmp(base, com_gamedir))
-        {
-            rt_mat_load_dir(base, rt_mat_load_cb, &ctx);
-        }
-    }
-    rt_mat_load_dir(com_gamedir, rt_mat_load_cb, &ctx);
+    rt_mat_find_dir_mats(rt_mat_load_cb, &ctx);
 
     if (rt_current_map[0])
     {
@@ -802,59 +668,6 @@ static void rt_mat_normalize_name(const char *name, char *out, size_t outsize)
     }
 
     q_strlwr(out);
-}
-
-void RT_MAT_NormalizeName(const char *name, char *out, size_t outsize)
-{
-    rt_mat_normalize_name(name, out, outsize);
-}
-
-// "textures/+3_med25" -> 3, "progs/flame.mdl:frame2" -> 2 (a model or sprite
-// skin frame), anything else -> -1
-int RT_MAT_FrameDigit(const char *name)
-{
-    if (!q_strncasecmp(name, "textures/+", 10) && name[10] >= '0' && name[10] <= '9')
-    {
-        return name[10] - '0';
-    }
-
-    {
-        const char *p = strstr(name, ":frame");
-
-        if (p && p[6] >= '0' && p[6] <= '9' && (p[7] == '\0' || p[7] == '_'))
-        {
-            return p[6] - '0';
-        }
-    }
-    return -1;
-}
-
-void RT_MAT_GroupBaseOf(const char *name, char *out, size_t outsize)
-{
-    if (!q_strncasecmp(name, "textures/+", 10) && name[10] >= '0' && name[10] <= '9')
-    {
-        q_snprintf(out, outsize, "textures/%s", name + 11);
-        return;
-    }
-
-    {
-        const char *p = strstr(name, ":frame");
-
-        if (p && p[6] >= '0' && p[6] <= '9')
-        {
-            size_t n = (size_t)(p - name);
-
-            if (n >= outsize)
-            {
-                n = outsize - 1;
-            }
-            memcpy(out, name, n);
-            out[n] = '\0';
-            return;
-        }
-    }
-
-    q_strlcpy(out, name, outsize);
 }
 
 static rt_material_t *rt_mat_find_in(const char *name, rt_material_t *first, int count)
@@ -908,55 +721,6 @@ rt_material_t *RT_MAT_Find(const char *name)
         return m;
     }
     return rt_mat_find_in(name, rt_global_materials, rt_global_count);
-}
-
-rt_material_t *RT_MAT_GetList(int which, int *outCount)
-{
-    if (which == RT_MAT_LIST_MAP)
-    {
-        if (outCount)
-            *outCount = rt_map_count;
-        return rt_map_materials;
-    }
-
-    if (outCount)
-        *outCount = rt_global_count;
-    return rt_global_materials;
-}
-
-int RT_MAT_AppendGlobal(const rt_material_t *mat)
-{
-    if (!rt_initialized || rt_global_count >= RT_MAT_MAX_GLOBAL)
-        return -1;
-
-    rt_global_materials[rt_global_count] = *mat;
-    return rt_global_count++;
-}
-
-void RT_MAT_SetListCounts(int globalCount, int mapCount)
-{
-    if (globalCount < 0)
-        globalCount = 0;
-    if (mapCount < 0)
-        mapCount = 0;
-    if (globalCount > RT_MAT_MAX_GLOBAL)
-        globalCount = RT_MAT_MAX_GLOBAL;
-    if (mapCount > RT_MAT_MAX_MAP)
-        mapCount = RT_MAT_MAX_MAP;
-
-    /* dropped entries must not stay findable through a stale valid flag */
-    for (int i = globalCount; i < rt_global_count; i++)
-        rt_global_materials[i].valid = false;
-    for (int i = mapCount; i < rt_map_count; i++)
-        rt_map_materials[i].valid = false;
-
-    rt_global_count = globalCount;
-    rt_map_count = mapCount;
-}
-
-const char *RT_MAT_CurrentMap(void)
-{
-    return rt_current_map;
 }
 
 qboolean RT_MAT_Enabled(void)

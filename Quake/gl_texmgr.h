@@ -138,12 +138,6 @@ gltexture_t *TexMgr_LoadImage (
 	qmodel_t *owner, const char *name, int width, int height, enum srcformat format, byte *data, const char *source_file, src_offset_t source_offset,
 	unsigned flags);
 void TexMgr_ReloadImage (gltexture_t *glt, int shirt, int pants);
-// RGBA8 pixels of a texture's own source, for the editor's texture preview.
-// The caller frees the buffer.
-byte *TexMgr_LoadRgbaForPreview (gltexture_t *glt, int *outWidth, int *outHeight);
-// The engine's own animation-frame names of a texture ("textures/+Nname",
-// "progs/model.mdl:frameN"), for the editor's group of blocks. Returns the count.
-int TexMgr_CollectGroupNames (const char *texname, char (*names)[MAX_QPATH], int max);
 void TexMgr_ReloadNobrightImages (void);
 void TexMgr_ReloadAllImages (void);
 
@@ -153,15 +147,5 @@ void TexMgr_ReloadAllImages (void);
 // - or call of TexMgr_RT_SpecialNullEnd - just submit 'rgCreateStaticMaterial' with data from 1st call
 void TexMgr_RT_SpecialStart (float default_rough, float default_metallic);
 void TexMgr_RT_SpecialEnd (void);
-
-// RT: live material editor support. Reloads every texture whose material (as resolved
-// by RT_MAT_Find from glt->name) is the named one, re-running the full material
-// synthesis (base + glow/luma sidecar where present) so that edits to materials.yaml
-// data become visible without a map reload. Returns the number of reloaded textures.
-int TexMgr_ReloadImagesForMaterial (const char *materialName);
-
-// RT: reloads the textures carrying the given normalized texture name whether or not
-// a material resolves to them (Cancel/Exit drop a material the editor had created).
-int TexMgr_ReloadImagesForTextureName (const char *texname);
 
 #endif /* _GL_TEXMAN_H */

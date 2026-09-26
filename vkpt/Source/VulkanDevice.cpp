@@ -1796,16 +1796,17 @@ void VulkanDevice::ChangeAnimatedMaterialFrame(RgMaterial animatedMaterial, uint
 
 void VulkanDevice::UpdateMaterial(const RgMaterialUpdateInfo *updateInfo)
 {
+    if (!currentFrameState.WasFrameStarted())
+    {
+        throw RgException(RG_FRAME_WASNT_STARTED);
+    }
+
     if (updateInfo == nullptr)
     {
         throw RgException(RG_WRONG_ARGUMENT, "Argument is null");
     }
 
-    // Out-of-frame calls (the live material editor restoring a snapshot from a
-    // console command, before rgStartFrame) use the pre-frame command buffer,
-    // exactly like CreateMaterial does.
-    bool wasUpdated = textureManager->UpdateMaterial(
-        currentFrameState.GetCmdBufferForMaterials(cmdManager), currentFrameState.GetFrameIndex(), *updateInfo);
+    bool wasUpdated = textureManager->UpdateMaterial(currentFrameState.GetCmdBuffer(), currentFrameState.GetFrameIndex(), *updateInfo);
 }
 
 void VulkanDevice::DestroyMaterial(RgMaterial material)

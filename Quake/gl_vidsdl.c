@@ -28,7 +28,6 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include "bgmusic.h"
 #include "palette.h"
 #include "rt_material.h"
-#include "qr_editor.h"
 #include "SDL.h"
 #include "SDL_syswm.h"
 #include <time.h> // for the timestamp of the frame rt_stats_dump appends
@@ -1497,8 +1496,6 @@ static void GL_InitInstance (void)
 
 	RT_MAT_Init ();
 
-	QR_Editor_Init (); // qr light editor console commands
-
 	Cmd_AddCommand ("rt_pfnreloadshaders", RT_ReloadShaders);
 	Cmd_AddCommand ("rt_water_color", RT_WaterColor);
 	Cmd_AddCommand ("rt_water_acidcolor", RT_AcidColor);
@@ -2141,11 +2138,6 @@ static void GL_EndRenderingTask (end_rendering_parms_t *parms)
 	float cameranear = GL_GetCameraNear (DEG2RAD (r_fovx), DEG2RAD (r_fovy));
 	float camerafar = GL_GetCameraFar ();
 
-	// The light editor's world is frozen: the traced water warp and the cloud
-	// drift follow this clock, so it takes the held client time while the
-	// editor runs instead of the wall clock.
-	const double frame_time = QR_Editor_Active () ? (double)cl.time : (double)SDL_GetTicks () / 1000.0;
-
 	RgDrawFrameInfo info = {
 		.worldUpVector = {0, 0, 1},
 		.fovYRadians = DEG2RAD (r_fovy),
@@ -2155,7 +2147,7 @@ static void GL_EndRenderingTask (end_rendering_parms_t *parms)
 		.rayCullMaskWorld = RG_DRAW_FRAME_RAY_CULL_WORLD_0_BIT | RG_DRAW_FRAME_RAY_CULL_WORLD_1_BIT | RG_DRAW_FRAME_RAY_CULL_SKY_BIT,
 		.disableRayTracedGeometry = false,
 		.disableRasterization = false,
-		.currentTime = frame_time,
+		.currentTime = (double)SDL_GetTicks () / 1000.0,
 		.disableEyeAdaptation = false,
 		.forceAntiFirefly = CVAR_TO_BOOL (rt_antifirefly),
 		.pRenderResolutionParams = &resolution_params,

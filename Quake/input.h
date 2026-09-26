@@ -49,10 +49,6 @@ void IN_ClearStates (void);
 // called when the app becomes active
 void IN_Activate ();
 
-// qr light editor: frees the cursor like IN_Deactivate(true), but keeps
-// delivering mouse motion events (the ImGui panel reads them for its cursor).
-void IN_FreeCursorForGui (void);
-
 // called when the app becomes inactive
 void IN_Deactivate (qboolean free_cursor);
 
