@@ -39,7 +39,7 @@ public:
     {
         float faceBasis[18][4]; // 6 faces * (right, up, forward)
         float sunDirection[4];  // xyz = direction toward the sun, w = how much sun the sky shows (0 = no sun)
-        float skyColor[4];      // xyz = the colour of the sky itself (rt_sky_color), w unused
+        float skyColor[4];      // xyz = the colour of the sky itself (rt_sky_color), w = 1 while the sky paints the flat clouds of QUALITY_LOW instead of the layer's volume
         float skyParams[4];     // x = multiplier, y = cloud opacity (rt_sky_clouds_alpha), z = sun disc intensity, w = sun disc radius
         float cloudColor[4];    // xyz = cloud color, w = cloud time (s)
         float cloudParams[4];   // x = coverage, y = density (rt_sky_clouds_density), z = drift speed, w = enabled
@@ -109,7 +109,9 @@ public:
     // medium, high, ultra, extreme. Every level doubles the resolution the clouds
     // are drawn at and the volume of their shadow is laid over the ground with, and
     // leaves that volume standing for fewer frames (except the two finest levels,
-    // which share the finest size of it).
+    // which share the finest size of it). The lowest level draws the flat clouds the
+    // sky had before the layer became a volume -- a mask painted into the sky's own
+    // colour, with no layer to march and no shadow of one to lay down.
     static constexpr uint32_t QUALITY_LOW     = 0;
     static constexpr uint32_t QUALITY_HIGH    = 2;
     static constexpr uint32_t QUALITY_EXTREME = 4;

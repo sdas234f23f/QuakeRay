@@ -195,10 +195,13 @@ task_handle_t prev_end_rendering_task = INVALID_TASK_HANDLE;
 	CVAR_DEF_T (rt_light_color, "255 255 255") \
 	CVAR_DEF_T (rt_sky_clouds, "1") \
 	/* Quality of the volumetric clouds: 0 low, 1 medium, 2 high, 3 ultra, 4 extreme (anything \
-	   above is read as extreme). The level is the resolution the layer is drawn at, the resolution \
-	   of the map of its shadow and how often that map is filled again, each level doubling the \
-	   resolutions -- what decides how fine the clouds are, and what they cost. Nothing about the \
-	   look of the clouds themselves is scaled by it, only how finely they are resolved. */ \
+	   above is read as extreme). Level 0 draws the flat clouds the sky had before the layer \
+	   was a volume -- a noise mask painted into the sky's colour, which casts no shadow -- \
+	   and every level above it draws the volume. The level is the resolution the layer is \
+	   drawn at, the resolution of the map of its shadow and how often that map is filled \
+	   again, each level doubling the resolutions -- what decides how fine the clouds are, and \
+	   what they cost. Nothing about the look of the clouds themselves is scaled by it, only \
+	   how finely they are resolved. */ \
 	CVAR_DEF_T (rt_sky_clouds_quality, "2") \
 	CVAR_DEF_T (rt_sky_clouds_color, "0 0 0") \
 	CVAR_DEF_T (rt_sky_clouds_alpha, "1.0") \

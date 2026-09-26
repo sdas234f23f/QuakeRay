@@ -912,13 +912,31 @@ void VulkanDevice::Render(VkCommandBuffer cmd, const RgDrawFrameInfo &drawInfo)
                 p.faceBasis[face * 3 + 2][0] = view[2];  p.faceBasis[face * 3 + 2][1] = view[6];  p.faceBasis[face * 3 + 2][2] = view[10];
             }
 
-            rasterizer->GetRenderCubemap()->SetQuality(cmd, (drawInfo.pSkyParams == nullptr)
-                ? RenderCubemap::QUALITY_HIGH : drawInfo.pSkyParams->skyCloudsQuality);
+            const uint32_t cloudsQuality = (drawInfo.pSkyParams == nullptr)
+                ? RenderCubemap::QUALITY_HIGH : drawInfo.pSkyParams->skyCloudsQuality;
+            rasterizer->GetRenderCubemap()->SetQuality(cmd, cloudsQuality);
+
+            // The lowest level of rt_sky_clouds_quality draws the flat clouds the
+            // sky had before the layer was a volume: a mask painted into the sky's
+            // own colour (CmProceduralSky.comp), with no layer for the host to march
+            // and no volume of one for the world to be shadowed by. The flag travels
+            // in the tail of skyColor, which has nothing else to carry.
+            const bool flatClouds = RenderCubemap::ClampQuality(cloudsQuality) == RenderCubemap::QUALITY_LOW;
+            p.skyColor[3] = flatClouds ? 1.0f : 0.0f;
 
             // The clouds hang between the sun and the world, so the shadow they
             // throw on it is laid down here, for every pass that lights with the
-            // sun (the sun itself, the sky, and the shafts -- CloudShadowMap.h)
-            rasterizer->GetRenderCubemap()->UpdateCloudShadow(cmd, p, uniform->GetData()->cameraPosition, frameIndex);
+            // sun (the sun itself, the sky, and the shafts -- CloudShadowMap.h).
+            // The flat clouds cast none: there is no volume of them, and a standing
+            // one would keep darkening the world behind the sky's back.
+            if (flatClouds)
+            {
+                rasterizer->GetRenderCubemap()->InvalidateCloudShadow();
+            }
+            else
+            {
+                rasterizer->GetRenderCubemap()->UpdateCloudShadow(cmd, p, uniform->GetData()->cameraPosition, frameIndex);
+            }
             rasterizer->GetRenderCubemap()->DrawProcedural(cmd, p, frameIndex);
 
             // The world's shading reads the volume's placement from the tail of the

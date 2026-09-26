@@ -1216,10 +1216,12 @@ void vkpt::RenderCubemap::DestroyCloudsPipeline()
 
 void vkpt::RenderCubemap::DispatchClouds(VkCommandBuffer cmd, const ProceduralSkyParams &params, uint32_t frameIndex)
 {
-    // Nothing to march when the host turned the clouds off or made them fully
-    // transparent. The cubemaps keep whatever they hold: no shader reads them then --
-    // and the next time the layer is drawn, both are marched whole.
-    if (params.cloudParams[3] <= 0.5f || params.skyParams[1] <= 0.0f)
+    // Nothing to march when the host turned the clouds off, made them fully
+    // transparent, or asked for the flat clouds of the lowest quality level (they
+    // are painted into the sky's colour and no shader reads a map of the layer
+    // then -- CmProceduralSky.comp). The cubemaps keep whatever they hold, and the
+    // next time the layer is drawn, both are marched whole.
+    if (params.skyColor[3] > 0.5f || params.cloudParams[3] <= 0.5f || params.skyParams[1] <= 0.0f)
     {
         cloudsWhole = 2;
 

@@ -66,7 +66,7 @@ layout(std140, set = 0, binding = 1) uniform Params
 {
     vec4 faceBasis[18]; // 6 faces * (right, up, forward)
     vec4 sunDirection;  // xyz = normalized direction TOWARD the sun, w = how much sun the sky shows (0 = no sun at all)
-    vec4 skyColor;      // xyz = the colour of the sky itself (rt_sky_color), w unused
+    vec4 skyColor;      // xyz = the colour of the sky itself (rt_sky_color), w = 1 while the sky paints the flat clouds of the lowest quality level; this pass is not dispatched then
     vec4 skyParams;     // x = multiplier over the whole sky, y = cloud opacity (rt_sky_clouds_alpha), z = sun disc intensity, w = sun disc radius
     vec4 cloudColor;    // xyz = cloud colour (rt_sky_clouds_color), w = cloud time (seconds)
     vec4 cloudParams;   // x = coverage, y = density (rt_sky_clouds_density), z = drift speed, w = clouds enabled

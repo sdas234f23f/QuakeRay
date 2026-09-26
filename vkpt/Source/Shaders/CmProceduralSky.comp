@@ -21,7 +21,11 @@
 //
 // Procedural sky: a flat sky colour (rt_sky_color) with the sun's disc over it
 // and the volumetric cloud layer (rt_sky_clouds, CmSkyClouds.comp) in front of
-// both. The single-scattering atmosphere this file was ported with is gone -- it
+// both. The lowest level of rt_sky_clouds_quality draws the flat clouds this file
+// painted before the layer became a volume -- the noise mask below, mixed into the
+// sky's own colour -- and then there is no layer and no map of one to read; every
+// finer level draws the volume. The single-scattering atmosphere this file was
+// ported with is gone -- it
 // is what kept the sky's own colour out of the sky, because what it painted was
 // the physical blue mixed with that colour -- so the sky is now exactly the
 // colour it is set to, and the sun disc is added on top of it, independent of
@@ -73,7 +77,7 @@ layout(std140, set = 0, binding = 1) uniform Params
 {
     vec4 faceBasis[18]; // 6 faces * (right, up, forward)
     vec4 sunDirection;  // xyz = normalized direction TOWARD the sun, w = how much sun the sky shows (0 = no sun, so no disc either)
-    vec4 skyColor;      // xyz = the colour of the sky itself (rt_sky_color), w unused
+    vec4 skyColor;      // xyz = the colour of the sky itself (rt_sky_color), w = 1 while the sky paints the flat clouds of the lowest quality level instead of the layer's volume
     vec4 skyParams;     // x = multiplier over the whole sky (rt_sky, rt_sky_brightness, rt_brightness), y = cloud opacity (rt_sky_clouds_alpha), z = sun disc intensity, w = sun disc display radius (radians)
     vec4 cloudColor;    // xyz = cloud colour (rt_sky_clouds_color), w = cloud time (seconds)
     vec4 cloudParams;   // x = cloud coverage, y = cloud density (rt_sky_clouds_density), z = drift speed, w = clouds enabled
@@ -81,6 +85,60 @@ layout(std140, set = 0, binding = 1) uniform Params
     vec4 cloudLayer;    // x = altitude of the cloud layer, y = thickness, z = sunlight strength, w = sky light strength
     vec4 cloudMarch;    // x = view march steps, y = unused (the walk of a column towards the sun is CLOUD_SHADOW_STEPS, CloudLayer.h), z = detail erosion strength, w = forward scattering
 } params;
+
+// --- the flat clouds of the lowest quality level (rt_sky_clouds_quality 0) ---
+// The noise mask the clouds were before they became a volume, kept as it was so
+// that the lowest level draws the sky it drew then: a dome of value-noise fBm
+// drifted by the clock, mixed into the sky's colour by coverage and opacity.
+
+float hash13(vec3 p)
+{
+    p = fract(p * 0.1031);
+    p += dot(p, p.zyx + 31.32);
+    return fract((p.x + p.y) * p.z);
+}
+
+float valueNoise3(vec3 p)
+{
+    vec3 i = floor(p);
+    vec3 f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+
+    float n000 = hash13(i);
+    float n100 = hash13(i + vec3(1, 0, 0));
+    float n010 = hash13(i + vec3(0, 1, 0));
+    float n110 = hash13(i + vec3(1, 1, 0));
+    float n001 = hash13(i + vec3(0, 0, 1));
+    float n101 = hash13(i + vec3(1, 0, 1));
+    float n011 = hash13(i + vec3(0, 1, 1));
+    float n111 = hash13(i + vec3(1, 1, 1));
+
+    return mix(
+        mix(mix(n000, n100, f.x), mix(n010, n110, f.x), f.y),
+        mix(mix(n001, n101, f.x), mix(n011, n111, f.x), f.y),
+        f.z);
+}
+
+float fbm3(vec3 p)
+{
+    float v = 0.0;
+    float amp = 0.5;
+    for (int i = 0; i < 4; i++)
+    {
+        v += amp * valueNoise3(p);
+        p = p * 2.03;
+        amp *= 0.5;
+    }
+    return v;
+}
+
+float cloudMask(vec3 dir, float time, float speed)
+{
+    // sample the noise on the sky dome; drift slowly with time
+    vec3 p = dir * 3.0 + vec3(time * speed, time * speed * 0.4, 0.0);
+    float n = fbm3(p);
+    return n;
+}
 
 void main()
 {
@@ -106,11 +164,21 @@ void main()
     float cloudOpacity = clamp(params.skyParams.y, 0.0, 1.0);
     float sunIntensity = params.skyParams.z;
 
+    // The clouds are drawn one of two ways, and the host's quality level picks
+    // which: the lowest level paints the flat clouds of cloudMask() above -- a
+    // noise mask mixed into the sky's own colour, with no layer and no map of one
+    // to read -- while every finer level draws the volume CmSkyClouds.comp marches
+    // into the cubemap above. The flag travels in the tail of skyColor, which has
+    // nothing else to carry; at the flat level the host marches no layer and keeps
+    // no volume of its shadow, so the mask is all of the cloud there is.
+    float flatClouds = params.skyColor.w;
+    bool cloudsOn = params.cloudParams.w > 0.5 && cloudOpacity > 0.0;
+
     // Transmittance of the clouds (a) and the light that scattered in them (rgb).
     // The cloud cubemap is only written while the clouds are on, and both the used
     // cloud colour and the host's opacity are applied inside the cloud pass.
     vec4 cloud = vec4(0.0, 0.0, 0.0, 1.0);
-    if (params.cloudParams.w > 0.5 && cloudOpacity > 0.0)
+    if (cloudsOn && flatClouds <= 0.5)
     {
         // The layer is read through a small Gaussian. The texels of the map hold the
         // marches of their own columns and the quarters a frame does not march are
@@ -136,6 +204,19 @@ void main()
         // The separable 1-2-1 kernel: the centre weighs 4, the four edges 2, the
         // four corners 1, and sixteen is what all of them weigh together.
         cloud = (centre * 4.0 + edges * 2.0 + corners) / 16.0;
+    }
+
+    // The flat clouds of the lowest level: the mask the sky was drawn with before
+    // the layer became a volume, mixed into its colour exactly as it was then. The
+    // density setting sharpens the contour of a cloud rather than thinning it, as
+    // it did then: a cloud of full opacity keeps the colour it is set to, and only
+    // the band its noise crosses in changes -- a hard edge at 1, a soft one at 0.
+    if (cloudsOn && flatClouds > 0.5)
+    {
+        float n = cloudMask(dir, params.cloudColor.w, params.cloudParams.z);
+        float edge = mix(0.7, 0.05, clamp(params.cloudParams.y, 0.0, 1.0));
+        float mask = smoothstep(params.cloudParams.x, params.cloudParams.x + edge, n);
+        skyColor = mix(skyColor, params.cloudColor.xyz, clamp(mask * cloudOpacity, 0.0, 1.0));
     }
 
     float cosAng = cos(sunAngRad);
