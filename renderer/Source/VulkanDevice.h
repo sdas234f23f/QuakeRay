@@ -225,6 +225,7 @@ private:
     std::shared_ptr<ShaderManager>          shaderManager;
     std::shared_ptr<RasterizedDataCollector> rasterizedDataCollector;
     bool particleProxyGateOpen = true;
+    bool lastReflRefrTraced = false;
     std::shared_ptr<DecalManager>           decalManager;
     std::shared_ptr<PortalList>             portalList;
     std::shared_ptr<Tonemapping>            tonemapping;

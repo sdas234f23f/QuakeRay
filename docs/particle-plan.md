@@ -195,20 +195,27 @@ scale to the content that actually exists.
 
 ### Glass stand-in capture gate (owner item, 2026-10-11)
 - New cvar `rt_particle_proxy_gate` (archived, default `1`): `0` = unconditional capture (the
-  previous behaviour), `1` = auto (capture only while the last completed frame's submitted set
-  contains `PT_GLASS` instances and `rt_glass_particles` is on), `2` = never.
+  previous behaviour), `1` = auto, `2` = never. Auto captures while `rt_glass_particles` is on
+  and the last completed frame either traced a reflect/refract ray (always-on mark in the
+  raygen + the stats ring read) or submitted a `PT_GLASS` instance.
+- Owner rule (2026-10-11): water and glass are always traced. The glass arm keeps the capture on
+  for any map with `PT_GLASS` content (no pane entry pop); the ray arm keeps it on while water,
+  mirrors or acid trace, so the stand-ins are never removed from a surface the pass is working
+  on. The only window is the first 2-3 frames of a newly visible water/mirror surface (stats
+  ring lag).
 - Scope: the `PARTICLE_SPRITE` capture paths (`CaptureParticleProxies` /
   `CaptureParticlePointProxies`) only; the raster upload, the FTE transport and the
   reflect/refract dispatch are untouched. The closed state is self-consistent: no proxies -> no
   BLAS/TLAS instance -> `glassParticles` forced 0 (no query, no raster discard, no composite).
-- Measured (2026-10-11, `perf/stage0/glass-gate-2026-10-11.md`): on `start` / `ad_tfuma` /
-  `ad_swampy` the gate closes (no `PT_GLASS` content), removing 6.1-12.3k proxies per frame:
-  upload 1.97 -> 0.27, convert 2.77 -> 0.97, setup 2.19 -> 1.85 ms and fps 70.3 -> 87.7 on
-  `start` (task mode); `ad_tfuma` slots -0.8 ms inside the fps spread; the demo pair moves
-  upload 1.09 -> 0.19 and convert 1.88 -> 1.00 with one fewer TLAS instance.
-- The close on water scenes is deliberate: the particle layer composites only at mask >= 4
-  (normal-map glass branch), and water/mirror pixels never display it today. If writers for
-  `glassFilter.x/.z/.w` are added, extend the gate signal to those surfaces.
+- Measured (2026-10-11, `perf/stage0/glass-gate-2026-10-11.md`): `start` closes (rays 0, no
+  glass) and removes 11.9k proxies per frame — upload 2.10 -> 0.26, convert 2.75 -> 0.97,
+  particles 3.85 -> 2.14, setup 2.18 -> 1.80 ms and fps 75.6 -> 91.3 (task mode); `ad_tfuma`
+  closes with slots 0.23/0.67; `ad_swampy` (water) opens and keeps capturing (`rays_refl_refr`
+  46k); the 4K demo runs closed at 71.0 fps with zero proxies and the `gate=closed` line.
+- Known defect (separate item, owner-confirmed): the layer composites only at `MEDIA_TYPE_GLASS`
+  pixels (`CmCheckerboard` mask >= 4, written only by the pane branch), so water and mirrors
+  trace the stand-ins but do not show them today; when their mask writer lands, revisit the
+  2-3 frame water entry window and let the checks cover the refracted particles.
 
 ### Stage 5 — GPU simulation (classic only, optional until measured)
 - Ping-pong state, spawn ring, append/compaction, indirect draw; bench-freeze mode for determinism

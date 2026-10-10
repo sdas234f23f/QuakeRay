@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Added
+- **The particle glass stand-ins are captured only while something can use them** — `rt_particle_proxy_gate` (archived, default `1`) closes the per-frame proxy capture, its buffer upload and its acceleration-structure rebuild while the last completed frame neither traced a reflect/refract ray nor submitted a `PT_GLASS` instance, i.e. when the reflected/refracted particle layer cannot be produced or consumed; `0` restores the previous unconditional capture (the A/B arm) and `2` disables it. Water and glass keep their stand-ins by design: a map with glass stays open, and any frame that traces water, mirrors or acid keeps the capture on (the signal is an always-on mark in the reflect/refract raygen, so it works with the debug statistics off). On Arcane Dimensions' start scene the capture drops from ~11.9k proxies per frame to zero and the frame moves from 75.6 to 91.3 FPS in this Debug build (`cpu.particles_upload` 2.10 to 0.26 ms, `cpu.fte_convert` 2.75 to 0.97 ms, `gpu.setup` 2.18 to 1.80 ms); the 4K `ad_particle_heavy` demo runs at 71.0 FPS with the gate closed.
+
+### Changed
+- **`rt_glass_particles 0` also stops the stand-in capture** — previously the switch only turned the consumer off and every frame still captured, uploaded and rebuilt the stand-ins; in auto mode the capture follows the consumer now. `rt_particle_proxy_gate 0` restores the old split (capture on, consumer off) for diagnostics.
+
 ## v0.40.0
 
 ### Added

@@ -778,7 +778,7 @@ void R_SetupViewBeforeMark (void *unused)
 	RT_UploadAllDlights ();
 
 	qrSetParticleProxyGate (vulkan_globals.instance, (uint32_t)rt_particle_proxy_gate.value,
-	                        rt_glass_particles.value != 0.0f ? 1u : 0u);
+	                        CVAR_TO_BOOL (rt_glass_particles) ? 1u : 0u);
 
 	RT_Prof_End (RT_PROF_SETUP, prof_start);
 }

@@ -836,6 +836,7 @@ bool VulkanDevice::RenderThroughRhi(const QrDrawFrameInfo &drawInfo)
                    " rejBlend=" + std::to_string(stats.rejectedBlend) +
                    " rejCap=" + std::to_string(stats.rejectedCap) +
                    " rejLines=" + std::to_string(stats.rejectedLines) +
+                   (particleProxyGateOpen ? " gate=open" : " gate=closed") +
                    " proxies=" + std::to_string(particleProxies.size())).c_str());
         }
     }
@@ -1220,6 +1221,7 @@ void VulkanDevice::DrawFrame(const QrDrawFrameInfo *drawInfo)
     {
         statsRays = rayStats->GetRays(frameIndex);
         rayStats->GetRaysPerCategory(frameIndex, statsRaysPerCategory);
+        lastReflRefrTraced = statsRaysPerCategory[RAY_STATS_CATEGORY_REFLECTION_REFRACTION] != 0;
         rayStats->Reset(frameIndex);
     }
 
@@ -1699,7 +1701,7 @@ void VulkanDevice::FlushDeferredLightUploads()
 void VulkanDevice::SetParticleProxyGate(uint32_t gate, uint32_t glassParticles)
 {
     const bool hasGlass = rhiAccelStructs != nullptr && rhiAccelStructs->HasGlassInstances();
-    const bool enabled = gate == 0u ? true : (gate == 2u ? false : (glassParticles != 0u && hasGlass));
+    const bool enabled = gate == 0u ? true : (gate == 2u ? false : (glassParticles != 0u && (lastReflRefrTraced || hasGlass)));
 
     if (rasterizedDataCollector != nullptr)
     {
@@ -1709,8 +1711,8 @@ void VulkanDevice::SetParticleProxyGate(uint32_t gate, uint32_t glassParticles)
     if (enabled != particleProxyGateOpen)
     {
         particleProxyGateOpen = enabled;
-        fprintf(stderr, "qray: particle proxy gate %s (glass instances %s)\n",
-                enabled ? "open" : "closed", hasGlass ? "present" : "absent");
+        fprintf(stderr, "qray: particle proxy gate %s (refl/refr traced last frame: %s, glass instances: %s)\n",
+                enabled ? "open" : "closed", lastReflRefrTraced ? "yes" : "no", hasGlass ? "present" : "absent");
     }
 }
 

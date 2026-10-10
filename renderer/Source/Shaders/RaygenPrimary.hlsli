@@ -620,7 +620,7 @@ void main()
 
 
         currentPayload = traceReflectionRefractionRay(rayOrigin, rayDir, instIndex, h.geometryInstanceFlags, doRefraction);
-        rayStatsAdd(RAY_STATS_CATEGORY_REFLECTION_REFRACTION, 1);
+        rayStatsMark(RAY_STATS_CATEGORY_REFLECTION_REFRACTION);
 
 
         if (!doesPayloadContainHitInfo(currentPayload))
@@ -1021,7 +1021,7 @@ void main()
         }
 
         currentPayload = traceReflectionRefractionRay(rayOrigin, rayDir, instIndex, h.geometryInstanceFlags, doRefraction);
-        rayStatsAdd(RAY_STATS_CATEGORY_REFLECTION_REFRACTION, 1);
+        rayStatsMark(RAY_STATS_CATEGORY_REFLECTION_REFRACTION);
 
         if (!doesPayloadContainHitInfo(currentPayload))
         {

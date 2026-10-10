@@ -633,4 +633,16 @@ void rayStatsAdd(const uint category, const uint count)
     }
 }
 
+void rayStatsMark(const uint category)
+{
+    if ((globalUniform.debugShowFlags & DEBUG_SHOW_FLAG_RAY_STATS) != 0)
+    {
+        InterlockedAdd(rtStats[0].counts[category], 1);
+    }
+    else
+    {
+        rtStats[0].counts[category] = 1;
+    }
+}
+
 #endif
