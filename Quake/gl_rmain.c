@@ -128,6 +128,8 @@ extern cvar_t rt_sky_sun_yaw;
 extern cvar_t rt_physical_sun;
 extern cvar_t rt_materials_only;
 extern cvar_t rt_cluster_dlights;
+extern cvar_t rt_particle_proxy_gate;
+extern cvar_t rt_glass_particles;
 extern cvar_t rt_viewm_scale;
 
 /*
@@ -774,6 +776,9 @@ void R_SetupViewBeforeMark (void *unused)
 	RT_ClusterLightListsReset ();
 
 	RT_UploadAllDlights ();
+
+	qrSetParticleProxyGate (vulkan_globals.instance, (uint32_t)rt_particle_proxy_gate.value,
+	                        rt_glass_particles.value != 0.0f ? 1u : 0u);
 
 	RT_Prof_End (RT_PROF_SETUP, prof_start);
 }

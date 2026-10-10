@@ -113,6 +113,7 @@ public:
     void BeginDeferredLightUploads(uint32_t slot);
     void EndDeferredLightUploads();
     void FlushDeferredLightUploads();
+    void SetParticleProxyGate(uint32_t gate, uint32_t glassParticles);
     void UploadSpotlight(const QrSpotLightUploadInfo *pLightInfo);
     void UploadPolygonalLight(const QrPolygonalLightUploadInfo *pLightInfo);
     void UploadTexturedAreaLight(const QrTexturedAreaLightUploadInfo *pLightInfo);
@@ -223,6 +224,7 @@ private:
 
     std::shared_ptr<ShaderManager>          shaderManager;
     std::shared_ptr<RasterizedDataCollector> rasterizedDataCollector;
+    bool particleProxyGateOpen = true;
     std::shared_ptr<DecalManager>           decalManager;
     std::shared_ptr<PortalList>             portalList;
     std::shared_ptr<Tonemapping>            tonemapping;

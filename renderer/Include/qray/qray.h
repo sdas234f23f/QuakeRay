@@ -584,6 +584,11 @@ QRAPI QrResult QRCONV qrEndDeferredLightUploads(
 QRAPI QrResult QRCONV qrFlushDeferredLightUploads(
     QrInstance                          qrInstance);
 
+QRAPI QrResult QRCONV qrSetParticleProxyGate(
+    QrInstance                          qrInstance,
+    uint32_t                            gate,
+    uint32_t                            glassParticles);
+
 QRAPI QrResult QRCONV qrUploadPolygonalLight(
     QrInstance                          qrInstance,
     const QrPolygonalLightUploadInfo    *pUploadInfo);

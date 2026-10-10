@@ -371,6 +371,11 @@ void RasterizedDataCollector::CopyFromArrayOfStructs(
 
 bool RasterizedDataCollector::CaptureParticleProxies(const QrRasterizedGeometryUploadInfo &info)
 {
+    if (!particleProxyCaptureEnabled)
+    {
+        return false;
+    }
+
     // The sprite marker, not the lit-pipeline selector: the traced stand-ins have to exist for the
     // unlit sprites too (the raster copy of those is drawn by the world pipeline).
     if ((info.pipelineState & QR_RASTERIZED_GEOMETRY_STATE_PARTICLE_SPRITE) == 0)
@@ -582,6 +587,11 @@ bool RasterizedDataCollector::CaptureParticleProxies(const QrRasterizedGeometryU
 
 bool RasterizedDataCollector::CaptureParticlePointProxies(const QrParticleUploadInfo &info)
 {
+    if (!particleProxyCaptureEnabled)
+    {
+        return false;
+    }
+
     if ((info.pipelineState & QR_RASTERIZED_GEOMETRY_STATE_PARTICLE_SPRITE) == 0)
     {
         return false;

@@ -232,6 +232,11 @@ QrResult qrFlushDeferredLightUploads(QrInstance qrInstance)
     return Call(qrInstance, &VulkanDevice::FlushDeferredLightUploads);
 }
 
+QrResult qrSetParticleProxyGate(QrInstance qrInstance, uint32_t gate, uint32_t glassParticles)
+{
+    return Call(qrInstance, &VulkanDevice::SetParticleProxyGate, gate, glassParticles);
+}
+
 QrResult qrUploadPolygonalLight(QrInstance qrInstance, const QrPolygonalLightUploadInfo *pUploadInfo)
 {
     return Call(qrInstance, &VulkanDevice::UploadPolygonalLight, pUploadInfo);

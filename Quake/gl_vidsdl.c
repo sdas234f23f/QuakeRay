@@ -265,6 +265,7 @@ atomic_uint32_t rt_end_task_running;
 	CVAR_DEF_T (rt_glass_shadows, "1") \
 	CVAR_DEF_T (rt_glass_denoise, "0") \
 	CVAR_DEF_T (rt_glass_particles, "1") \
+	CVAR_DEF_T (rt_particle_proxy_gate, "1") \
 	\
 	CVAR_DEF_T (rt_volume_type, "2") \
 	/* The screen-space volumetric these parameterise is gone on the Q2RTX core:
@@ -1130,6 +1131,7 @@ qboolean RT_Bench_Report (const char *demo)
 	RT_Bench_Setting (f, "rt_glass_shadows");
 	RT_Bench_Setting (f, "rt_glass_denoise");
 	RT_Bench_Setting (f, "rt_glass_particles");
+	RT_Bench_Setting (f, "rt_particle_proxy_gate");
 	RT_Bench_Setting (f, "rt_bloom");
 	RT_Bench_Setting (f, "rt_bloom_quality");
 	RT_Bench_Setting (f, "rt_local_exposure");

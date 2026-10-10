@@ -28,6 +28,7 @@
 #include "Const.h"
 #include "Generated/ShaderCommonC.h"
 #include "RHI/NvrhiFrameSkeleton.h"
+#include "RHI/RhiAccelStructs.h"
 
 using namespace qray;
 
@@ -1693,6 +1694,24 @@ void VulkanDevice::EndDeferredLightUploads()
 void VulkanDevice::FlushDeferredLightUploads()
 {
     scene->FlushDeferredLightUploads();
+}
+
+void VulkanDevice::SetParticleProxyGate(uint32_t gate, uint32_t glassParticles)
+{
+    const bool hasGlass = rhiAccelStructs != nullptr && rhiAccelStructs->HasGlassInstances();
+    const bool enabled = gate == 0u ? true : (gate == 2u ? false : (glassParticles != 0u && hasGlass));
+
+    if (rasterizedDataCollector != nullptr)
+    {
+        rasterizedDataCollector->SetParticleProxyCaptureEnabled(enabled);
+    }
+
+    if (enabled != particleProxyGateOpen)
+    {
+        particleProxyGateOpen = enabled;
+        fprintf(stderr, "qray: particle proxy gate %s (glass instances %s)\n",
+                enabled ? "open" : "closed", hasGlass ? "present" : "absent");
+    }
 }
 
 void VulkanDevice::UploadSpotlight(const QrSpotLightUploadInfo *pLightInfo)

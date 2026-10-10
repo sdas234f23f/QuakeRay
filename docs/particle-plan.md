@@ -153,7 +153,8 @@ scale to the content that actually exists.
 - Gate: bounded ray counter; visual parity; the large-sprite lighting does not pop (owner check on
   the torch scenes); `rt_bench` baselines unchanged or better.
 - Owner decision (2026-10-10): Stage 4 is split and ordered `4b` -> the planned queue (glass gate,
-  compact transport, distance culling). `4b` = DTAL consumer correctness plus the dark-smoke
+  compact transport, distance culling). Glass gate done 2026-10-11 (`rt_particle_proxy_gate`,
+  measured on the owner scenes; `perf/stage0/glass-gate-2026-10-11.md`); compact transport is next. `4b` = DTAL consumer correctness plus the dark-smoke
   defect, and it starts with a scene cross-check (`rt_dtal_groups {0,1}` x `rt_particle_volume
   {0,1}` arms on a torch-view smoke scene) to separate the DTAL-group drop from the volume-lost
   class before choosing the fix shape. The GPU volume (`4a`), the L1 scale semantics (`4c`, gated
@@ -191,6 +192,23 @@ scale to the content that actually exists.
 - Known behavior: recipes whose per-message effective count stays at or below 1 (a literal
   `count 1` and `countabsolute` parts) reduce only at the hard wall at R; multi-count recipes fade
   inside [R/2, R). The wall drop removes the whole message including its dlight/sound side effects.
+
+### Glass stand-in capture gate (owner item, 2026-10-11)
+- New cvar `rt_particle_proxy_gate` (archived, default `1`): `0` = unconditional capture (the
+  previous behaviour), `1` = auto (capture only while the last completed frame's submitted set
+  contains `PT_GLASS` instances and `rt_glass_particles` is on), `2` = never.
+- Scope: the `PARTICLE_SPRITE` capture paths (`CaptureParticleProxies` /
+  `CaptureParticlePointProxies`) only; the raster upload, the FTE transport and the
+  reflect/refract dispatch are untouched. The closed state is self-consistent: no proxies -> no
+  BLAS/TLAS instance -> `glassParticles` forced 0 (no query, no raster discard, no composite).
+- Measured (2026-10-11, `perf/stage0/glass-gate-2026-10-11.md`): on `start` / `ad_tfuma` /
+  `ad_swampy` the gate closes (no `PT_GLASS` content), removing 6.1-12.3k proxies per frame:
+  upload 1.97 -> 0.27, convert 2.77 -> 0.97, setup 2.19 -> 1.85 ms and fps 70.3 -> 87.7 on
+  `start` (task mode); `ad_tfuma` slots -0.8 ms inside the fps spread; the demo pair moves
+  upload 1.09 -> 0.19 and convert 1.88 -> 1.00 with one fewer TLAS instance.
+- The close on water scenes is deliberate: the particle layer composites only at mask >= 4
+  (normal-map glass branch), and water/mirror pixels never display it today. If writers for
+  `glassFilter.x/.z/.w` are added, extend the gate signal to those surfaces.
 
 ### Stage 5 — GPU simulation (classic only, optional until measured)
 - Ping-pong state, spawn ring, append/compaction, indirect draw; bench-freeze mode for determinism

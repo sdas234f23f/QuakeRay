@@ -159,7 +159,12 @@ namespace qray
         bool CaptureParticleProxies( const QrRasterizedGeometryUploadInfo& info );
         bool CaptureParticlePointProxies( const QrParticleUploadInfo& info );
 
+    public:
+        void SetParticleProxyCaptureEnabled( bool enabled ) { particleProxyCaptureEnabled = enabled; }
+
     private:
+        bool particleProxyCaptureEnabled = true;
+
         VkDevice                          device;
         std::shared_ptr< TextureManager > textureMgr;
 
