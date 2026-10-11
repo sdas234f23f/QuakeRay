@@ -8,6 +8,9 @@
 ### Changed
 - **`rt_glass_particles 0` also stops the stand-in capture** — previously the switch only turned the consumer off and every frame still captured, uploaded and rebuilt the stand-ins; in auto mode the capture follows the consumer now. `rt_particle_proxy_gate 0` restores the old split (capture on, consumer off) for diagnostics.
 
+### Fixed
+- **Particles and flames are reflected and refracted by water again** — the traced stand-in layer was composited only at glass panes, because the composite mask (`framebufQ2GlassFilter`) was written only for `MEDIA_TYPE_GLASS` primary hits; the reflect/refract raygen writes it for water too now, so water surfaces show the traced particles with the surface's distortion and the covered raster sprites are discarded in their favour. Verified on the owner's `start` water save: the torch flame's reflection appears with `rt_glass_particles 1` and disappears with `0` (`perf/stage0/water-particle-reflection-2026-10-11.md`). Per-channel FTE blends (`BM_BLENDCOLOUR`/`BM_SUBTRACT`/`BM_INVMODC`), line sparks (`BEF_LINES`) and the engine smoke path remain outside the stand-in capture (follow-up item).
+
 ## v0.40.0
 
 ### Added

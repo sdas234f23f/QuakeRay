@@ -366,16 +366,16 @@ void main()
     const ShHitInfo h = getHitInfoPrimaryRay(primaryPayload, cameraOrigin, cameraRayDirAX, cameraRayDirAY, motionCurToPrev, motionDepthLinearCurToPrev, gradDepth, firstHitDepthNDC, firstHitDepthLinear, screenEmission, emissionBlendCode);
     if (globalUniform.glassBlur == 0u && 
         globalUniform.reflectRefractMaxDepth > 0u &&
-        (h.geometryInstanceFlags & GEOM_INST_FLAG_MEDIA_TYPE_GLASS) != 0u &&
+        (h.geometryInstanceFlags & (GEOM_INST_FLAG_MEDIA_TYPE_GLASS | GEOM_INST_FLAG_MEDIA_TYPE_WATER)) != 0u &&
         (h.geometryInstanceFlags & GEOM_INST_FLAG_IGNORE_REFRACT_AFTER) == 0u)
     {
         const float field = isRegularPixOdd(regularPix) == 0 ? -1.0 : 1.0;
-        /* The mask's blue channel carries the pane's own view-space depth (the axis depth the
+        /* The mask's blue channel carries the surface's own view-space depth (the axis depth the
            raster particles' SV_Position.w interpolates to), which is what lets a raster sprite
-           tell whether it stands behind this pane: RsParticle.frag discards the ones that do,
+           tell whether it stands behind this surface: RsParticle.frag discards the ones that do,
            because the reflect/refract raygen already traced their stand-in. The thickness the
            channel held before moved nowhere else; the (off-by-default) glass denoiser compares
-           it only as a pane identity. */
+           it only as a surface identity. */
         const float paneViewDepth = -mul(globalUniform.view, float4(h.hitPosition, 1.0)).z;
         framebufQ2GlassFilter[pix] = float4(rtGlassPaneNormalOct(h.normalGeom), paneViewDepth,
                                           field * (4.0 + h.roughness));

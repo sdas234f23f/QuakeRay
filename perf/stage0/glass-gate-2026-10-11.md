@@ -113,12 +113,14 @@ the convert bracket).
 5. Water and mirrors today trace the stand-ins but do not display them: the layer's only
    consumer (`CmCheckerboard.comp.hlsl:76-80`) reads `framebufQ2GlassFilter.a` and composites
    only at `abs >= 4`, whose only live writer is the `MEDIA_TYPE_GLASS` pane branch
-   (`RaygenPrimary.hlsli:367-381`); water is `MEDIA_TYPE_WATER` and mirrors are `REFLECT`
-   (`VertexCollector.cpp:121-158`), and the payload branches (`glassFilter.x/.z/.w`) have no
-   writers. The owner has confirmed water and glass must always be traced and shown; the mask
-   writer for water/mirrors is a separate defect item. When it lands, the gate's 2–3 frame water
-   entry window (Limitations) becomes visible and must be revisited (a CPU media arm or a
-   shorter-lag signal are the known options).
+   (`RaygenPrimary.hlsli:367-381`); the payload branches (`glassFilter.x/.z/.w`) have no
+   writers. Water was fixed the same day (`perf/stage0/water-particle-reflection-2026-10-11.md`:
+   the mask branch accepts `MEDIA_TYPE_WATER`, the layer composites and the raster discard fires
+   at water pixels — the owner confirmed the flame's reflection appears). Mirrors stay out of
+   the scope so far; the remaining particle-side exclusions (engine smoke path, per-channel FTE
+   blends `BM_BLENDCOLOUR`/`BM_SUBTRACT`/`BM_INVMODC`, line sparks `BEF_LINES`) are the
+   follow-up coverage item "all particles reflect" (owner, 2026-10-11: every particle path,
+   FTE and classic and the engine smoke, must reflect).
 6. Demo (v2, quiet machine, same-session pair): closed 71.0 fps / open 66.9 fps (+6.1%
    closed), upload 1.14 -> 0.32, convert 1.92 -> 1.12, TLAS 8 -> 7, with the `gate=open/closed`
    witness matching each arm. Across v1 sessions the same demo measured 34.1–53.4 fps with the

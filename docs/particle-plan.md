@@ -212,10 +212,15 @@ scale to the content that actually exists.
   particles 3.85 -> 2.14, setup 2.18 -> 1.80 ms and fps 75.6 -> 91.3 (task mode); `ad_tfuma`
   closes with slots 0.23/0.67; `ad_swampy` (water) opens and keeps capturing (`rays_refl_refr`
   46k); the 4K demo runs closed at 71.0 fps with zero proxies and the `gate=closed` line.
-- Known defect (separate item, owner-confirmed): the layer composites only at `MEDIA_TYPE_GLASS`
-  pixels (`CmCheckerboard` mask >= 4, written only by the pane branch), so water and mirrors
-  trace the stand-ins but do not show them today; when their mask writer lands, revisit the
-  2-3 frame water entry window and let the checks cover the refracted particles.
+- Display: water fixed 2026-10-11 (`perf/stage0/water-particle-reflection-2026-10-11.md`): the
+  mask branch accepts `MEDIA_TYPE_WATER`, so the traced layer composites and the raster discard
+  fires at water pixels; mirrors remain out of scope. Remaining particle-side exclusions
+  (follow-up item "all particles reflect", owner 2026-10-11 — every particle path must show in
+  water/glass, not only FTE): the per-channel FTE blends
+  (`BM_BLENDCOLOUR`/`BM_SUBTRACT`/`BM_INVMODC` -> `rejBlend`), the line sparks (`BEF_LINES` ->
+  `rejLines`) and the engine smoke path (`r_smoke`, never a capture candidate). The per-channel
+  blends need a per-channel (multiply, add) accumulation in the layer compositing; the smoke
+  needs a capture branch and its procedural look in the traced hit.
 
 ### Stage 5 — GPU simulation (classic only, optional until measured)
 - Ping-pong state, spawn ring, append/compaction, indirect draw; bench-freeze mode for determinism
